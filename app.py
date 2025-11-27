@@ -5,7 +5,8 @@ import tempfile
 import numpy as np
 from PIL import Image, ImageDraw
 from google import genai
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_audioclips, concatenate_videoclips, TextClip
+# Importação corrigida do MoviePy para resolver o ModuleNotFoundError
+import moviepy.editor as mp_editor
 from edge_tts import communicate # Biblioteca para Text-to-Speech
 
 # =========================================================================
@@ -19,16 +20,21 @@ def create_placeholder_image(scene_id, text, width=1280, height=720):
     para simular o asset de imagem gerado por IA.
     """
     try:
-        # Cria uma imagem colorida baseada no ID da cena
-        color = (100 + scene_id * 20) % 255
-        img = Image.new('RGB', (width, height), (color, 50, 80))
+        # Cria uma imagem colorida baseada no ID da cena para diferenciação
+        hue = (scene_id * 50) % 360  # Altera a tonalidade com base no ID
+        # Converte HSL para RGB (Streamlit Cloud usa Python, não CSS)
+        
+        # Cria a imagem PIL
+        img = Image.new('RGB', (width, height), "rgb(50, 50, 100)")
         draw = ImageDraw.Draw(img)
 
-        # Adiciona o texto da cena
+        # Configurações de texto
         font_color = (255, 255, 255)
-        text_to_display = f"CENA {scene_id}\n\n{text}"
+        text_to_display = f"CENA {scene_id} - Imagem IA Placeholder\n\n{text}"
         
-        # Simplesmente desenha o texto (o Streamlit não lida bem com fontes complexas aqui)
+        # Adiciona o texto (usando a fonte padrão)
+        # O ImageDraw é limitado em Streamlit Cloud, então usamos uma cor de fundo sólida
+        # para garantir a legibilidade.
         draw.text((50, 50), text_to_display, font=font_color) 
 
         # Salva o arquivo temporariamente
@@ -52,19 +58,21 @@ def generate_tts_audio(scene_id, text_narration, voice="pt-BR-FranciscaNeural"):
         
         # Salva o áudio no arquivo temporário
         with open(temp_audio_path, "wb") as file:
+            # O Edge-TTS retorna um gerador de chunks de áudio
             for chunk in comm:
-                if chunk[0] == 2:
+                if chunk[0] == 2: # O tipo 2 é o dado de áudio
                     file.write(chunk[1])
         
         # Usa o MoviePy para determinar a duração exata do áudio
-        audio_clip = AudioFileClip(temp_audio_path)
+        # Usamos o mp_editor pois é a importação corrigida
+        audio_clip = mp_editor.AudioFileClip(temp_audio_path)
         duration = audio_clip.duration
         audio_clip.close() 
 
         return temp_audio_path, duration
     
     except Exception as e:
-        st.error(f"Erro ao gerar áudio TTS: {e}")
+        st.error(f"Erro ao gerar áudio TTS para a cena {scene_id}: {e}")
         return None, 0.0
 
 
@@ -74,7 +82,6 @@ def generate_script_and_prompts(idea_central, gemini_api_key):
     """
     
     # 1. Configuração da API
-    # O Streamlit acessa a chave de forma segura
     try:
         client = genai.Client(api_key=gemini_api_key)
     except Exception as e:
@@ -107,8 +114,13 @@ def generate_script_and_prompts(idea_central, gemini_api_key):
           "texto_narração": "A jornada de mil milhas começa com um único passo.",
           "duracao_segundos": 4.5,
           "prompt_imagem_ingles": "Cinematic shot of a lone traveler standing on a misty mountain path at sunrise, deep focus, epic, 8k, photorealistic."
+        }},
+        {{
+          "id": 2,
+          "texto_narração": "O medo de falhar é o que realmente nos impede de voar.",
+          "duracao_segundos": 6.0,
+          "prompt_imagem_ingles": "Conceptual art, a shadow figure holding a large broken cage, volumetric lighting, digital painting, dramatic."
         }}
-        // ...
       ]
     }}
     """
@@ -123,7 +135,9 @@ def generate_script_and_prompts(idea_central, gemini_api_key):
             )
         
         # 4. Retorno
-        return json.loads(response.text)
+        # O Streamlit Cloud pode adicionar caracteres de formatação; tentamos limpar
+        json_text = response.text.strip().lstrip('```json').rstrip('```')
+        return json.loads(json_text)
         
     except Exception as e:
         st.error(f"Erro na API do Gemini. Verifique se a chave está correta ou o limite de uso foi atingido: {e}")
@@ -131,7 +145,7 @@ def generate_script_and_prompts(idea_central, gemini_api_key):
 
 
 # =========================================================================
-# 2. INTERFACE STREAMLIT
+# 3. INTERFACE STREAMLIT
 # =========================================================================
 
 def main():
@@ -140,14 +154,13 @@ def main():
     st.markdown("---")
 
     # Verifica se a chave da API Gemini está configurada nos Secrets
+    # Nota: st.secrets['CHAVE'] funciona apenas em Streamlit Cloud
     gemini_api_key = st.secrets.get("GEMINI_API_KEY")
 
     if not gemini_api_key:
-        st.warning("⚠️ Chave GEMINI_API_KEY não encontrada nos Streamlit Secrets. Insira sua chave para continuar.")
-        # Permite a entrada manual para testes em ambiente local
-        gemini_api_key = st.text_input("Insira sua chave Gemini API aqui (Apenas para testes):", type="password")
-        if not gemini_api_key:
-            st.stop()
+        st.warning("⚠️ Chave GEMINI_API_KEY não encontrada nos Streamlit Secrets.")
+        st.markdown("Por favor, configure o `GEMINI_API_KEY` na seção 'Secrets' do Streamlit Cloud.")
+        st.stop()
             
 
     st.header("1. Ideia Central do Vídeo")
@@ -175,9 +188,9 @@ def main():
         st.json(script_data)
 
         # ----------------------------------------------------
-        # ETAPA 2: GERAÇÃO DE ASSETS (ÁUDIO E IMAGEM)
+        # ETAPA 2 & 3: GERAÇÃO DE ASSETS E MONTAGEM DO CLIPE
         # ----------------------------------------------------
-        st.subheader("3. Geração de Assets e Clipes")
+        st.subheader("3. Geração de Assets, TTS e Montagem")
         
         video_clips = []
         status_placeholder = st.empty()
@@ -195,23 +208,19 @@ def main():
                  st.warning(f"Cena {scene_id} pulada devido a erro de áudio.")
                  continue
 
-            # Geração de Imagem (Placeholder, pois não temos a API de Imagem aqui)
-            # COMENTÁRIO: Aqui é onde você integraria o DALL-E/Stability AI
+            # Geração de Imagem (Placeholder)
             image_path = create_placeholder_image(scene_id, narration)
             
-            # ----------------------------------------------------
-            # ETAPA 3: MONTAGEM DO CLIPE (MoviePy)
-            # ----------------------------------------------------
+            # Montagem do MoviePy
             
             # 3.1. Clipe de Áudio
-            audio_clip = AudioFileClip(audio_path)
+            audio_clip = mp_editor.AudioFileClip(audio_path)
             
             # 3.2. Clipe de Imagem (ajusta a duração para o áudio)
-            image_clip = ImageClip(image_path, duration=duration)
+            image_clip = mp_editor.ImageClip(image_path, duration=duration)
             
-            # 3.3. Sincronização e Adição de Texto Simples (Legenda)
-            # Adiciona o texto da narração como legenda simples no centro
-            text_clip = TextClip(
+            # 3.3. Adição de Texto/Legenda
+            text_clip = mp_editor.TextClip(
                 narration, 
                 fontsize=40, 
                 color='yellow', 
@@ -221,10 +230,7 @@ def main():
             
             final_scene = image_clip.set_audio(audio_clip)
             
-            # Combina a imagem com a legenda (posicionamento central, 80% do topo)
-            final_scene = final_scene.set_duration(duration)
-            
-            # Se for adicionar texto como overlay:
+            # Define o clipe final com a sobreposição de texto
             final_scene = final_scene.set_duration(duration).set_overlay(
                 text_clip.set_pos(("center", 0.8), relative=True).margin(bottom=15, opacity=0.8)
             )
@@ -242,11 +248,12 @@ def main():
             st.error("Nenhum clipe foi gerado para renderizar.")
             return
 
+        # Caminho temporário para o vídeo final
         final_video_path = os.path.join(tempfile.gettempdir(), "video_final.mp4")
         
         with st.spinner('⏳ Concatenando e Renderizando... Isso pode levar de 1 a 3 minutos dependendo do tamanho do vídeo.'):
             # Concatena todos os clipes de vídeo em sequência
-            final_clip = concatenate_videoclips(video_clips)
+            final_clip = mp_editor.concatenate_videoclips(video_clips)
             
             # Renderiza o vídeo final
             final_clip.write_videofile(
@@ -277,6 +284,6 @@ def main():
             )
 
 if __name__ == "__main__":
-    # Garante que o diretório temporário exista
+    # Garante que o diretório temporário exista antes de rodar o main
     os.makedirs(tempfile.gettempdir(), exist_ok=True)
     main()
