@@ -1,0 +1,6 @@
+streamlit
+moviepy
+google-genai
+edge-tts
+numpy
+pandas
