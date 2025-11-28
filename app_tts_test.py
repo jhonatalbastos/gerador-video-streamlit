@@ -19,7 +19,7 @@ st.markdown(
     "Lembre-se de configurar em *Secrets* a chave:
 
 "
-    "`GOOGLE_AI_API_KEY = "sua_chave_aqui"`"
+    "`GOOGLE_AI_API_KEY = \\"sua_chave_aqui\\"`"
 )
 
 # =========================
