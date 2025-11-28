@@ -9,3 +9,4 @@ imageio-ffmpeg
 groq
 gtts
 pydub
+requests
