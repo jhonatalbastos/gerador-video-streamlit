@@ -1,31 +1,43 @@
+# image_engine.py — geração de imagens via Gemini (generateContent)
+import os
 import base64
 import requests
 from io import BytesIO
-from PIL import Image
-import os
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # ou configure via streamlit secrets
 
-def gerar_imagem(prompt: str) -> BytesIO:
+def gerar_imagem_gemini(prompt: str, size: str = "1024x1024") -> BytesIO:
     """
-    Gera imagem via Gemini 1.5 Flash (ou outro modelo permitido para imagens).
-    Retorna BytesIO contendo PNG.
+    Gera e retorna BytesIO com PNG.
     """
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateImage?key=" + GEMINI_API_KEY
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY ausente.")
 
-    body = {
-        "prompt": prompt,
-        "size": "1024x1024"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": f"Create a {size} cinematic liturgical image: {prompt}"}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "image/png"
+        }
     }
 
-    resp = requests.post(url, json=body)
-    resp.raise_for_status()
+    r = requests.post(url, json=payload, timeout=120)
+    r.raise_for_status()
+    data = r.json()
 
-    b64_data = resp.json()["images"][0]
-    img_bytes = base64.b64decode(b64_data)
+    try:
+        b64 = data["candidates"][0]["content"]["parts"][0]["inline_data"]["data"]
+    except Exception:
+        raise RuntimeError("Resposta inesperada: " + str(data))
 
-    buffer = BytesIO()
-    buffer.write(img_bytes)
-    buffer.seek(0)
-
-    return buffer
+    img_bytes = base64.b64decode(b64)
+    bio = BytesIO(img_bytes)
+    bio.seek(0)
+    return bio
