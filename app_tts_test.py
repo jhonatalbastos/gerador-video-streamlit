@@ -41,22 +41,21 @@ def gerar_audio_gemini(texto: str) -> BytesIO | None:
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-tts",  # modelo de TTS da Gemini [web:358]
+            model="gemini-2.5-flash-preview-tts",  # modelo TTS da Gemini [web:358]
             contents=texto,
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],
                 speech_config=types.SpeechConfig(
                     voice_config=types.VoiceConfig(
-                        language_code="pt-BR",  # português Brasil
-                        # se quiser testar vozes específicas depois, ajusta aqui
+                        language_code="pt-BR",
+                        # opcional: name="pt-BR-Standard-A" etc, se quiser testar vozes [web:365]
                     )
                 ),
             ),
         )
 
-        # Áudio vem em inline_data (bytes codificados)
         part = response.candidates[0].content.parts[0]
-        audio_bytes = part.inline_data.data  # bytes de áudio [web:358]
+        audio_bytes = part.inline_data.data
         buf = BytesIO(audio_bytes)
         buf.seek(0)
         return buf
