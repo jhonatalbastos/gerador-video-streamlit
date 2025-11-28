@@ -1,7 +1,6 @@
 import streamlit as st
 from io import BytesIO
 from gtts import gTTS
-from pydub import AudioSegment
 import asyncio
 import edge_tts
 
@@ -15,33 +14,20 @@ st.set_page_config(
 
 st.title("🗣️ Teste de Narração (gTTS + Edge-TTS)")
 st.markdown(
-    "Use este app **apenas para testar as vozes**. "
+    "Use este app apenas para testar as vozes. "
     "Depois que estiver tudo ok, integramos no Studio Jhonata."
 )
 
 # =========================
 # Funções utilitárias
 # =========================
-def adicionar_respiro(mp3_bytes: bytes, duracao_ms: int = 1500) -> BytesIO:
-    """Adiciona silêncio ao final do áudio (respiro)."""
-    audio = AudioSegment.from_file(BytesIO(mp3_bytes), format="mp3")
-    silencio = AudioSegment.silent(duration=duracao_ms)
-    audio_final = audio + silencio
-
-    buf = BytesIO()
-    audio_final.export(buf, format="mp3")
-    buf.seek(0)
-    return buf
-
-
 def gerar_tts_gtts(texto: str) -> BytesIO:
     """Gera áudio com gTTS (Google padrão, pt-BR)."""
-    tts = gTTS(text=texto, lang="pt", slow=False)  # pt-BR padrão [web:282][web:290]
+    tts = gTTS(text=texto, lang="pt", slow=False)  # pt-BR [web:282][web:290]
     buf = BytesIO()
     tts.write_to_fp(buf)
     buf.seek(0)
-    buf_com_respiro = adicionar_respiro(buf.read())
-    return buf_com_respiro
+    return buf
 
 
 async def _gerar_tts_edge_async(texto: str, voice: str) -> BytesIO:
@@ -52,8 +38,7 @@ async def _gerar_tts_edge_async(texto: str, voice: str) -> BytesIO:
         if chunk["type"] == "audio":
             mp3_bytes.write(chunk["data"])
     mp3_bytes.seek(0)
-    buf_com_respiro = adicionar_respiro(mp3_bytes.read())
-    return buf_com_respiro
+    return mp3_bytes
 
 
 def gerar_tts_edge(texto: str, voice: str) -> BytesIO:
@@ -62,7 +47,7 @@ def gerar_tts_edge(texto: str, voice: str) -> BytesIO:
 
 
 def gerar_audio(texto: str, engine: str) -> BytesIO | None:
-    """Seleciona engine e gera áudio com respiro."""
+    """Seleciona engine e gera áudio."""
     if not texto.strip():
         st.warning("Digite um texto para gerar o áudio.")
         return None
@@ -113,7 +98,7 @@ if gerar:
         audio_buf = gerar_audio(texto, engine)
         if audio_buf:
             st.session_state["audio_teste"] = audio_buf
-            st.success("✅ Áudio gerado com respiro no final.")
+            st.success("✅ Áudio gerado.")
 
 if limpar:
     st.session_state["audio_teste"] = None
@@ -122,7 +107,7 @@ st.markdown("---")
 st.markdown("### 3. Player / Download")
 
 if st.session_state["audio_teste"]:
-    st.audio(st.session_state["audio_teste"], format="audio/mp3")
+    st.audio(st.session_state["audio_teste"], format="audio/mp3")  # [web:285]
     st.download_button(
         "⬇️ Download narração.mp3",
         data=st.session_state["audio_teste"],
