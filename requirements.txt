@@ -6,3 +6,6 @@ numpy
 pandas
 Pillow
 imageio-ffmpeg
+groq
+gtts
+pydub
