@@ -1,304 +1,646 @@
 import streamlit as st
+from datetime import date
+import re
+import requests
+from groq import Groq
 import json
-import os
-import tempfile
-import numpy as np
-from PIL import Image, ImageDraw
-from google import genai
-# Importação corrigida do MoviePy para resolver o ModuleNotFoundError.
-# Usamos o import direto para maior robustez no ambiente Streamlit Cloud.
-import moviepy.editor as mp_editor
-from edge_tts import communicate # Biblioteca para Text-to-Speech
+from gtts import gTTS
+from io import BytesIO
+from pydub import AudioSegment
+from pydub.silence import detect_silence
 
-# =========================================================================
-# 1. FUNÇÕES DE GERAÇÃO (IA E TTS)
-# =========================================================================
+# =========================
+# Configuração da página
+# =========================
+st.set_page_config(
+    page_title="Studio Jhonata",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
+# =========================
+# Groq - cliente lazy
+# =========================
+_client = None
+
+
+def inicializar_groq():
+    global _client
+    if _client is None:
+        if "GROQ_API_KEY" not in st.secrets:
+            st.error("❌ Configure GROQ_API_KEY em Settings → Secrets no Streamlit Cloud.")
+            st.stop()
+        _client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+    return _client
+
+
+# =========================
+# Inicializar banco de personagens
+# =========================
 @st.cache_data
-def create_placeholder_image(scene_id, text, width=1280, height=720):
+def inicializar_personagens():
+    return {
+        "Jesus": (
+            "homem de 33 anos, pele morena clara, cabelo castanho ondulado na altura dos ombros, "
+            "barba bem aparada, olhos castanhos penetrantes e serenos, túnica branca tradicional "
+            "com detalhes vermelhos, manto azul, expressão de autoridade amorosa, estilo renascentista clássico"
+        ),
+        "São Pedro": (
+            "homem robusto de 50 anos, pele bronzeada, cabelo curto grisalho, barba espessa, olhos "
+            "determinados, túnica de pescador bege com remendos, mãos calejadas, postura forte, estilo realista bíblico"
+        ),
+        "São João": (
+            "jovem de 25 anos, magro, cabelo castanho longo liso, barba rala, olhos expressivos, túnica "
+            "branca limpa, expressão contemplativa, estilo renascentista"
+        ),
+    }
+
+
+# =========================
+# Limpeza do texto bíblico
+# =========================
+def limpar_texto_evangelho(texto: str) -> str:
+    if not texto:
+        return ""
+    texto_limpo = texto.replace("
+", " ").strip()
+    texto_limpo = re.sub(r"\b(d{1,3})(?=[A-Za-zÁ-Úá-ú])", "", texto_limpo)
+    texto_limpo = re.sub(r"s{2,}", " ", texto_limpo)
+    return texto_limpo.strip()
+
+
+# =========================
+# Geração de áudio com gTTS + respiro
+# =========================
+def gerar_audio_com_respiro(texto: str) -> BytesIO:
     """
-    Cria uma imagem de placeholder colorida no diretório temporário
-    para simular o asset de imagem gerado por IA.
+    Gera áudio do texto usando gTTS (pt-BR) e adiciona 1.5s de silêncio no final (respiro).
+    Retorna BytesIO pronto para st.audio ou download.
     """
     try:
-        # Cria uma cor baseada no ID da cena
-        color = (100 + scene_id * 20) % 255
-        img = Image.new('RGB', (width, height), (color, 50, 80)) 
-        draw = ImageDraw.Draw(img)
-
-        # Configurações de texto
-        font_color = (255, 255, 255)
-        text_to_display = f"CENA {scene_id} - Imagem IA Placeholder\n\n{text}"
+        # Gerar áudio do texto
+        tts = gTTS(text=texto, lang='pt', slow=False)
+        audio_fp = BytesIO()
+        tts.write_to_fp(audio_fp)
+        audio_fp.seek(0)
         
-        # Adiciona o texto na imagem
-        draw.text((50, 50), text_to_display, fill=font_color) 
-
-        # Salva o arquivo temporariamente
-        temp_img_path = os.path.join(tempfile.gettempdir(), f"cena_{scene_id}.png")
-        img.save(temp_img_path)
-        return temp_img_path
+        # Carregar como AudioSegment
+        audio = AudioSegment.from_mp3(audio_fp)
+        
+        # Adicionar 1.5s de silêncio no final (respiro)
+        silencio = AudioSegment.silent(duration=1500)  # 1500ms = 1.5s
+        audio_com_respiro = audio + silencio
+        
+        # Exportar de volta para BytesIO
+        output = BytesIO()
+        audio_com_respiro.export(output, format="mp3")
+        output.seek(0)
+        
+        return output
     except Exception as e:
-        st.error(f"Erro ao criar imagem placeholder: {e}")
+        st.error(f"❌ Erro ao gerar áudio: {e}")
         return None
 
 
-async def generate_tts_audio(scene_id, text_narration, voice="pt-BR-FranciscaNeural"):
-    """
-    Gera o arquivo de áudio (narração) usando Edge-TTS e retorna o caminho e a duração.
-    Edge-TTS deve ser rodado de forma assíncrona.
-    """
-    temp_audio_path = os.path.join(tempfile.gettempdir(), f"audio_cena_{scene_id}.mp3")
-    
-    try:
-        # Cria o comunicador TTS
-        comm = communicate(text_narration, voice)
-        
-        # Salva o áudio no arquivo temporário
-        with open(temp_audio_path, "wb") as file:
-            # Roda a comunicação assíncrona
-            async for chunk in comm:
-                if chunk[0] == 2: # O tipo 2 é o dado de áudio
-                    file.write(chunk[1])
-        
-        # Usa o MoviePy para determinar a duração exata do áudio
-        # Aqui, o MoviePy deve ser capaz de carregar o áudio gerado pelo FFmpeg
-        audio_clip = mp_editor.AudioFileClip(temp_audio_path)
-        duration = audio_clip.duration
-        audio_clip.close() 
-
-        return temp_audio_path, duration
-    
-    except Exception as e:
-        # Para debug no Streamlit Cloud, exibe o erro completo
-        import traceback
-        st.error(f"Erro CRÍTICO ao gerar áudio TTS para a cena {scene_id}. Traceback: {traceback.format_exc()}")
-        return None, 0.0
+# =========================
+# Extrair referência bíblica
+# =========================
+def extrair_referencia_biblica(titulo: str):
+    if not titulo:
+        return None
+    m = re.search(
+        r"segundos+Sãos+([A-Za-zÁ-Úá-ú]+)s+(d+),s*([d-–]+)",
+        titulo,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return None
+    evangelista = m.group(1).strip()
+    capitulo = m.group(2).strip()
+    versiculos_raw = m.group(3).strip()
+    versiculos = versiculos_raw.replace("-", " a ").replace("–", " a ")
+    return {"evangelista": evangelista, "capitulo": capitulo, "versiculos": versiculos}
 
 
-def generate_script_and_prompts(idea_central, gemini_api_key):
-    """
-    Usa a API do Gemini para gerar um roteiro estruturado no formato JSON.
-    """
-    
-    # 1. Configuração da API
-    try:
-        client = genai.Client(api_key=gemini_api_key)
-    except Exception as e:
-        st.error(f"Erro de inicialização da API Gemini: {e}. Verifique a chave em 'st.secrets'.")
-        return {"error": "Falha na inicialização da API."}
+def formatar_referencia_curta(ref_biblica):
+    if not ref_biblica:
+        return ""
+    return f"{ref_biblica['evangelista']}, Cap. {ref_biblica['capitulo']}, {ref_biblica['versiculos']}"
 
 
-    # 2. PROMPT DE ENGENHARIA (O coração da automação)
-    prompt_instruction = f"""
-    Você é um roteirista profissional de vídeos curtos (YouTube Shorts) no estilo "Motivacional" ou "Curiosidades".
-    O vídeo final deve ter no máximo 45 segundos.
+# =========================
+# ANÁLISE DE PERSONAGENS + BANCO
+# =========================
+def analisar_personagens_groq(texto_evangelho: str, banco_personagens: dict):
+    client = inicializar_groq()
 
-    A IDEIA CENTRAL do vídeo é: "{idea_central}".
+    system_prompt = (
+        "Você é especialista em análise bíblica.
+"
+        "Analise o texto e identifique TODOS os personagens bíblicos mencionados.
 
-    Sua resposta deve ser estruturada em 3 a 5 Cenas, seguindo o FORMATO JSON estrito.
-    Não adicione texto introdutório, explicações ou qualquer conteúdo fora do JSON.
+"
+        "Formato EXATO da resposta:
+"
+        "PERSONAGENS: nome1; nome2; nome3
+"
+        "NOVOS: NomeNovo|descrição_detalhada_aparência_física_roupas_idade_estilo (apenas se não existir no banco)
 
-    Para cada cena, gere TRÊS campos:
-    1. "texto_narração": O texto exato (curto e envolvente) que será falado.
-    2. "duracao_segundos": O tempo de duração exato em segundos (entre 3.0 e 10.0) para esta cena.
-    3. "prompt_imagem_ingles": Um prompt em INGLÊS, altamente descritivo e pronto para ser usado em um gerador de Imagens por IA (ex: Midjourney ou Stable Diffusion). O prompt deve ser ultra-realista e esteticamente agradável, e refletir exatamente o texto de narração.
+"
+        f"BANCO EXISTENTE: {'; '.join(banco_personagens.keys())}
 
-    EXEMPLO DO FORMATO JSON (Use este modelo exatamente):
-
-    {{
-      "titulo_sugerido": "Título chamativo aqui.",
-      "cenas": [
-        {{
-          "id": 1,
-          "texto_narração": "A jornada de mil milhas começa com um único passo.",
-          "duracao_segundos": 4.5,
-          "prompt_imagem_ingles": "Cinematic shot of a lone traveler standing on a misty mountain path at sunrise, deep focus, epic, 8k, photorealistic."
-        }}
-        // ...
-      ]
-    }}
-    """
-    
-    # 3. Chamada à API
-    try:
-        with st.spinner('Gerando roteiro estruturado com Gemini...'):
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt_instruction,
-                config={"response_mime_type": "application/json"}
-            )
-        
-        # 4. Retorno: Limpa a resposta de caracteres desnecessários (como ```json)
-        json_text = response.text.strip().lstrip('```json').rstrip('```')
-        return json.loads(json_text)
-        
-    except Exception as e:
-        st.error(f"Erro na API do Gemini. Verifique se a chave está correta ou o limite de uso foi atingido: {e}")
-        return {"error": "Falha na geração do roteiro."}
-
-
-# =========================================================================
-# 2. INTERFACE STREAMLIT E FLUXO PRINCIPAL
-# =========================================================================
-
-# Importamos asyncio para rodar a função assíncrona generate_tts_audio
-import asyncio
-
-def main():
-    st.set_page_config(page_title="Video Maestro AI", layout="centered")
-    st.title("🎬 Video Maestro AI (Streamlit + Gemini + MoviePy)")
-    st.markdown("---")
-
-    # Verifica se a chave da API Gemini está configurada nos Secrets
-    gemini_api_key = st.secrets.get("GEMINI_API_KEY")
-
-    if not gemini_api_key:
-        st.warning("⚠️ Chave GEMINI_API_KEY não encontrada nos Streamlit Secrets.")
-        st.markdown("Por favor, configure o `GEMINI_API_KEY` na seção 'Secrets' do Streamlit Cloud.")
-        st.stop()
-            
-
-    st.header("1. Ideia Central do Vídeo")
-    idea_central = st.text_area(
-        "Descreva a ideia principal do vídeo (ex: 'O futuro da inteligência artificial no mercado de trabalho', 'Três lições de grandes líderes')",
-        max_chars=200,
-        height=100
+"
+        "Exemplo:
+"
+        "PERSONAGENS: Jesus; Pedro; fariseus
+"
+        "NOVOS: Mulher Samaritana|mulher de 35 anos, pele morena, véu colorido, jarro d'água, expressão curiosa, túnica tradicional"
     )
 
-    if st.button("🚀 Gerar e Renderizar Vídeo Automatizado"):
-        if not idea_central:
-            st.error("Por favor, insira uma ideia central para começar.")
-            return
+    try:
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"TEXTO: {texto_evangelho[:1500]}"},
+            ],
+            temperature=0.3,
+            max_tokens=400,
+        )
 
-        # ----------------------------------------------------
-        # ETAPA 1: GERAÇÃO DO ROTEIRO E BLUEPRINT (JSON)
-        # ----------------------------------------------------
-        st.subheader("2. Geração do Roteiro (IA)")
-        script_data = generate_script_and_prompts(idea_central, gemini_api_key)
+        resultado = resp.choices[0].message.content
+        personagens_detectados = {}
 
-        if "error" in script_data:
-            return
-        
-        st.success("Roteiro gerado com sucesso!")
-        
-        # Adiciona um expansor para não poluir a tela
-        with st.expander("Prévia do Roteiro Gerado"):
-            st.json(script_data)
+        m = re.search(r"PERSONAGENS:s*(.+)", resultado)
+        if m:
+            nomes = [n.strip() for n in m.group(1).split(";") if n.strip()]
+            for nome in nomes:
+                if nome in banco_personagens:
+                    personagens_detectados[nome] = banco_personagens[nome]
 
-        # ----------------------------------------------------
-        # ETAPA 2 & 3: GERAÇÃO DE ASSETS, TTS E MONTAGEM
-        # ----------------------------------------------------
-        st.subheader("3. Geração de Assets, TTS e Montagem")
-        
-        video_clips = []
-        status_placeholder = st.empty()
-        
-        # Cria uma lista de tarefas assíncronas para o TTS
-        tts_tasks = []
-        
-        for scene in script_data.get("cenas", []):
-            scene_id = scene["id"]
-            narration = scene["texto_narração"]
-            
-            # Adiciona a tarefa assíncrona à lista
-            tts_tasks.append(generate_tts_audio(scene_id, narration))
+        m = re.search(r"NOVOS:s*(.+)", resultado)
+        if m:
+            novos = m.group(1).strip()
+            for bloco in novos.split(","):
+                if "|" in bloco:
+                    nome, desc = bloco.split("|", 1)
+                    nome = nome.strip()
+                    desc = desc.strip()
+                    if not nome:
+                        continue
+                    personagens_detectados[nome] = desc
+                    banco_personagens[nome] = desc
 
-        # Executa todas as tarefas assíncronas de TTS
-        # Nota: O Edge-TTS requer asyncio
-        with st.spinner("Gerando narração (TTS) para todas as cenas..."):
-            # O asyncio.run deve ser chamado apenas uma vez, então fazemos fora do loop.
-            # Como o Streamlit é síncrono, usamos asyncio.run aqui.
-            results = asyncio.run(asyncio.gather(*tts_tasks))
-            
-        
-        # Montagem dos clipes após a geração de áudio
-        for i, scene in enumerate(script_data.get("cenas", [])):
-            scene_id = scene["id"]
-            narration = scene["texto_narração"]
-            audio_path, duration = results[i] # Pega o resultado da tarefa assíncrona
+        return personagens_detectados
+    except Exception:
+        return {}
 
-            status_placeholder.info(f"Montando Cena {scene_id} ({duration:.2f}s)...")
-            
-            if duration == 0.0 or audio_path is None:
-                 st.warning(f"Cena {scene_id} pulada devido a erro no áudio. Verifique o log.")
-                 continue
 
-            # Geração de Imagem (Placeholder)
-            image_path = create_placeholder_image(scene_id, narration)
-            
-            # Montagem do MoviePy
-            audio_clip = mp_editor.AudioFileClip(audio_path)
-            image_clip = mp_editor.ImageClip(image_path, duration=duration)
-            
-            # Adição de Texto/Legenda
-            text_clip = mp_editor.TextClip(
-                narration, 
-                fontsize=40, 
-                color='yellow', 
-                bg_color='black', 
-                size=image_clip.size
-            ).set_duration(duration)
-            
-            final_scene = image_clip.set_audio(audio_clip)
-            
-            final_scene = final_scene.set_duration(duration).set_overlay(
-                text_clip.set_pos(("center", 0.8), relative=True).margin(bottom=15, opacity=0.8)
+# =========================
+# APIs Liturgia
+# =========================
+def buscar_liturgia_api1(data_str: str):
+    url = f"https://api-liturgia-diaria.vercel.app/?date={data_str}"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        dados = resp.json()
+        today = dados.get("today", {})
+        readings = today.get("readings", {})
+        gospel = readings.get("gospel")
+        if not gospel:
+            return None
+        referencia_liturgica = today.get("entry_title", "").strip() or "Evangelho do dia"
+        titulo = (
+            gospel.get("head_title", "")
+            or gospel.get("title", "")
+            or "Evangelho de Jesus Cristo"
+        ).strip()
+        texto = gospel.get("text", "").strip()
+        if not texto:
+            return None
+        texto_limpo = limpar_texto_evangelho(texto)
+        ref_biblica = extrair_referencia_biblica(titulo)
+        return {
+            "fonte": "api-liturgia-diaria.vercel.app",
+            "titulo": titulo,
+            "referencia_liturgica": referencia_liturgica,
+            "texto": texto_limpo,
+            "ref_biblica": ref_biblica,
+        }
+    except Exception:
+        return None
+
+
+def buscar_liturgia_api2(data_str: str):
+    url = f"https://liturgia.up.railway.app/v2/{data_str}"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        dados = resp.json()
+        lit = dados.get("liturgia", {})
+        ev = lit.get("evangelho") or lit.get("evangelho_do_dia") or {}
+        if not ev:
+            return None
+        texto = ev.get("texto", "") or ev.get("conteudo", "")
+        if not texto:
+            return None
+        texto_limpo = limpar_texto_evangelho(texto)
+        return {
+            "fonte": "liturgia.up.railway.app",
+            "titulo": "Evangelho do dia",
+            "referencia_liturgica": "Evangelho do dia",
+            "texto": texto_limpo,
+            "ref_biblica": None,
+        }
+    except Exception:
+        return None
+
+
+def obter_evangelho_com_fallback(data_str: str):
+    ev = buscar_liturgia_api1(data_str)
+    if ev:
+        st.info("📡 Usando api-liturgia-diaria.vercel.app")
+        return ev
+    ev = buscar_liturgia_api2(data_str)
+    if ev:
+        st.info("📡 Usando liturgia.up.railway.app")
+        return ev
+    st.error("❌ Não foi possível obter o Evangelho")
+    return None
+
+
+# =========================
+# Roteiro + Prompts Visuais
+# =========================
+def extrair_bloco(rotulo: str, texto: str) -> str:
+    padrao = rf"{rotulo}:s*(.*?)(?=
+[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:s*|
+PROMPT_|$)"
+    m = re.search(padrao, texto, re.DOTALL | re.IGNORECASE)
+    return m.group(1).strip() if m else ""
+
+
+def extrair_prompt(rotulo: str, texto: str) -> str:
+    padrao = rf"{rotulo}:s*(.*?)(?=
+[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:s*|
+PROMPT_|$)"
+    m = re.search(padrao, texto, re.DOTALL | re.IGNORECASE)
+    return m.group(1).strip() if m else ""
+
+
+def gerar_roteiro_com_prompts_groq(
+    texto_evangelho: str, referencia_liturgica: str, personagens: dict
+):
+    client = inicializar_groq()
+    texto_limpo = limpar_texto_evangelho(texto_evangelho)
+
+    personagens_str = json.dumps(personagens, ensure_ascii=False)
+
+    system_prompt = f"""Crie roteiro + 6 prompts visuais CATÓLICOS para vídeo devocional.
+
+PERSONAGENS FIXOS: {personagens_str}
+
+IMPORTANTE:
+- 4 PARTES EXATAS: HOOK, REFLEXÃO, APLICAÇÃO, ORAÇÃO
+- PROMPT_LEITURA separado (momento da leitura do Evangelho, mais calmo e reverente)
+- PROMPT_GERAL para thumbnail
+- USE SEMPRE as descrições exatas dos personagens
+- Estilo: artístico renascentista católico, luz suave, cores quentes
+
+Formato EXATO:
+
+HOOK: [texto 5-8s]
+PROMPT_HOOK: [prompt visual com personagens fixos]
+
+REFLEXÃO: [texto 20-25s]
+PROMPT_REFLEXÃO: [prompt visual com personagens fixos]
+
+APLICAÇÃO: [texto 20-25s]
+PROMPT_APLICACAO: [prompt visual com personagens fixos]
+
+ORAÇÃO: [texto 20-25s]
+PROMPT_ORACAO: [prompt visual com personagens fixos]
+
+PROMPT_LEITURA: [prompt visual específico para a leitura do Evangelho, mais calmo e reverente]
+
+PROMPT_GERAL: [prompt para thumbnail/capa]"""
+
+    try:
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": f"Evangelho: {referencia_liturgica}
+
+{texto_limpo[:2000]}",
+                },
+            ],
+            temperature=0.7,
+            max_tokens=1200,
+        )
+
+        texto_gerado = resp.choices[0].message.content
+
+        partes: dict[str, str] = {}
+
+        # Textos
+        partes["hook"] = extrair_bloco("HOOK", texto_gerado)
+        partes["reflexão"] = extrair_bloco("REFLEXÃO", texto_gerado)
+        partes["aplicação"] = extrair_bloco("APLICAÇÃO", texto_gerado)
+        partes["oração"] = extrair_bloco("ORAÇÃO", texto_gerado)
+
+        # Prompts
+        partes["prompt_hook"] = extrair_prompt("PROMPT_HOOK", texto_gerado)
+        partes["prompt_reflexão"] = extrair_prompt("PROMPT_REFLEXÃO", texto_gerado)
+        partes["prompt_aplicacao"] = extrair_prompt("PROMPT_APLICACAO", texto_gerado)
+        partes["prompt_oração"] = extrair_prompt("PROMPT_ORACAO", texto_gerado)
+        partes["prompt_leitura"] = extrair_prompt("PROMPT_LEITURA", texto_gerado)
+
+        m_geral = re.search(
+            r"PROMPT_GERAL:s*(.+)", texto_gerado, re.DOTALL | re.IGNORECASE
+        )
+        partes["prompt_geral"] = m_geral.group(1).strip() if m_geral else ""
+
+        return partes
+    except Exception as e:
+        st.error(f"❌ Erro Groq: {e}")
+        return None
+
+
+def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
+    if ref_biblica:
+        abertura = (
+            f"Proclamação do Evangelho de Jesus Cristo, segundo São "
+            f"{ref_biblica['evangelista']}, "
+            f"Capítulo {ref_biblica['capitulo']}, "
+            f"versículos {ref_biblica['versiculos']}. "
+            "Glória a vós, Senhor!"
+        )
+    else:
+        abertura = (
+            "Proclamação do Evangelho de Jesus Cristo, segundo São Lucas. "
+            "Glória a vós, Senhor!"
+        )
+    fechamento = "Palavra da Salvação. Glória a vós, Senhor!"
+    return f"{abertura} {texto_evangelho} {fechamento}"
+
+
+# =========================
+# Interface Principal
+# =========================
+st.title("✨ Studio Jhonata - Automação Litúrgica")
+st.markdown("---")
+
+st.sidebar.title("⚙️ Configurações")
+st.sidebar.info("1️⃣ api-liturgia-diaria
+2️⃣ liturgia.railway
+3️⃣ Groq fallback")
+st.sidebar.success("✅ Groq ativo")
+
+if "personagens_biblicos" not in st.session_state:
+    st.session_state.personagens_biblicos = inicializar_personagens()
+
+if "audios" not in st.session_state:
+    st.session_state.audios = {}
+
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["📖 Gerar Roteiro", "🎨 Personagens", "🎥 Fábrica Vídeo", "📊 Histórico"]
+)
+
+# --------- TAB 1: ROTEIRO ----------
+with tab1:
+    st.header("🚀 Gerador de Roteiro + Imagens")
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        data_selecionada = st.date_input(
+            "📅 Data da liturgia:", value=date.today(), min_value=date(2023, 1, 1)
+        )
+    with col2:
+        st.info("Status: ✅ pronto para gerar")
+
+    if st.button("🚀 Gerar Roteiro Completo", type="primary"):
+        data_str = data_selecionada.strftime("%Y-%m-%d")
+
+        with st.spinner("🔍 Buscando Evangelho..."):
+            liturgia = obter_evangelho_com_fallback(data_str)
+        if not liturgia:
+            st.stop()
+
+        st.success(
+            f"✅ Evangelho: {liturgia['referencia_liturgica']} ({liturgia['fonte']})"
+        )
+
+        with st.spinner("🤖 Analisando personagens..."):
+            personagens_detectados = analisar_personagens_groq(
+                liturgia["texto"], st.session_state.personagens_biblicos
             )
 
-            video_clips.append(final_scene)
-            
-        # Limpa os arquivos temporários após o uso
-        for audio_path, _ in results:
-             if audio_path and os.path.exists(audio_path):
-                 os.remove(audio_path)
-        
-        status_placeholder.empty()
-        
-        # ----------------------------------------------------
-        # ETAPA 4: RENDERIZAÇÃO FINAL
-        # ----------------------------------------------------
-        st.subheader("4. Renderização do Vídeo Final")
-
-        if not video_clips:
-            st.error("Nenhum clipe foi gerado para renderizar.")
-            return
-
-        # Caminho temporário para o vídeo final
-        final_video_path = os.path.join(tempfile.gettempdir(), "video_final.mp4")
-        
-        with st.spinner('⏳ Concatenando e Renderizando... Isso pode levar de 1 a 3 minutos dependendo do tamanho do vídeo.'):
-            # Concatena todos os clipes de vídeo em sequência
-            final_clip = mp_editor.concatenate_videoclips(video_clips)
-            
-            # Renderiza o vídeo final
-            final_clip.write_videofile(
-                final_video_path, 
-                codec='libx264', 
-                audio_codec='aac', 
-                fps=24, 
-                verbose=False, 
-                logger=None
+        with st.spinner("✨ Gerando roteiro e prompts visuais..."):
+            roteiro = gerar_roteiro_com_prompts_groq(
+                liturgia["texto"],
+                liturgia["referencia_liturgica"],
+                {**st.session_state.personagens_biblicos, **personagens_detectados},
             )
+
+        if not roteiro:
+            st.stop()
+
+        leitura_montada = montar_leitura_com_formula(
+            liturgia["texto"], liturgia.get("ref_biblica")
+        )
+        ref_curta = formatar_referencia_curta(liturgia.get("ref_biblica"))
+
+        # Salvar roteiro e leitura em sessão
+        st.session_state.roteiro_atual = roteiro
+        st.session_state.leitura_atual = leitura_montada
+
+        st.markdown("## 📖 Roteiro pronto para gravar")
+        if ref_curta:
+            st.markdown(f"**Leitura:** {ref_curta}")
+        st.markdown("---")
+
+        if personagens_detectados:
+            st.markdown("### 👥 Personagens nesta leitura")
+            for nome, desc in personagens_detectados.items():
+                st.markdown(f"**{nome}:** {desc}")
+            st.markdown("---")
+
+        col_esq, col_dir = st.columns(2)
+
+        with col_esq:
+            st.markdown("### 🎣 HOOK")
+            st.markdown(roteiro.get("hook", ""))
+            if st.button("🎙️ Gerar áudio Hook", key="btn_hook"):
+                with st.spinner("Gerando áudio..."):
+                    audio = gerar_audio_com_respiro(roteiro.get("hook", ""))
+                    if audio:
+                        st.session_state.audios["hook"] = audio
+                        st.success("✅ Áudio gerado")
             
-        st.success("✅ Vídeo Finalizado!")
+            if "hook" in st.session_state.audios:
+                st.audio(st.session_state.audios["hook"], format="audio/mp3")
+                st.download_button(
+                    "⬇️ Download Hook.mp3",
+                    data=st.session_state.audios["hook"],
+                    file_name="hook.mp3",
+                    mime="audio/mp3"
+                )
+            
+            st.markdown("**📸 Prompt:**")
+            st.code(roteiro.get("prompt_hook", ""))
+
+            st.markdown("### 💭 REFLEXÃO")
+            st.markdown(roteiro.get("reflexão", ""))
+            if st.button("🎙️ Gerar áudio Reflexão", key="btn_reflexao"):
+                with st.spinner("Gerando áudio..."):
+                    audio = gerar_audio_com_respiro(roteiro.get("reflexão", ""))
+                    if audio:
+                        st.session_state.audios["reflexao"] = audio
+                        st.success("✅ Áudio gerado")
+            
+            if "reflexao" in st.session_state.audios:
+                st.audio(st.session_state.audios["reflexao"], format="audio/mp3")
+                st.download_button(
+                    "⬇️ Download Reflexão.mp3",
+                    data=st.session_state.audios["reflexao"],
+                    file_name="reflexao.mp3",
+                    mime="audio/mp3",
+                    key="dl_reflexao"
+                )
+            
+            st.markdown("**📸 Prompt:**")
+            st.code(roteiro.get("prompt_reflexão", ""))
+
+        with col_dir:
+            st.markdown("### 📖 LEITURA")
+            st.markdown(leitura_montada)
+            if st.button("🎙️ Gerar áudio Leitura", key="btn_leitura"):
+                with st.spinner("Gerando áudio..."):
+                    audio = gerar_audio_com_respiro(leitura_montada)
+                    if audio:
+                        st.session_state.audios["leitura"] = audio
+                        st.success("✅ Áudio gerado")
+            
+            if "leitura" in st.session_state.audios:
+                st.audio(st.session_state.audios["leitura"], format="audio/mp3")
+                st.download_button(
+                    "⬇️ Download Leitura.mp3",
+                    data=st.session_state.audios["leitura"],
+                    file_name="leitura.mp3",
+                    mime="audio/mp3",
+                    key="dl_leitura"
+                )
+            
+            st.markdown("**📸 Prompt:**")
+            st.code(roteiro.get("prompt_leitura", ""))
+
+            st.markdown("### 🌟 APLICAÇÃO")
+            st.markdown(roteiro.get("aplicação", ""))
+            if st.button("🎙️ Gerar áudio Aplicação", key="btn_aplicacao"):
+                with st.spinner("Gerando áudio..."):
+                    audio = gerar_audio_com_respiro(roteiro.get("aplicação", ""))
+                    if audio:
+                        st.session_state.audios["aplicacao"] = audio
+                        st.success("✅ Áudio gerado")
+            
+            if "aplicacao" in st.session_state.audios:
+                st.audio(st.session_state.audios["aplicacao"], format="audio/mp3")
+                st.download_button(
+                    "⬇️ Download Aplicação.mp3",
+                    data=st.session_state.audios["aplicacao"],
+                    file_name="aplicacao.mp3",
+                    mime="audio/mp3",
+                    key="dl_aplicacao"
+                )
+            
+            st.markdown("**📸 Prompt:**")
+            st.code(roteiro.get("prompt_aplicacao", ""))
+
+        st.markdown("### 🙏 ORAÇÃO")
+        st.markdown(roteiro.get("oração", ""))
+        if st.button("🎙️ Gerar áudio Oração", key="btn_oracao"):
+            with st.spinner("Gerando áudio..."):
+                audio = gerar_audio_com_respiro(roteiro.get("oração", ""))
+                if audio:
+                    st.session_state.audios["oracao"] = audio
+                    st.success("✅ Áudio gerado")
         
-        # ----------------------------------------------------
-        # ETAPA 5: DOWNLOAD
-        # ----------------------------------------------------
-        
-        # Exibe o player de vídeo
-        st.video(final_video_path)
-        
-        # Oferece o arquivo para download
-        with open(final_video_path, "rb") as file:
+        if "oracao" in st.session_state.audios:
+            st.audio(st.session_state.audios["oracao"], format="audio/mp3")
             st.download_button(
-                label="⬇️ Baixar Vídeo MP4",
-                data=file,
-                file_name="video_automatizado.mp4",
-                mime="video/mp4"
+                "⬇️ Download Oração.mp3",
+                data=st.session_state.audios["oracao"],
+                file_name="oracao.mp3",
+                mime="audio/mp3",
+                key="dl_oracao"
             )
+        
+        st.markdown("**📸 Prompt:**")
+        st.code(roteiro.get("prompt_oração", ""))
 
-if __name__ == "__main__":
-    # Garante que o diretório temporário exista antes de rodar o main
-    os.makedirs(tempfile.gettempdir(), exist_ok=True)
-    main()
+        st.markdown("### 🖼️ THUMBNAIL")
+        st.code(roteiro.get("prompt_geral", ""))
+        st.markdown("---")
+
+# --------- TAB 2: PERSONAGENS ----------
+with tab2:
+    st.header("🎨 Banco de Personagens Bíblicos")
+
+    banco = st.session_state.personagens_biblicos.copy()
+
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        st.markdown("### 📋 Todos os personagens")
+        for i, (nome, desc) in enumerate(banco.items()):
+            with st.expander(f"✏️ {nome}"):
+                novo_nome = st.text_input(f"Nome {i}", value=nome, key=f"nome_{i}")
+                nova_desc = st.text_area(
+                    f"Descrição {i}", value=desc, height=100, key=f"desc_{i}"
+                )
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("💾 Salvar", key=f"salvar_{i}"):
+                        if novo_nome and nova_desc:
+                            if (
+                                novo_nome != nome
+                                and novo_nome
+                                in st.session_state.personagens_biblicos
+                            ):
+                                del st.session_state.personagens_biblicos[novo_nome]
+                            del st.session_state.personagens_biblicos[nome]
+                            st.session_state.personagens_biblicos[novo_nome] = nova_desc
+                            st.rerun()
+                with col_b:
+                    if st.button("🗑️ Apagar", key=f"apagar_{i}"):
+                        del st.session_state.personagens_biblicos[nome]
+                        st.rerun()
+
+    with col2:
+        st.markdown("### ➕ Novo Personagem")
+        novo_nome = st.text_input("Nome do personagem", key="novo_nome")
+        nova_desc = st.text_area(
+            "Descrição detalhada (aparência, roupas, idade, estilo)",
+            height=120,
+            key="nova_desc",
+        )
+        if st.button("➕ Adicionar") and novo_nome and nova_desc:
+            st.session_state.personagens_biblicos[novo_nome] = nova_desc
+            st.rerun()
+
+# --------- TAB 3: FÁBRICA DE VÍDEO ----------
+with tab3:
+    st.header("🎥 Fábrica de Vídeo")
+    st.info("Em desenvolvimento: montagem do vídeo completo com MoviePy.")
+
+# --------- TAB 4: HISTÓRICO ----------
+with tab4:
+    st.header("📊 Histórico")
+    st.info("Em breve.")
+
+st.markdown("---")
+st.markdown("Feito com ❤️ para evangelização - Studio Jhonata")
