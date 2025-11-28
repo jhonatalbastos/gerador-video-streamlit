@@ -41,14 +41,13 @@ def gerar_audio_gemini(texto: str) -> BytesIO | None:
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-tts",  # modelo TTS da Gemini [web:358]
+            model="gemini-2.5-flash-preview-tts",
             contents=texto,
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],
                 speech_config=types.SpeechConfig(
                     voice_config=types.VoiceConfig(
                         language_code="pt-BR",
-                        # opcional: name="pt-BR-Standard-A" etc, se quiser testar vozes [web:365]
                     )
                 ),
             ),
@@ -98,7 +97,7 @@ st.markdown("---")
 st.markdown("### 2. Player / Download")
 
 if st.session_state["audio_teste"]:
-    st.audio(st.session_state["audio_teste"], format="audio/mp3")  # [web:285]
+    st.audio(st.session_state["audio_teste"], format="audio/mp3")
     st.download_button(
         "⬇️ Download narração.mp3",
         data=st.session_state["audio_teste"],
