@@ -170,4 +170,139 @@ if "audio" not in st.session_state:
 if "imgs" not in st.session_state:
     st.session_state["imgs"] = []
 if "video" not in st.session_state:
-    st.session_state["video"] =_
+    st.session_state["video"] = None
+
+# =========================
+# UI: Texto / Narração
+# =========================
+st.header("1 — Texto / Narração (Gemini TTS)")
+texto = st.text_area("Cole o texto para narração:", height=200)
+
+col1, col2 = st.columns(2)
+with col1:
+    gerar_audio_btn = st.button("🔊 Gerar narração (Gemini TTS)")
+with col2:
+    limpar_audio_btn = st.button("🧹 Limpar áudio")
+
+if gerar_audio_btn:
+    if not texto.strip():
+        st.error("Digite o texto antes de gerar.")
+    else:
+        try:
+            with st.spinner("Gerando áudio via Gemini TTS..."):
+                # voz já escolhida: pt-BR-Wavenet-B
+                st.session_state["audio"] = gerar_audio_gemini(texto, voz="pt-BR-Wavenet-B")
+                st.success("Áudio gerado.")
+        except Exception as e:
+            st.error(f"Erro ao gerar áudio: {e}")
+
+if limpar_audio_btn:
+    st.session_state["audio"] = None
+    st.success("Áudio limpo.")
+
+if st.session_state["audio"]:
+    try:
+        st.audio(st.session_state["audio"], format="audio/mp3")
+        try:
+            st.session_state["audio"].seek(0)
+        except Exception:
+            pass
+        st.download_button("⬇️ Baixar narração.mp3", st.session_state["audio"], file_name="narracao.mp3", mime="audio/mp3")
+    except Exception as e:
+        st.error(f"Erro no player de áudio: {e}")
+
+st.markdown("---")
+
+# =========================
+# UI: Imagens
+# =========================
+st.header("2 — Gerar imagens (Gemini)")
+prompt_img = st.text_input("Prompt para imagens:", value="Cena do Evangelho do dia, composição cinematográfica, tons cálidos, estilo litúrgico")
+qtd = st.slider("Quantidade de imagens", 1, 8, 4)
+
+col3, col4 = st.columns(2)
+with col3:
+    gerar_imgs_btn = st.button("🖼️ Gerar imagens")
+with col4:
+    limpar_imgs_btn = st.button("🧹 Limpar imagens")
+
+if gerar_imgs_btn:
+    if not prompt_img.strip():
+        st.error("Insira um prompt válido.")
+    else:
+        try:
+            st.session_state["imgs"] = []
+            with st.spinner("Gerando imagens — isso pode demorar alguns segundos por imagem..."):
+                for i in range(qtd):
+                    img = gerar_imagem_gemini(prompt_img, size="1024x1024")
+                    st.session_state["imgs"].append(img)
+                st.success(f"{len(st.session_state['imgs'])} imagens geradas.")
+        except Exception as e:
+            st.error(f"Erro ao gerar imagens: {e}")
+
+if limpar_imgs_btn:
+    st.session_state["imgs"] = []
+    st.success("Imagens limpas.")
+
+if st.session_state["imgs"]:
+    st.subheader("Imagens geradas")
+    cols = st.columns(min(4, len(st.session_state["imgs"])))
+    for i, im in enumerate(st.session_state["imgs"]):
+        try:
+            im.seek(0)
+            cols[i % 4].image(im, caption=f"Imagem {i+1}")
+        except Exception as e:
+            st.write(f"Erro exibindo imagem {i+1}: {e}")
+
+st.markdown("---")
+
+# =========================
+# UI: Montar vídeo
+# =========================
+st.header("3 — Montar vídeo final")
+col5, col6 = st.columns(2)
+with col5:
+    montar_btn = st.button("🎬 Montar vídeo")
+with col6:
+    limpar_vid_btn = st.button("🧹 Limpar vídeo")
+
+if montar_btn:
+    if not st.session_state["audio"]:
+        st.error("Gere a narração antes de montar o vídeo.")
+    elif not st.session_state["imgs"]:
+        st.error("Gere as imagens antes de montar o vídeo.")
+    else:
+        try:
+            with st.spinner("Montando vídeo (MoviePy)..."):
+                # garantir seek
+                try:
+                    st.session_state["audio"].seek(0)
+                except Exception:
+                    pass
+                for b in st.session_state["imgs"]:
+                    try:
+                        b.seek(0)
+                    except Exception:
+                        pass
+                st.session_state["video"] = montar_video(st.session_state["imgs"], st.session_state["audio"])
+                st.success("Vídeo criado.")
+        except Exception as e:
+            st.error(f"Erro ao montar vídeo: {e}")
+
+if limpar_vid_btn:
+    st.session_state["video"] = None
+    st.success("Vídeo limpo.")
+
+if st.session_state["video"]:
+    try:
+        st.video(st.session_state["video"])
+        try:
+            st.session_state["video"].seek(0)
+        except Exception:
+            pass
+        st.download_button("⬇️ Baixar vídeo_final.mp4", st.session_state["video"], file_name="video_final.mp4", mime="video/mp4")
+    except Exception as e:
+        st.error(f"Erro exibindo/baixando vídeo: {e}")
+
+st.markdown("---")
+st.caption("Observação: geração de imagens e TTS requer GEMINI_API_KEY nas secrets. Renderização do vídeo usa ffmpeg (packages.txt).")
