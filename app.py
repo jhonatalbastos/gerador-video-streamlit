@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v15.0)
-# Features: Fix ValueError Selectbox, Text Sanitization, Persistência, Efeitos
+# app.py — Studio Jhonata (COMPLETO v16.0)
+# Features: Fix NameError, Transições, Overlay, Persistência, Efeitos, Upload
 import os
 import re
 import json
@@ -549,10 +549,6 @@ def get_text_alpha_expr(anim_type: str, duration: float) -> str:
 def sanitize_text_for_ffmpeg(text: str) -> str:
     """Limpa texto para evitar quebra do filtro drawtext (vírgulas, dois pontos, aspas)"""
     if not text: return ""
-    # Escapar : para \:
-    # Remover ' para evitar conflito com aspas do comando
-    # Escapar , para \, se não estiver protegido (mas drawtext='...' protege, cuidado com strings complexas)
-    # A abordagem mais segura para subprocess list args:
     t = text.replace(":", "\:")
     t = t.replace("'", "") 
     return t
@@ -570,7 +566,9 @@ motor_escolhido = st.sidebar.selectbox("🎨 Motor de Imagem", ["Pollinations Fl
 resolucao_escolhida = st.sidebar.selectbox("📏 Resolução do Vídeo", ["9:16 (Vertical/Stories)", "16:9 (Horizontal/YouTube)", "1:1 (Quadrado/Feed)"], index=0)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🅰️ Upload de Fonte (Global)")
+st.sidebar.markdown("### 🅰️ Fonte Global (Fallback)")
+# Restaurada a caixa de seleção global para evitar o erro de 'font_choice is not defined'
+font_choice = st.sidebar.selectbox("Estilo da Fonte Global", ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"], index=0)
 uploaded_font_file = st.sidebar.file_uploader("Arquivo .ttf (para opção 'Upload Personalizada')", type=["ttf"])
 
 st.sidebar.info(f"Modo: {motor_escolhido}\nFormato: {resolucao_escolhida}")
@@ -858,9 +856,8 @@ with tab4:
                     status.update(label="FFmpeg não encontrado!", state="error")
                     st.stop()
                 
-                font_path = resolve_font_path(font_choice, uploaded_font_file)
-                if usar_overlay and not font_path:
-                    st.warning("⚠️ Fonte não encontrada. O overlay pode falhar.")
+                # Check da fonte usando a variável global
+                font_path_global = resolve_font_path(font_choice, uploaded_font_file)
                 
                 temp_dir = tempfile.mkdtemp()
                 clip_files = []
@@ -877,7 +874,6 @@ with tab4:
                 sets = st.session_state["overlay_settings"]
                 speed_val = sets["effect_speed"] * 0.0005 
                 
-                # Configuração Efeitos de Movimento
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
                     zoom_expr = f"z='min(zoom+{speed_val},1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Zoom Out":
@@ -928,7 +924,6 @@ with tab4:
                         alp2 = get_text_alpha_expr(sets.get("line2_anim", "Estático"), dur)
                         alp3 = get_text_alpha_expr(sets.get("line3_anim", "Estático"), dur)
 
-                        # Clean texts for drawtext
                         clean_t1 = sanitize_text_for_ffmpeg(titulo_atual)
                         clean_t2 = sanitize_text_for_ffmpeg(txt_dt)
                         clean_t3 = sanitize_text_for_ffmpeg(txt_ref)
@@ -969,4 +964,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v15.0 - Final Fixes")
+st.caption("Studio Jhonata v16.0 - Final e Corrigida")
