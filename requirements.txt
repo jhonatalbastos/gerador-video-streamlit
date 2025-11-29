@@ -1,5 +1,7 @@
-gtts
+streamlit
 requests
+gtts
 Pillow
-imageio-ffmpeg
 numpy
+imageio-ffmpeg
+groq
