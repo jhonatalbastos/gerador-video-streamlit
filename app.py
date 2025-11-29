@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v6.0)
-# Features: Editor Full, Upload, Overlay Dinâmico, Fontes, Resolução Configurável (9:16 Padrão)
+# app.py — Studio Jhonata (COMPLETO v7.0)
+# Features: Ordem Ajustada (Hook->Leitura->Reflexão), Editor Full, Upload, Resoluções, Overlay
 import os
 import re
 import json
@@ -566,6 +566,7 @@ with tab1:
         roteiro = st.session_state["roteiro_gerado"]
         st.markdown("---")
         
+        # AJUSTE DE ORDEM VISUAL (Hook -> Leitura -> Reflexão -> Aplicação)
         col_esq, col_dir = st.columns(2)
         with col_esq:
             st.markdown("### 🎣 HOOK")
@@ -573,14 +574,14 @@ with tab1:
             st.caption("Prompt:")
             st.code(roteiro.get("prompt_hook", ""), language="text")
 
-            st.markdown("### 💭 REFLEXÃO")
-            st.markdown(roteiro.get("reflexão", ""))
-            st.code(roteiro.get("prompt_reflexão", ""), language="text")
-            
-        with col_dir:
             st.markdown("### 📖 LEITURA")
             st.markdown(st.session_state.get("leitura_montada", "")[:300] + "...")
             st.code(roteiro.get("prompt_leitura", ""), language="text")
+
+        with col_dir:
+            st.markdown("### 💭 REFLEXÃO")
+            st.markdown(roteiro.get("reflexão", ""))
+            st.code(roteiro.get("prompt_reflexão", ""), language="text")
             
             st.markdown("### 🌟 APLICAÇÃO")
             st.markdown(roteiro.get("aplicação", ""))
@@ -630,10 +631,11 @@ with tab3:
     
     roteiro = st.session_state["roteiro_gerado"]
     
+    # AJUSTE DE ORDEM DE PROCESSAMENTO (Hook -> Leitura -> Reflexão -> Aplicação -> Oração)
     blocos_config = [
         {"id": "hook", "label": "🎣 HOOK", "prompt_key": "prompt_hook", "text_key": "hook"},
-        {"id": "reflexão", "label": "💭 REFLEXÃO", "prompt_key": "prompt_reflexão", "text_key": "reflexão"},
         {"id": "leitura", "label": "📖 LEITURA", "prompt_key": "prompt_leitura", "text_key": "leitura_montada"}, 
+        {"id": "reflexão", "label": "💭 REFLEXÃO", "prompt_key": "prompt_reflexão", "text_key": "reflexão"},
         {"id": "aplicação", "label": "🌟 APLICAÇÃO", "prompt_key": "prompt_aplicacao", "text_key": "aplicação"},
         {"id": "oração", "label": "🙏 ORAÇÃO", "prompt_key": "prompt_oração", "text_key": "oração"},
         {"id": "thumbnail", "label": "🖼️ THUMBNAIL", "prompt_key": "prompt_geral", "text_key": None}
@@ -780,9 +782,6 @@ with tab3:
                         y2 = 90
                         y3 = 130
                         
-                        # Se for horizontal (720p), texto pode ser menor ou posicionado diferente?
-                        # Manter padrão centralizado X, Y fixo topo funciona bem pra vertical e horizontal.
-                        
                         vf_filters.append(f"drawtext=fontfile='{font_path}':text='{titulo_atual}':fontcolor=white:fontsize=40:x=(w-text_w)/2:y={y1}:shadowcolor=black:shadowx=2:shadowy=2")
                         vf_filters.append(f"drawtext=fontfile='{font_path}':text='{txt_dt}':fontcolor=white:fontsize=28:x=(w-text_w)/2:y={y2}:shadowcolor=black:shadowx=2:shadowy=2")
                         vf_filters.append(f"drawtext=fontfile='{font_path}':text='{txt_ref}':fontcolor=white:fontsize=24:x=(w-text_w)/2:y={y3}:shadowcolor=black:shadowx=2:shadowy=2")
@@ -831,4 +830,4 @@ with tab4:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v6.0 - Resoluções + Overlay")
+st.caption("Studio Jhonata v7.0 - Ordem Reajustada")
