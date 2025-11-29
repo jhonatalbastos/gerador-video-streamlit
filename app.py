@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v13.0)
-# Features: Persistência de Dados (Salvar Configs), Editor Full, Upload, Resoluções, Efeitos
+# app.py — Studio Jhonata (COMPLETO v13.1)
+# Features: Fix de Erro ValueError, Persistência, Editor Full, Upload, Resoluções, Efeitos
 import os
 import re
 import json
@@ -43,14 +43,13 @@ def load_config():
         "line2_y": 90, "line2_size": 28, "line2_font": "Padrão (Sans)",
         "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)",
         "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
-        "trans_type": "Fade (Padrão)", "trans_dur": 0.5
+        "trans_type": "Fade (Escurecer)", "trans_dur": 0.5
     }
     
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
                 saved = json.load(f)
-                # Mesclar com default para garantir que chaves novas não quebrem configs antigas
                 default_settings.update(saved)
                 return default_settings
         except Exception as e:
@@ -669,28 +668,42 @@ with tab3:
     
     with col_settings:
         with st.expander("✨ Efeitos Visuais (Movimento)", expanded=True):
-            ov_sets["effect_type"] = st.selectbox("Tipo de Movimento", ["Zoom In (Ken Burns)", "Zoom Out", "Panorâmica Esquerda", "Panorâmica Direita", "Estático (Sem movimento)"], index=["Zoom In (Ken Burns)", "Zoom Out", "Panorâmica Esquerda", "Panorâmica Direita", "Estático (Sem movimento)"].index(ov_sets.get("effect_type", "Zoom In (Ken Burns)")))
+            # Safe index logic
+            effect_opts = ["Zoom In (Ken Burns)", "Zoom Out", "Panorâmica Esquerda", "Panorâmica Direita", "Estático (Sem movimento)"]
+            curr_eff = ov_sets.get("effect_type", effect_opts[0])
+            if curr_eff not in effect_opts: curr_eff = effect_opts[0]
+            ov_sets["effect_type"] = st.selectbox("Tipo de Movimento", effect_opts, index=effect_opts.index(curr_eff))
             ov_sets["effect_speed"] = st.slider("Intensidade do Movimento", 1, 10, ov_sets.get("effect_speed", 3), help="1 = Muito Lento, 10 = Rápido")
 
         with st.expander("🎬 Transições", expanded=True):
-            ov_sets["trans_type"] = st.selectbox("Tipo de Transição", ["Fade (Escurecer)", "Corte Seco (Nenhuma)"], index=["Fade (Escurecer)", "Corte Seco (Nenhuma)"].index(ov_sets.get("trans_type", "Fade (Escurecer)")))
+            # Safe index logic
+            trans_opts = ["Fade (Escurecer)", "Corte Seco (Nenhuma)"]
+            curr_trans = ov_sets.get("trans_type", trans_opts[0])
+            if curr_trans not in trans_opts: curr_trans = trans_opts[0]
+            ov_sets["trans_type"] = st.selectbox("Tipo de Transição", trans_opts, index=trans_opts.index(curr_trans))
             ov_sets["trans_dur"] = st.slider("Duração da Transição (s)", 0.1, 2.0, ov_sets.get("trans_dur", 0.5), 0.1)
 
         with st.expander("📝 Texto Overlay (Cabeçalho)", expanded=False):
             st.markdown("**Linha 1: Título**")
-            ov_sets["line1_font"] = st.selectbox("Fonte L1", font_options, index=font_options.index(ov_sets["line1_font"]), key="f1")
-            ov_sets["line1_size"] = st.slider("Tamanho L1", 10, 150, ov_sets["line1_size"], key="s1")
-            ov_sets["line1_y"] = st.slider("Posição Y L1", 0, 800, ov_sets["line1_y"], key="y1")
+            curr_f1 = ov_sets.get("line1_font", font_options[0])
+            if curr_f1 not in font_options: curr_f1 = font_options[0]
+            ov_sets["line1_font"] = st.selectbox("Fonte L1", font_options, index=font_options.index(curr_f1), key="f1")
+            ov_sets["line1_size"] = st.slider("Tamanho L1", 10, 150, ov_sets.get("line1_size", 40), key="s1")
+            ov_sets["line1_y"] = st.slider("Posição Y L1", 0, 800, ov_sets.get("line1_y", 40), key="y1")
             st.markdown("---")
             st.markdown("**Linha 2: Data**")
-            ov_sets["line2_font"] = st.selectbox("Fonte L2", font_options, index=font_options.index(ov_sets["line2_font"]), key="f2")
-            ov_sets["line2_size"] = st.slider("Tamanho L2", 10, 150, ov_sets["line2_size"], key="s2")
-            ov_sets["line2_y"] = st.slider("Posição Y L2", 0, 800, ov_sets["line2_y"], key="y2")
+            curr_f2 = ov_sets.get("line2_font", font_options[0])
+            if curr_f2 not in font_options: curr_f2 = font_options[0]
+            ov_sets["line2_font"] = st.selectbox("Fonte L2", font_options, index=font_options.index(curr_f2), key="f2")
+            ov_sets["line2_size"] = st.slider("Tamanho L2", 10, 150, ov_sets.get("line2_size", 28), key="s2")
+            ov_sets["line2_y"] = st.slider("Posição Y L2", 0, 800, ov_sets.get("line2_y", 90), key="y2")
             st.markdown("---")
             st.markdown("**Linha 3: Referência**")
-            ov_sets["line3_font"] = st.selectbox("Fonte L3", font_options, index=font_options.index(ov_sets["line3_font"]), key="f3")
-            ov_sets["line3_size"] = st.slider("Tamanho L3", 10, 150, ov_sets["line3_size"], key="s3")
-            ov_sets["line3_y"] = st.slider("Posição Y L3", 0, 800, ov_sets["line3_y"], key="y3")
+            curr_f3 = ov_sets.get("line3_font", font_options[0])
+            if curr_f3 not in font_options: curr_f3 = font_options[0]
+            ov_sets["line3_font"] = st.selectbox("Fonte L3", font_options, index=font_options.index(curr_f3), key="f3")
+            ov_sets["line3_size"] = st.slider("Tamanho L3", 10, 150, ov_sets.get("line3_size", 24), key="s3")
+            ov_sets["line3_y"] = st.slider("Posição Y L3", 0, 800, ov_sets.get("line3_y", 130), key="y3")
 
         st.session_state["overlay_settings"] = ov_sets
         if st.button("💾 Salvar Configurações (Persistente)"):
@@ -909,4 +922,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v13.0 - Persistência Total + Efeitos")
+st.caption("Studio Jhonata v13.1 - Config Safe Load")
