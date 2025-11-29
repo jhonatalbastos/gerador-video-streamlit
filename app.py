@@ -1,435 +1,518 @@
-# app.py — Studio Jhonata (COMPLETO: restaura funções originais + mantém adições)
-# Observação: este arquivo contém:
-#  - o código original que você me enviou (gTTS + UI simples)
-#  - as novas funções (Gemini TTS, geração de imagens via Gemini, montagem de vídeo com MoviePy)
-#  - ajustes para Streamlit Cloud (ffmpeg path)
-# Substitua o app.py atual por este arquivo inteiro.
-
-import os
-import tempfile
-import time
-import traceback
-from io import BytesIO
-import base64
-from typing import List
-
-import requests
-from PIL import Image
 import streamlit as st
+from datetime import date
+import re
+import requests
+from groq import Groq
+import json
 
-# Forçar moviepy/imageio a usar ffmpeg do sistema (Streamlit Cloud)
-os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
-
-# MoviePy import (coloque moviepy no requirements.txt)
-try:
-    from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
-except Exception:
-    # let the UI still load and show proper error if moviepy missing
-    ImageClip = None
-    AudioFileClip = None
-    concatenate_videoclips = None
-
-# ============================================
+# =========================
 # Configuração da página
-# ============================================
+# =========================
 st.set_page_config(
-    page_title="Studio Jhonata - Teste de Narração",
-    layout="centered",
-)
-st.title("🎙️ Studio Jhonata - Teste de Narração com gTTS (e extras integrados)")
-st.markdown(
-    "Este app gera narração usando **gTTS (Google Text-to-Speech)** em português do Brasil. "
-    "Também inclui opções adicionais: Gemini TTS, geração de imagens e montagem de vídeo."
+    page_title="Studio Jhonata",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# ============================================
-# GEMINI API KEY (para quando quiser usar)
-# ============================================
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", None)
-if not GEMINI_API_KEY:
-    st.info("Dica: configure GEMINI_API_KEY nas Secrets para usar Gemini TTS / imagens (opcional).")
+# =========================
+# Groq - cliente lazy
+# =========================
+_client = None
 
-# ============================================
-# -------------------
-# Função original: gerar_audio_gtts
-# -------------------
-# Mantive a função original idêntica ao que você me enviou no início.
-# Ela usa gTTS para produzir MP3 em memória.
-# ============================================
-def gerar_audio_gtts(texto: str) -> BytesIO | None:
-    """Gera áudio MP3 em memória usando gTTS (pt-BR)."""
-    if not texto or not texto.strip():
+
+def inicializar_groq():
+    global _client
+    if _client is None:
+        if "GROQ_API_KEY" not in st.secrets:
+            st.error("❌ Configure GROQ_API_KEY em Settings → Secrets no Streamlit Cloud.")
+            st.stop()
+        _client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+    return _client
+
+
+# =========================
+# Inicializar banco de personagens
+# =========================
+@st.cache_data
+def inicializar_personagens():
+    return {
+        "Jesus": (
+            "homem de 33 anos, pele morena clara, cabelo castanho ondulado na altura dos ombros, "
+            "barba bem aparada, olhos castanhos penetrantes e serenos, túnica branca tradicional "
+            "com detalhes vermelhos, manto azul, expressão de autoridade amorosa, estilo renascentista clássico"
+        ),
+        "São Pedro": (
+            "homem robusto de 50 anos, pele bronzeada, cabelo curto grisalho, barba espessa, olhos "
+            "determinados, túnica de pescador bege com remendos, mãos calejadas, postura forte, estilo realista bíblico"
+        ),
+        "São João": (
+            "jovem de 25 anos, magro, cabelo castanho longo liso, barba rala, olhos expressivos, túnica "
+            "branca limpa, expressão contemplativa, estilo renascentista"
+        ),
+    }
+
+
+# =========================
+# Limpeza do texto bíblico
+# =========================
+def limpar_texto_evangelho(texto: str) -> str:
+    if not texto:
+        return ""
+    texto_limpo = texto.replace("
+", " ").strip()
+    texto_limpo = re.sub(r"\b(d{1,3})(?=[A-Za-zÁ-Úá-ú])", "", texto_limpo)
+    texto_limpo = re.sub(r"s{2,}", " ", texto_limpo)
+    return texto_limpo.strip()
+
+
+# =========================
+# Extrair referência bíblica
+# =========================
+def extrair_referencia_biblica(titulo: str):
+    if not titulo:
         return None
-    mp3_fp = BytesIO()
-    try:
-        from gtts import gTTS
-        tts = gTTS(text=texto, lang="pt", slow=False)  # pt-BR
-        tts.write_to_fp(mp3_fp)
-        mp3_fp.seek(0)
-        return mp3_fp
-    except Exception as e:
-        # rethrow to be handled by UI
-        raise RuntimeError(f"Erro gTTS: {e}")
+    m = re.search(
+        r"segundos+Sãos+([A-Za-zÁ-Úá-ú]+)s+(d+),s*([d-–]+)",
+        titulo,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return None
+    evangelista = m.group(1).strip()
+    capitulo = m.group(2).strip()
+    versiculos_raw = m.group(3).strip()
+    versiculos = versiculos_raw.replace("-", " a ").replace("–", " a ")
+    return {"evangelista": evangelista, "capitulo": capitulo, "versiculos": versiculos}
 
-# ============================================
-# -------------------
-# Funções novas: Gemini TTS, imagem, vídeo
-# -------------------
-# Essas funções foram adicionadas para oferecer TTS neural e imagens.
-# Use GEMINI_API_KEY configurada nas secrets.
-# ============================================
 
-def post_json_with_retries(url: str, payload: dict, timeout: int = 120, retries: int = 2, backoff: float = 1.0):
-    last_exc = None
-    for attempt in range(retries + 1):
-        try:
-            r = requests.post(url, json=payload, timeout=timeout)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            last_exc = e
-            if attempt < retries:
-                time.sleep(backoff * (attempt + 1))
-            else:
-                raise last_exc
+def formatar_referencia_curta(ref_biblica):
+    if not ref_biblica:
+        return ""
+    return f"{ref_biblica['evangelista']}, Cap. {ref_biblica['capitulo']}, {ref_biblica['versiculos']}"
 
-def gerar_audio_gemini(texto: str, voz: str = "pt-BR-Wavenet-B") -> BytesIO:
-    """
-    Gera áudio MP3 via endpoint generateContent do Generative Language (Gemini).
-    Retorna BytesIO com MP3.
-    """
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY ausente.")
-    if not texto or not texto.strip():
-        raise ValueError("Texto vazio.")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+# =========================
+# ANÁLISE DE PERSONAGENS + BANCO
+# =========================
+def analisar_personagens_groq(texto_evangelho: str, banco_personagens: dict):
+    client = inicializar_groq()
 
-    prompt_text = f"(tts|voice:{voz})\nPor favor, narre o texto abaixo em português do Brasil com entonação natural:\n{texto}"
+    system_prompt = (
+        "Você é especialista em análise bíblica.
+"
+        "Analise o texto e identifique TODOS os personagens bíblicos mencionados.
 
-    payload = {
-        "contents": [
-            {"role": "user", "parts": [{"text": prompt_text}]}
-        ],
-        "generationConfig": {"responseMimeType": "audio/mpeg"}
-    }
+"
+        "Formato EXATO da resposta:
+"
+        "PERSONAGENS: nome1; nome2; nome3
+"
+        "NOVOS: NomeNovo|descrição_detalhada_aparência_física_roupas_idade_estilo (apenas se não existir no banco)
 
-    data = post_json_with_retries(url, payload, timeout=120, retries=2, backoff=1.5)
+"
+        f"BANCO EXISTENTE: {'; '.join(banco_personagens.keys())}
+
+"
+        "Exemplo:
+"
+        "PERSONAGENS: Jesus; Pedro; fariseus
+"
+        "NOVOS: Mulher Samaritana|mulher de 35 anos, pele morena, véu colorido, jarro d'água, expressão curiosa, túnica tradicional"
+    )
 
     try:
-        b64 = data["candidates"][0]["content"]["parts"][0]["inline_data"]["data"]
-    except Exception as e:
-        raise RuntimeError(f"Resposta inesperada do Gemini TTS: {data}") from e
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"TEXTO: {texto_evangelho[:1500]}"},
+            ],
+            temperature=0.3,
+            max_tokens=400,
+        )
 
-    audio_bytes = base64.b64decode(b64)
-    bio = BytesIO(audio_bytes)
-    bio.seek(0)
-    return bio
+        resultado = resp.choices[0].message.content
+        personagens_detectados = {}
 
-def gerar_imagem_gemini(prompt: str, size: str = "1024x1024") -> BytesIO:
-    """
-    Gera imagem PNG via Gemini generateContent. Retorna BytesIO com PNG.
-    """
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY ausente.")
+        m = re.search(r"PERSONAGENS:s*(.+)", resultado)
+        if m:
+            nomes = [n.strip() for n in m.group(1).split(";") if n.strip()]
+            for nome in nomes:
+                if nome in banco_personagens:
+                    personagens_detectados[nome] = banco_personagens[nome]
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        m = re.search(r"NOVOS:s*(.+)", resultado)
+        if m:
+            novos = m.group(1).strip()
+            for bloco in novos.split(","):
+                if "|" in bloco:
+                    nome, desc = bloco.split("|", 1)
+                    nome = nome.strip()
+                    desc = desc.strip()
+                    if not nome:
+                        continue
+                    personagens_detectados[nome] = desc
+                    banco_personagens[nome] = desc
 
-    payload = {
-        "contents": [
-            {"role": "user", "parts": [{"text": f"Create a {size} cinematic liturgical image with tasteful composition and soft lighting: {prompt}"}]}
-        ],
-        "generationConfig": {"responseMimeType": "image/png"}
-    }
+        return personagens_detectados
+    except Exception:
+        return {}
 
-    data = post_json_with_retries(url, payload, timeout=120, retries=2, backoff=1.2)
+
+# =========================
+# APIs Liturgia
+# =========================
+def buscar_liturgia_api1(data_str: str):
+    url = f"https://api-liturgia-diaria.vercel.app/?date={data_str}"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        dados = resp.json()
+        today = dados.get("today", {})
+        readings = today.get("readings", {})
+        gospel = readings.get("gospel")
+        if not gospel:
+            return None
+        referencia_liturgica = today.get("entry_title", "").strip() or "Evangelho do dia"
+        titulo = (
+            gospel.get("head_title", "")
+            or gospel.get("title", "")
+            or "Evangelho de Jesus Cristo"
+        ).strip()
+        texto = gospel.get("text", "").strip()
+        if not texto:
+            return None
+        texto_limpo = limpar_texto_evangelho(texto)
+        ref_biblica = extrair_referencia_biblica(titulo)
+        return {
+            "fonte": "api-liturgia-diaria.vercel.app",
+            "titulo": titulo,
+            "referencia_liturgica": referencia_liturgica,
+            "texto": texto_limpo,
+            "ref_biblica": ref_biblica,
+        }
+    except Exception:
+        return None
+
+
+def buscar_liturgia_api2(data_str: str):
+    url = f"https://liturgia.up.railway.app/v2/{data_str}"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        dados = resp.json()
+        lit = dados.get("liturgia", {})
+        ev = lit.get("evangelho") or lit.get("evangelho_do_dia") or {}
+        if not ev:
+            return None
+        texto = ev.get("texto", "") or ev.get("conteudo", "")
+        if not texto:
+            return None
+        texto_limpo = limpar_texto_evangelho(texto)
+        return {
+            "fonte": "liturgia.up.railway.app",
+            "titulo": "Evangelho do dia",
+            "referencia_liturgica": "Evangelho do dia",
+            "texto": texto_limpo,
+            "ref_biblica": None,
+        }
+    except Exception:
+        return None
+
+
+def obter_evangelho_com_fallback(data_str: str):
+    ev = buscar_liturgia_api1(data_str)
+    if ev:
+        st.info("📡 Usando api-liturgia-diaria.vercel.app")
+        return ev
+    ev = buscar_liturgia_api2(data_str)
+    if ev:
+        st.info("📡 Usando liturgia.up.railway.app")
+        return ev
+    st.error("❌ Não foi possível obter o Evangelho")
+    return None
+
+
+# =========================
+# Roteiro + Prompts Visuais (parse simples, campo a campo)
+# =========================
+def extrair_bloco(rotulo: str, texto: str) -> str:
+    padrao = rf"{rotulo}:s*(.*?)(?=
+[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:s*|
+PROMPT_|$)"
+    m = re.search(padrao, texto, re.DOTALL | re.IGNORECASE)
+    return m.group(1).strip() if m else ""
+
+
+def extrair_prompt(rotulo: str, texto: str) -> str:
+    padrao = rf"{rotulo}:s*(.*?)(?=
+[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:s*|
+PROMPT_|$)"
+    m = re.search(padrao, texto, re.DOTALL | re.IGNORECASE)
+    return m.group(1).strip() if m else ""
+
+
+def gerar_roteiro_com_prompts_groq(
+    texto_evangelho: str, referencia_liturgica: str, personagens: dict
+):
+    client = inicializar_groq()
+    texto_limpo = limpar_texto_evangelho(texto_evangelho)
+
+    personagens_str = json.dumps(personagens, ensure_ascii=False)
+
+    system_prompt = f"""Crie roteiro + 6 prompts visuais CATÓLICOS para vídeo devocional.
+
+PERSONAGENS FIXOS: {personagens_str}
+
+IMPORTANTE:
+- 4 PARTES EXATAS: HOOK, REFLEXÃO, APLICAÇÃO, ORAÇÃO
+- PROMPT_LEITURA separado (momento da leitura do Evangelho, mais calmo e reverente)
+- PROMPT_GERAL para thumbnail
+- USE SEMPRE as descrições exatas dos personagens
+- Estilo: artístico renascentista católico, luz suave, cores quentes
+
+Formato EXATO:
+
+HOOK: [texto 5-8s]
+PROMPT_HOOK: [prompt visual com personagens fixos]
+
+REFLEXÃO: [texto 20-25s]
+PROMPT_REFLEXÃO: [prompt visual com personagens fixos]
+
+APLICAÇÃO: [texto 20-25s]
+PROMPT_APLICACAO: [prompt visual com personagens fixos]
+
+ORAÇÃO: [texto 20-25s]
+PROMPT_ORACAO: [prompt visual com personagens fixos]
+
+PROMPT_LEITURA: [prompt visual específico para a leitura do Evangelho, mais calmo e reverente]
+
+PROMPT_GERAL: [prompt para thumbnail/capa]"""
 
     try:
-        b64 = data["candidates"][0]["content"]["parts"][0]["inline_data"]["data"]
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": f"Evangelho: {referencia_liturgica}
+
+{texto_limpo[:2000]}",
+                },
+            ],
+            temperature=0.7,
+            max_tokens=1200,
+        )
+
+        texto_gerado = resp.choices[0].message.content
+
+        partes: dict[str, str] = {}
+
+        # Textos
+        partes["hook"] = extrair_bloco("HOOK", texto_gerado)
+        partes["reflexão"] = extrair_bloco("REFLEXÃO", texto_gerado)
+        partes["aplicação"] = extrair_bloco("APLICAÇÃO", texto_gerado)
+        partes["oração"] = extrair_bloco("ORAÇÃO", texto_gerado)
+
+        # Prompts
+        partes["prompt_hook"] = extrair_prompt("PROMPT_HOOK", texto_gerado)
+        partes["prompt_reflexão"] = extrair_prompt("PROMPT_REFLEXÃO", texto_gerado)
+        partes["prompt_aplicacao"] = extrair_prompt("PROMPT_APLICACAO", texto_gerado)
+        partes["prompt_oração"] = extrair_prompt("PROMPT_ORACAO", texto_gerado)
+        partes["prompt_leitura"] = extrair_prompt("PROMPT_LEITURA", texto_gerado)
+
+        m_geral = re.search(
+            r"PROMPT_GERAL:s*(.+)", texto_gerado, re.DOTALL | re.IGNORECASE
+        )
+        partes["prompt_geral"] = m_geral.group(1).strip() if m_geral else ""
+
+        return partes
     except Exception as e:
-        raise RuntimeError(f"Resposta inesperada do Gemini Image: {data}") from e
+        st.error(f"❌ Erro Groq: {e}")
+        return None
 
-    img_bytes = base64.b64decode(b64)
-    bio = BytesIO(img_bytes)
-    bio.seek(0)
-    return bio
 
-def montar_video(lista_imagens: List[BytesIO], audio_mp3: BytesIO, fps: int = 24) -> BytesIO:
-    """
-    Monta vídeo MP4 com imagens e áudio. Retorna BytesIO com MP4.
-    """
-    if ImageClip is None or AudioFileClip is None or concatenate_videoclips is None:
-        raise RuntimeError("moviepy não está instalado corretamente.")
-    if not lista_imagens or not audio_mp3:
-        raise ValueError("Lista de imagens e áudio são necessários")
+def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
+    if ref_biblica:
+        abertura = (
+            f"Proclamação do Evangelho de Jesus Cristo, segundo São "
+            f"{ref_biblica['evangelista']}, "
+            f"Capítulo {ref_biblica['capitulo']}, "
+            f"versículos {ref_biblica['versiculos']}. "
+            "Glória a vós, Senhor!"
+        )
+    else:
+        abertura = (
+            "Proclamação do Evangelho de Jesus Cristo, segundo São Lucas. "
+            "Glória a vós, Senhor!"
+        )
+    fechamento = "Palavra da Salvação. Glória a vós, Senhor!"
+    return f"{abertura} {texto_evangelho} {fechamento}"
 
-    temp_dir = tempfile.mkdtemp()
-    audio_path = os.path.join(temp_dir, "audio.mp3")
-    audio_mp3.seek(0)
-    with open(audio_path, "wb") as f:
-        f.write(audio_mp3.read())
 
-    image_paths = []
-    for i, bio in enumerate(lista_imagens):
-        img_path = os.path.join(temp_dir, f"img_{i}.png")
-        bio.seek(0)
-        with open(img_path, "wb") as f:
-            f.write(bio.read())
-        image_paths.append(img_path)
+# =========================
+# Interface Principal
+# =========================
+st.title("✨ Studio Jhonata - Automação Litúrgica")
+st.markdown("---")
 
-    audio_clip = AudioFileClip(audio_path)
-    duracao_audio = audio_clip.duration or max(1.0, len(image_paths))
-    dur_por_imagem = duracao_audio / max(1, len(image_paths))
+st.sidebar.title("⚙️ Configurações")
+st.sidebar.info("1️⃣ api-liturgia-diaria
+2️⃣ liturgia.railway
+3️⃣ Groq fallback")
+st.sidebar.success("✅ Groq ativo")
 
-    clips = []
-    for p in image_paths:
-        clip = ImageClip(p).set_duration(dur_por_imagem)
-        clips.append(clip)
+if "personagens_biblicos" not in st.session_state:
+    st.session_state.personagens_biblicos = inicializar_personagens()
 
-    video = concatenate_videoclips(clips, method="compose")
-    video = video.set_audio(audio_clip)
-
-    saída_path = os.path.join(temp_dir, "final.mp4")
-    video.write_videofile(saída_path, fps=fps, codec="libx264", audio_codec="aac", verbose=False, logger=None)
-
-    out_bio = BytesIO()
-    with open(saída_path, "rb") as f:
-        out_bio.write(f.read())
-    out_bio.seek(0)
-    return out_bio
-
-# ============================================
-# Session state: preserva as várias funções/estados
-# ============================================
-if "audio_gtts" not in st.session_state:
-    st.session_state["audio_gtts"] = None
-if "audio_gemini" not in st.session_state:
-    st.session_state["audio_gemini"] = None
-if "imagens" not in st.session_state:
-    st.session_state["imagens"] = []            # original images (if any)
-if "imgs_gemini" not in st.session_state:
-    st.session_state["imgs_gemini"] = []        # images generated by Gemini
-if "video" not in st.session_state:
-    st.session_state["video"] = None            # original video slot (if used)
-if "video_gemini" not in st.session_state:
-    st.session_state["video_gemini"] = None     # video from Gemini images + audio
-
-# ============================================
-# === UI: Parte ORIGINAL (gTTS) - restaurada ===
-# ============================================
-st.markdown("### 1. Texto para narração (ORIGINAL gTTS)")
-texto_original = st.text_area(
-    "Cole aqui o trecho do roteiro (HOOK, Leitura, Reflexão, Aplicação ou Oração).",
-    height=200,
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["📖 Gerar Roteiro", "🎨 Personagens", "🎥 Fábrica Vídeo", "📊 Histórico"]
 )
 
-col1, col2 = st.columns(2)
-with col1:
-    gerar_gtts_btn = st.button("🎧 Gerar narração com gTTS (original)", key="gerar_gtts")
-with col2:
-    limpar_gtts_btn = st.button("🧹 Limpar áudio gTTS", key="limpar_gtts")
+# --------- TAB 1: ROTEIRO ----------
+with tab1:
+    st.header("🚀 Gerador de Roteiro + Imagens")
 
-if gerar_gtts_btn:
-    with st.spinner("Gerando narração com gTTS..."):
-        try:
-            audio = gerar_audio_gtts(texto_original)
-            if audio:
-                st.session_state["audio_gtts"] = audio
-                st.success("✅ Áudio (gTTS) gerado com sucesso.")
-            else:
-                st.error("Texto vazio — nada foi gerado (gTTS).")
-        except Exception as e:
-            st.error(f"Erro ao gerar áudio gTTS: {e}")
-            st.error(traceback.format_exc())
-
-if limpar_gtts_btn:
-    st.session_state["audio_gtts"] = None
-    st.success("Áudio gTTS removido.")
-
-st.markdown("---")
-st.markdown("### 2. Player / Download (ORIGINAL gTTS)")
-if st.session_state["audio_gtts"]:
-    try:
-        st.audio(st.session_state["audio_gtts"], format="audio/mp3")
-        try:
-            st.session_state["audio_gtts"].seek(0)
-        except Exception:
-            pass
-        st.download_button(
-            "⬇️ Download narração_gtts.mp3",
-            data=st.session_state["audio_gtts"],
-            file_name="narracao_gtts.mp3",
-            mime="audio/mp3",
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        data_selecionada = st.date_input(
+            "📅 Data da liturgia:", value=date.today(), min_value=date(2023, 1, 1)
         )
-    except Exception as e:
-        st.error(f"Erro exibindo player de áudio gTTS: {e}")
-else:
-    st.info("Nenhum áudio gTTS gerado ainda. Gere um áudio para ver o player aqui.")
+    with col2:
+        st.info("Status: ✅ pronto para gerar")
 
-# ============================================
-# === UI: Parte NOVA (Gemini TTS + Imagens + Vídeo) ===
-# ============================================
-st.markdown("---")
-st.markdown("## 3. Gemini TTS (opcional) — voz neural")
-st.markdown("Use GEMINI_API_KEY nas Streamlit Secrets para essa opção (opcional).")
+    if st.button("🚀 Gerar Roteiro Completo", type="primary"):
+        data_str = data_selecionada.strftime("%Y-%m-%d")
 
-texto_gemini = st.text_area("Texto para Gemini TTS (ou cole mesmo texto de cima)", height=150)
-colg1, colg2 = st.columns(2)
-with colg1:
-    gerar_gemini_btn = st.button("🔊 Gerar narração (Gemini TTS)", key="gerar_gemini")
-with colg2:
-    limpar_gemini_btn = st.button("🧹 Limpar narração Gemini", key="limpar_gemini")
+        with st.spinner("🔍 Buscando Evangelho..."):
+            liturgia = obter_evangelho_com_fallback(data_str)
+        if not liturgia:
+            st.stop()
 
-if gerar_gemini_btn:
-    if not GEMINI_API_KEY:
-        st.error("GEMINI_API_KEY não configurada. Configure em Settings → Secrets.")
-    elif not texto_gemini or not texto_gemini.strip():
-        st.error("Digite o texto para Gemini TTS.")
-    else:
-        try:
-            with st.spinner("Gerando áudio com Gemini TTS..."):
-                st.session_state["audio_gemini"] = gerar_audio_gemini(texto_gemini, voz="pt-BR-Wavenet-B")
-                st.success("Áudio Gemini gerado.")
-        except Exception as e:
-            st.error(f"Erro Gemini TTS: {e}")
-            st.error(traceback.format_exc())
-
-if limpar_gemini_btn:
-    st.session_state["audio_gemini"] = None
-    st.success("Narração Gemini limpa.")
-
-st.markdown("---")
-st.subheader("Player / Download (Gemini TTS)")
-if st.session_state["audio_gemini"]:
-    try:
-        st.audio(st.session_state["audio_gemini"], format="audio/mp3")
-        try:
-            st.session_state["audio_gemini"].seek(0)
-        except Exception:
-            pass
-        st.download_button(
-            "⬇️ Download narração_gemini.mp3",
-            data=st.session_state["audio_gemini"],
-            file_name="narracao_gemini.mp3",
-            mime="audio/mp3",
+        st.success(
+            f"✅ Evangelho: {liturgia['referencia_liturgica']} ({liturgia['fonte']})"
         )
-    except Exception as e:
-        st.error(f"Erro exibindo player Gemini: {e}")
 
-# ============================================
-# === UI: Gerar imagens com Gemini (nova) ===
-# ============================================
+        with st.spinner("🤖 Analisando personagens..."):
+            personagens_detectados = analisar_personagens_groq(
+                liturgia["texto"], st.session_state.personagens_biblicos
+            )
+
+        with st.spinner("✨ Gerando roteiro e prompts visuais..."):
+            roteiro = gerar_roteiro_com_prompts_groq(
+                liturgia["texto"],
+                liturgia["referencia_liturgica"],
+                {**st.session_state.personagens_biblicos, **personagens_detectados},
+            )
+
+        if not roteiro:
+            st.stop()
+
+        leitura_montada = montar_leitura_com_formula(
+            liturgia["texto"], liturgia.get("ref_biblica")
+        )
+        ref_curta = formatar_referencia_curta(liturgia.get("ref_biblica"))
+
+        st.markdown("## 📖 Roteiro pronto para gravar")
+        if ref_curta:
+            st.markdown(f"**Leitura:** {ref_curta}")
+        st.markdown("---")
+
+        if personagens_detectados:
+            st.markdown("### 👥 Personagens nesta leitura")
+            for nome, desc in personagens_detectados.items():
+                st.markdown(f"**{nome}:** {desc}")
+            st.markdown("---")
+
+        col_esq, col_dir = st.columns(2)
+
+        with col_esq:
+            st.markdown("### 🎣 HOOK")
+            st.markdown(roteiro.get("hook", ""))
+            st.markdown("**📸 Prompt:**")
+            st.code(roteiro.get("prompt_hook", ""))
+
+            st.markdown("### 💭 REFLEXÃO")
+            st.markdown(roteiro.get("reflexão", ""))
+            st.markdown("**📸 Prompt:**")
+            st.code(roteiro.get("prompt_reflexão", ""))
+
+        with col_dir:
+            st.markdown("### 📖 LEITURA")
+            st.markdown(leitura_montada)
+            st.markdown("**📸 Prompt:**")
+            st.code(roteiro.get("prompt_leitura", ""))
+
+            st.markdown("### 🌟 APLICAÇÃO")
+            st.markdown(roteiro.get("aplicação", ""))
+            st.markdown("**📸 Prompt:**")
+            st.code(roteiro.get("prompt_aplicacao", ""))
+
+        st.markdown("### 🙏 ORAÇÃO")
+        st.markdown(roteiro.get("oração", ""))
+        st.markdown("**📸 Prompt:**")
+        st.code(roteiro.get("prompt_oração", ""))
+
+        st.markdown("### 🖼️ THUMBNAIL")
+        st.code(roteiro.get("prompt_geral", ""))
+        st.markdown("---")
+
+# --------- TAB 2: PERSONAGENS ----------
+with tab2:
+    st.header("🎨 Banco de Personagens Bíblicos")
+
+    banco = st.session_state.personagens_biblicos.copy()
+
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        st.markdown("### 📋 Todos os personagens")
+        for i, (nome, desc) in enumerate(banco.items()):
+            with st.expander(f"✏️ {nome}"):
+                novo_nome = st.text_input(f"Nome {i}", value=nome, key=f"nome_{i}")
+                nova_desc = st.text_area(
+                    f"Descrição {i}", value=desc, height=100, key=f"desc_{i}"
+                )
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("💾 Salvar", key=f"salvar_{i}"):
+                        if novo_nome and nova_desc:
+                            if (
+                                novo_nome != nome
+                                and novo_nome
+                                in st.session_state.personagens_biblicos
+                            ):
+                                del st.session_state.personagens_biblicos[novo_nome]
+                            del st.session_state.personagens_biblicos[nome]
+                            st.session_state.personagens_biblicos[novo_nome] = nova_desc
+                            st.rerun()
+                with col_b:
+                    if st.button("🗑️ Apagar", key=f"apagar_{i}"):
+                        del st.session_state.personagens_biblicos[nome]
+                        st.rerun()
+
+    with col2:
+        st.markdown("### ➕ Novo Personagem")
+        novo_nome = st.text_input("Nome do personagem", key="novo_nome")
+        nova_desc = st.text_area(
+            "Descrição detalhada (aparência, roupas, idade, estilo)",
+            height=120,
+            key="nova_desc",
+        )
+        if st.button("➕ Adicionar") and novo_nome and nova_desc:
+            st.session_state.personagens_biblicos[novo_nome] = nova_desc
+            st.rerun()
+
+# --------- TAB 3: FÁBRICA DE VÍDEO ----------
+with tab3:
+    st.header("🎥 Fábrica de Vídeo")
+    st.info("Em desenvolvimento: áudio gTTS + MoviePy para montar o vídeo completo.")
+
+# --------- TAB 4: HISTÓRICO ----------
+with tab4:
+    st.header("📊 Histórico")
+    st.info("Em breve.")
+
 st.markdown("---")
-st.markdown("### 4. Gerar imagens (Gemini)")
-prompt_img = st.text_input("Prompt para as imagens", value="Cena cinematográfica do Evangelho do dia, estilo litúrgico, cores suaves")
-qtd = st.slider("Quantidade de imagens", 1, 6, 3)
-size = st.selectbox("Tamanho da imagem", ["512x512", "768x768", "1024x1024"], index=2)
-
-col_img1, col_img2 = st.columns(2)
-with col_img1:
-    gerar_imgs_btn = st.button("🎨 Criar imagens (Gemini)", key="gerar_imgs")
-with col_img2:
-    limpar_imgs_btn = st.button("🧹 Limpar imagens Gemini", key="limpar_imgs")
-
-if gerar_imgs_btn:
-    if not GEMINI_API_KEY:
-        st.error("GEMINI_API_KEY ausente — configure em Secrets.")
-    elif not prompt_img or not prompt_img.strip():
-        st.error("Insira um prompt válido para imagens.")
-    else:
-        st.session_state["imgs_gemini"] = []
-        erro = False
-        with st.spinner("Gerando imagens..."):
-            for i in range(qtd):
-                try:
-                    img_bio = gerar_imagem_gemini(prompt_img, size=size)
-                    st.session_state["imgs_gemini"].append(img_bio)
-                except Exception as e:
-                    st.error(f"Erro ao gerar imagem #{i+1}: {e}")
-                    erro = True
-                    break
-        if not erro:
-            st.success(f"{len(st.session_state['imgs_gemini'])} imagens geradas.")
-
-if limpar_imgs_btn:
-    st.session_state["imgs_gemini"] = []
-    st.success("Imagens Gemini removidas.")
-
-st.markdown("**Imagens geradas (Gemini):**")
-if st.session_state["imgs_gemini"]:
-    cols = st.columns(min(4, len(st.session_state["imgs_gemini"])))
-    for i, imgbio in enumerate(st.session_state["imgs_gemini"]):
-        try:
-            imgbio.seek(0)
-            cols[i % len(cols)].image(imgbio, caption=f"Gemini img {i+1}", use_column_width=True)
-        except Exception as e:
-            st.write(f"Erro mostrando imagem {i+1}: {e}")
-
-# ============================================
-# === UI: Montar vídeo (nova) ===
-# ============================================
-st.markdown("---")
-st.markdown("### 5. Montar vídeo final (opcional)")
-col_v1, col_v2 = st.columns(2)
-with col_v1:
-    montar_btn = st.button("🎬 Montar vídeo (imagens Gemini + narração Gemini)", key="montar_gemini")
-with col_v2:
-    limpar_vid_btn = st.button("🧹 Limpar vídeo Gemini", key="limpar_vid")
-
-if montar_btn:
-    if not st.session_state["audio_gemini"]:
-        st.error("Gere a narração Gemini antes de montar o vídeo.")
-    elif not st.session_state["imgs_gemini"]:
-        st.error("Gere imagens Gemini antes de montar o vídeo.")
-    else:
-        try:
-            with st.spinner("Renderizando vídeo (MoviePy)..."):
-                # garantir seek
-                try:
-                    st.session_state["audio_gemini"].seek(0)
-                except Exception:
-                    pass
-                for b in st.session_state["imgs_gemini"]:
-                    try:
-                        b.seek(0)
-                    except Exception:
-                        pass
-                st.session_state["video_gemini"] = montar_video(st.session_state["imgs_gemini"], st.session_state["audio_gemini"])
-                st.success("✅ Vídeo criado com sucesso.")
-        except Exception as e:
-            st.error(f"Erro ao montar vídeo: {e}")
-            st.error(traceback.format_exc())
-
-if limpar_vid_btn:
-    st.session_state["video_gemini"] = None
-    st.success("Vídeo Gemini limpo.")
-
-if st.session_state["video_gemini"]:
-    try:
-        st.video(st.session_state["video_gemini"])
-        try:
-            st.session_state["video_gemini"].seek(0)
-        except Exception:
-            pass
-        st.download_button("⬇️ Baixar vídeo_final_gemini.mp4", st.session_state["video_gemini"], file_name="video_final_gemini.mp4", mime="video/mp4")
-    except Exception as e:
-        st.error(f"Erro exibindo/baixando vídeo Gemini: {e}")
-
-# ============================================
-# === UI: Espaço para funcionalidades originais extras (se você tinha mais) ===
-# ============================================
-st.markdown("---")
-st.caption("Observação: este app mantém a função ORIGINAL de gTTS e adiciona Gemini TTS / imagens / vídeo. Se existiam outras funções específicas no seu app original que não identifiquei, cole aqui o trecho que falta e eu restauro exatamente.")
-
-# ============================================
-# === Dicas finais / logs simplificados
-# ============================================
-st.markdown("---")
-st.write("Status de sessão (debug rápido):")
-st.write({
-    "audio_gtts": bool(st.session_state["audio_gtts"]),
-    "audio_gemini": bool(st.session_state["audio_gemini"]),
-    "imgs_gemini": len(st.session_state["imgs_gemini"]),
-    "video_gemini": bool(st.session_state["video_gemini"]),
-})
-st.caption("Se algo faltar do app original, cole aqui o bloco (ou me diga qual função exata faltou) e eu reponho imediatamente — vou restaurar 1:1 sem mexer no que já funcionava.")
+st.markdown("Feito com ❤️ para evangelização - Studio Jhonata")
