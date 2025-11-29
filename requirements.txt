@@ -1,7 +1,5 @@
-moviepy==1.0.3
-gtts==2.3.1
-requests==2.31.0
-Pillow==10.0.0
-imageio-ffmpeg==0.4.8
-numpy==1.26.0
-aiohttp
+gtts
+requests
+Pillow
+imageio-ffmpeg
+numpy
