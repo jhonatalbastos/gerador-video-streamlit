@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v10.0)
-# Features: Fontes Individuais por Linha, Overlay Dedicado, Editor Full, Upload, Resoluções
+# app.py — Studio Jhonata (COMPLETO v11.0)
+# Features: Correção no Nome do Evangelista, Fontes Individuais, Overlay, Editor Full, Upload
 import os
 import re
 import json
@@ -84,19 +84,55 @@ def limpar_texto_evangelho(texto: str) -> str:
     return texto_limpo.strip()
 
 # =========================
-# Extrair referência bíblica
+# Extrair referência bíblica (CORRIGIDO E ROBUSTO)
 # =========================
 def extrair_referencia_biblica(titulo: str):
     if not titulo:
         return None
-    m = re.search(r"(?:São|S\.|Sao|San|St\.?)\s*([A-Za-zÁ-Úá-ú]+)[^\d]*(\d+)[^\d]*(\d+(?:[-–]\d+)?)", titulo, flags=re.IGNORECASE)
-    if not m:
+    
+    # 1. Identificar Evangelista por nome fixo (muito mais seguro)
+    titulo_lower = titulo.lower()
+    mapa_nomes = {
+        "mateus": "Mateus", "mt": "Mateus",
+        "marcos": "Marcos", "mc": "Marcos",
+        "lucas": "Lucas", "lc": "Lucas",
+        "joão": "João", "joao": "João", "jo": "João"
+    }
+    
+    evangelista_encontrado = None
+    for chave, valor in mapa_nomes.items():
+        # \b garante que é a palavra exata (evita achar 'jo' em 'beijo')
+        if re.search(rf"\b{chave}\b", titulo_lower):
+            evangelista_encontrado = valor
+            break
+    
+    if not evangelista_encontrado:
+        # Tenta fallback genérico se não achou nome conhecido, mas é arriscado.
+        # Melhor retornar None ou usar heurística anterior com cuidado.
+        # Vamos tentar a heurística antiga apenas se a busca exata falhar.
+        m_fallback = re.search(r"(?:São|S\.|Sao|San|St\.?)\s*([A-Za-zÁ-Úá-ú]+)", titulo, re.IGNORECASE)
+        if m_fallback:
+            nome_cand = m_fallback.group(1).strip()
+            # Filtra falsos positivos comuns como 'o', 'a', 'do'
+            if len(nome_cand) > 2:
+                evangelista_encontrado = nome_cand
+            else:
+                return None
+        else:
+            return None
+
+    # 2. Identificar Capítulo e Versículos (Procura padrão numérico 21, 34-36 ou 21:34-36)
+    # Regex procura: numeros (cap) + separador + numeros (vers)
+    m_nums = re.search(r"(\d{1,3})\s*[,:]\s*(\d+(?:[-–]\d+)?)", titulo)
+    
+    if m_nums:
+        capitulo = m_nums.group(1)
+        versiculos_raw = m_nums.group(2)
+        versiculos = versiculos_raw.replace("-", " a ").replace("–", " a ")
+    else:
         return None
-    evangelista = m.group(1).strip()
-    capitulo = m.group(2).strip()
-    versiculos_raw = m.group(3).strip()
-    versiculos = versiculos_raw.replace("-", " a ").replace("–", " a ")
-    return {"evangelista": evangelista, "capitulo": capitulo, "versiculos": versiculos}
+
+    return {"evangelista": evangelista_encontrado, "capitulo": capitulo, "versiculos": versiculos}
 
 def formatar_referencia_curta(ref_biblica):
     if not ref_biblica:
@@ -842,7 +878,12 @@ with tab4:
                 }
 
                 res_params = get_resolution_params(resolucao_escolhida)
-                s_out = f"{res_params['w']}x{res_params['h']}"
+                w_out = res_params["w"]
+                h_out = res_params["h"]
+                s_out = f"{w_out}x{h_out}"
+
+                # Carregar configurações do Overlay
+                sets = st.session_state["overlay_settings"]
 
                 for b in blocos_relevantes:
                     bid = b["id"]
