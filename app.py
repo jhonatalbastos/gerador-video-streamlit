@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v18.0)
-# Features: Música de Fundo (Loop/Mix), Geração em Lote, Fix NameError, Transições, Overlay, Persistência
+# app.py — Studio Jhonata (COMPLETO v19.0)
+# Features: Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos
 import os
 import re
 import json
@@ -21,8 +21,9 @@ import streamlit as st
 # Force ffmpeg path for imageio if needed (Streamlit Cloud)
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 
-# Arquivo de configuração persistente
+# Arquivos de configuração persistentes
 CONFIG_FILE = "overlay_config.json"
+SAVED_MUSIC_FILE = "saved_bg_music.mp3"
 
 # =========================
 # Page config
@@ -34,7 +35,7 @@ st.set_page_config(
 )
 
 # =========================
-# Persistência de Configurações
+# Persistência de Configurações e Arquivos
 # =========================
 def load_config():
     """Carrega configurações do disco ou retorna padrão"""
@@ -44,7 +45,7 @@ def load_config():
         "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)", "line3_anim": "Estático",
         "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
-        "music_vol": 0.15  # Volume padrão da música (15%)
+        "music_vol": 0.15
     }
     
     if os.path.exists(CONFIG_FILE):
@@ -66,6 +67,26 @@ def save_config(settings):
         return True
     except Exception as e:
         st.error(f"Erro ao salvar configurações: {e}")
+        return False
+
+def save_music_file(file_bytes):
+    """Salva a música padrão no disco"""
+    try:
+        with open(SAVED_MUSIC_FILE, "wb") as f:
+            f.write(file_bytes)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar música: {e}")
+        return False
+
+def delete_music_file():
+    """Remove a música padrão"""
+    try:
+        if os.path.exists(SAVED_MUSIC_FILE):
+            os.remove(SAVED_MUSIC_FILE)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao deletar música: {e}")
         return False
 
 # =========================
@@ -567,9 +588,7 @@ motor_escolhido = st.sidebar.selectbox("🎨 Motor de Imagem", ["Pollinations Fl
 resolucao_escolhida = st.sidebar.selectbox("📏 Resolução do Vídeo", ["9:16 (Vertical/Stories)", "16:9 (Horizontal/YouTube)", "1:1 (Quadrado/Feed)"], index=0)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🅰️ Fonte Global (Upload)")
-# Seletor de fonte global re-adicionado para consistência, mas usado principalmente para upload
-font_choice = st.sidebar.selectbox("Estilo da Fonte Padrão", ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"], index=0)
+st.sidebar.markdown("### 🅰️ Upload de Fonte (Global)")
 uploaded_font_file = st.sidebar.file_uploader("Arquivo .ttf (para opção 'Upload Personalizada')", type=["ttf"])
 
 st.sidebar.info(f"Modo: {motor_escolhido}\nFormato: {resolucao_escolhida}")
@@ -893,8 +912,32 @@ with tab4:
     usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay Personalizado)", value=True)
     
     st.subheader("🎵 Música de Fundo (Opcional)")
-    music_file = st.file_uploader("Enviar MP3 de Fundo", type=["mp3"])
-    music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, 0.15)
+    
+    # Check if saved music exists
+    saved_music_exists = os.path.exists(SAVED_MUSIC_FILE)
+    
+    col_mus_1, col_mus_2 = st.columns(2)
+    
+    with col_mus_1:
+        if saved_music_exists:
+            st.success("💾 Música Padrão Ativa")
+            st.audio(SAVED_MUSIC_FILE)
+            if st.button("❌ Remover Música Padrão"):
+                if delete_music_file():
+                    st.rerun()
+        else:
+            st.info("Nenhuma música padrão salva.")
+
+    with col_mus_2:
+        music_upload = st.file_uploader("Upload Música (MP3)", type=["mp3"])
+        if music_upload:
+            st.audio(music_upload)
+            if st.button("💾 Salvar como Música Padrão"):
+                if save_music_file(music_upload.getvalue()):
+                    st.success("Música padrão salva!")
+                    st.rerun()
+
+    music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, load_config().get("music_vol", 0.15))
 
     if st.button("Renderizar Vídeo Completo (Unir tudo)", type="primary"):
         with st.status("Renderizando vídeo com efeitos...", expanded=True) as status:
@@ -991,25 +1034,25 @@ with tab4:
                     with open(concat_list, "w") as f:
                         for p in clip_files: f.write(f"file '{p}'\n")
                     
-                    # Concatenação visual + voz (temporária)
                     temp_video = os.path.join(temp_dir, "temp_video.mp4")
                     run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", temp_video])
                     
                     final_path = os.path.join(temp_dir, "final.mp4")
                     
-                    # Mixagem de música (se houver)
-                    if music_file:
-                        music_path = os.path.join(temp_dir, "bg.mp3")
-                        with open(music_path, "wb") as f: f.write(music_file.getvalue())
+                    # Lógica de Música: 1. Uploaded, 2. Saved Default, 3. None
+                    music_source_path = None
+                    
+                    if music_upload:
+                        music_source_path = os.path.join(temp_dir, "bg.mp3")
+                        with open(music_source_path, "wb") as f: f.write(music_upload.getvalue())
+                    elif saved_music_exists:
+                        music_source_path = SAVED_MUSIC_FILE
                         
-                        # Comando complexo de mixagem com loop e ducking
-                        # [1:a] é a musica. volume={music_vol}.
-                        # amix combina inputs. duration=first garante que acaba com o vídeo.
-                        # shortest garante corte.
+                    if music_source_path:
                         cmd_mix = [
                             "ffmpeg", "-y",
                             "-i", temp_video,
-                            "-stream_loop", "-1", "-i", music_path,
+                            "-stream_loop", "-1", "-i", music_source_path,
                             "-filter_complex", f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]",
                             "-map", "0:v", "-map", "[a]",
                             "-c:v", "copy", "-c:a", "aac", "-shortest",
@@ -1017,7 +1060,6 @@ with tab4:
                         ]
                         run_cmd(cmd_mix)
                     else:
-                        # Sem música, apenas renomear
                         os.rename(temp_video, final_path)
 
                     with open(final_path, "rb") as f:
@@ -1040,4 +1082,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v18.0 - Música de Fundo + Mixagem")
+st.caption("Studio Jhonata v19.0 - Música Padrão")
