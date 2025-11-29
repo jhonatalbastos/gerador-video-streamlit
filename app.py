@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v17.0)
-# Features: Geração em Lote (Bulk), Fix NameError, Transições, Overlay, Persistência, Efeitos
+# app.py — Studio Jhonata (COMPLETO v18.0)
+# Features: Música de Fundo (Loop/Mix), Geração em Lote, Fix NameError, Transições, Overlay, Persistência
 import os
 import re
 import json
@@ -43,7 +43,8 @@ def load_config():
         "line2_y": 90, "line2_size": 28, "line2_font": "Padrão (Sans)", "line2_anim": "Estático",
         "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)", "line3_anim": "Estático",
         "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
-        "trans_type": "Fade (Escurecer)", "trans_dur": 0.5
+        "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
+        "music_vol": 0.15  # Volume padrão da música (15%)
     }
     
     if os.path.exists(CONFIG_FILE):
@@ -890,6 +891,10 @@ with tab4:
     st.divider()
     st.header("🎬 Finalização")
     usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay Personalizado)", value=True)
+    
+    st.subheader("🎵 Música de Fundo (Opcional)")
+    music_file = st.file_uploader("Enviar MP3 de Fundo", type=["mp3"])
+    music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, 0.15)
 
     if st.button("Renderizar Vídeo Completo (Unir tudo)", type="primary"):
         with st.status("Renderizando vídeo com efeitos...", expanded=True) as status:
@@ -985,9 +990,37 @@ with tab4:
                     concat_list = os.path.join(temp_dir, "list.txt")
                     with open(concat_list, "w") as f:
                         for p in clip_files: f.write(f"file '{p}'\n")
-                    final_video = os.path.join(temp_dir, "final.mp4")
-                    run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", final_video])
-                    with open(final_video, "rb") as f:
+                    
+                    # Concatenação visual + voz (temporária)
+                    temp_video = os.path.join(temp_dir, "temp_video.mp4")
+                    run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", temp_video])
+                    
+                    final_path = os.path.join(temp_dir, "final.mp4")
+                    
+                    # Mixagem de música (se houver)
+                    if music_file:
+                        music_path = os.path.join(temp_dir, "bg.mp3")
+                        with open(music_path, "wb") as f: f.write(music_file.getvalue())
+                        
+                        # Comando complexo de mixagem com loop e ducking
+                        # [1:a] é a musica. volume={music_vol}.
+                        # amix combina inputs. duration=first garante que acaba com o vídeo.
+                        # shortest garante corte.
+                        cmd_mix = [
+                            "ffmpeg", "-y",
+                            "-i", temp_video,
+                            "-stream_loop", "-1", "-i", music_path,
+                            "-filter_complex", f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]",
+                            "-map", "0:v", "-map", "[a]",
+                            "-c:v", "copy", "-c:a", "aac", "-shortest",
+                            final_path
+                        ]
+                        run_cmd(cmd_mix)
+                    else:
+                        # Sem música, apenas renomear
+                        os.rename(temp_video, final_path)
+
+                    with open(final_path, "rb") as f:
                         st.session_state["video_final_bytes"] = BytesIO(f.read())
                     status.update(label="Vídeo Renderizado com Sucesso!", state="complete")
                 else:
@@ -1007,4 +1040,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v17.0 - Geração em Lote")
+st.caption("Studio Jhonata v18.0 - Música de Fundo + Mixagem")
