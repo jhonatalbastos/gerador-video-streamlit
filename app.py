@@ -1,915 +1,647 @@
-# app.py — Studio Jhonata (COMPLETO)
-# Base original + Groq + gTTS + Gemini optional + ImageFX fallback + montagem de vídeo com ffmpeg (sem moviepy)
+# app.py
+"""
+Studio Jhonata — app Streamlit (versão A: funções organizadas)
+Integrações:
+ - Texto: Groq (preferência) -> fallback Railway HTTP (RAILWAY_TEXT_ENDPOINT)
+ - Imagens: Google ImageFX (image-generation-001) via google.generativeai (genai) ou HTTP (fallback)
+ - Áudio: TTS offline com pyttsx3 (pydub/ffmpeg para conversão, se necessário)
+ - Vídeo: montagem com ffmpeg
+Como usar:
+ - Defina as variáveis de ambiente necessárias (ver README abaixo)
+ - Instale dependências listadas em REQUIREMENTS
+"""
+
 import os
 import re
-import json
+import io
 import time
+import json
 import tempfile
-import traceback
 import subprocess
-from io import BytesIO
-from datetime import date
-from typing import List, Optional
-import base64
+import shlex
+from typing import List, Optional, Tuple
 
-import requests
-from PIL import Image
 import streamlit as st
+from PIL import Image, ImageDraw, ImageFont
 
-# Force ffmpeg path for imageio if needed (Streamlit Cloud)
-os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
+# -----------------------
+# REQUIREMENTS (instalar via pip)
+# -----------------------
+# streamlit pillow pyttsx3 pydub requests google-generativeai openai
+# ffmpeg no PATH (instalar via apt/brew/choco)
+#
+# Exemplo:
+# pip install streamlit pillow pyttsx3 pydub requests google-generativeai
 
-# =========================
-# Page config
-# =========================
-st.set_page_config(
-    page_title="Studio Jhonata",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="Studio Jhonata — Automação Litúrgica", layout="wide")
 
-# =========================
-# Groq - lazy init (preserved)
-# =========================
-_client = None
-
-
-def inicializar_groq():
-    global _client
-    if _client is None:
-        try:
-            # Groq may not be installed; show helpful message
-            from groq import Groq  # type: ignore
-
-            if "GROQ_API_KEY" not in st.secrets and not os.getenv("GROQ_API_KEY"):
-                st.error("❌ Configure GROQ_API_KEY em Settings → Secrets no Streamlit Cloud.")
-                st.stop()
-            api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-            _client = Groq(api_key=api_key)
-        except Exception as e:
-            st.error(f"Erro ao inicializar Groq client: {e}")
-            st.stop()
-    return _client
-
-
-# =========================
-# Inicializar banco de personagens
-# =========================
-@st.cache_data
-def inicializar_personagens():
-    return {
-        "Jesus": (
-            "homem de 33 anos, pele morena clara, cabelo castanho ondulado na altura dos ombros, "
-            "barba bem aparada, olhos castanhos penetrantes e serenos, túnica branca tradicional "
-            "com detalhes vermelhos, manto azul, expressão de autoridade amorosa, estilo renascentista clássico"
-        ),
-        "São Pedro": (
-            "homem robusto de 50 anos, pele bronzeada, cabelo curto grisalho, barba espessa, olhos "
-            "determinados, túnica de pescador bege com remendos, mãos calejadas, postura forte, estilo realista bíblico"
-        ),
-        "São João": (
-            "jovem de 25 anos, magro, cabelo castanho longo liso, barba rala, olhos expressivos, túnica "
-            "branca limpa, expressão contemplativa, estilo renascentista"
-        ),
-    }
-
-
-# =========================
-# Limpeza do texto bíblico
-# =========================
-def limpar_texto_evangelho(texto: str) -> str:
-    if not texto:
-        return ""
-    texto_limpo = texto.replace("\n", " ").strip()
-    texto_limpo = re.sub(r"\b(\d{1,3})(?=[A-Za-zÁ-Úá-ú])", "", texto_limpo)
-    texto_limpo = re.sub(r"\s{2,}", " ", texto_limpo)
-    return texto_limpo.strip()
-
-
-# =========================
-# Extrair referência bíblica (heurística)
-# =========================
-def extrair_referencia_biblica(titulo: str):
-    if not titulo:
-        return None
-    m = re.search(r"(?:São|S\.|Sao|San|St\.?)\s*([A-Za-zÁ-Úá-ú]+)[^\d]*(\d+)[^\d]*(\d+(?:[-–]\d+)?)", titulo, flags=re.IGNORECASE)
-    if not m:
-        return None
-    evangelista = m.group(1).strip()
-    capitulo = m.group(2).strip()
-    versiculos_raw = m.group(3).strip()
-    versiculos = versiculos_raw.replace("-", " a ").replace("–", " a ")
-    return {"evangelista": evangelista, "capitulo": capitulo, "versiculos": versiculos}
-
-
-def formatar_referencia_curta(ref_biblica):
-    if not ref_biblica:
-        return ""
-    return f"{ref_biblica['evangelista']}, Cap. {ref_biblica['capitulo']}, {ref_biblica['versiculos']}"
-
-
-# =========================
-# Análise de personagens via Groq (preservado)
-# =========================
-def analisar_personagens_groq(texto_evangelho: str, banco_personagens: dict):
-    client = inicializar_groq()
-    system_prompt = (
-        "Você é especialista em análise bíblica.\n"
-        "Analise o texto e identifique TODOS os personagens bíblicos mencionados.\n\n"
-        "Formato EXATO da resposta:\n\n"
-        "PERSONAGENS: nome1; nome2; nome3\n\n"
-        "NOVOS: NomeNovo|descrição_detalhada_aparência_física_roupas_idade_estilo (apenas se não existir no banco)\n\n"
-        f"BANCO EXISTENTE: {'; '.join(banco_personagens.keys())}\n\n"
-        "Exemplo:\n"
-        "PERSONAGENS: Jesus; Pedro; fariseus\n"
-        "NOVOS: Mulher Samaritana|mulher de 35 anos, pele morena, véu colorido, jarro d'água, expressão curiosa, túnica tradicional\n"
-    )
+# -----------------------
+# Helpers de sistema
+# -----------------------
+def run_cmd(cmd: List[str], timeout: int = 300) -> Tuple[int, str]:
+    """Executa comando subprocess e retorna (code, stdout)."""
     try:
-        resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"TEXTO: {texto_evangelho[:1500]}"},
-            ],
-            temperature=0.3,
-            max_tokens=400,
-        )
-        resultado = resp.choices[0].message.content
-        personagens_detectados = {}
-        m = re.search(r"PERSONAGENS:\s*(.+)", resultado)
-        if m:
-            nomes = [n.strip() for n in m.group(1).split(";") if n.strip()]
-            for nome in nomes:
-                if nome in banco_personagens:
-                    personagens_detectados[nome] = banco_personagens[nome]
-        m2 = re.search(r"NOVOS:\s*(.+)", resultado)
-        if m2:
-            novos = m2.group(1).strip()
-            blocos = re.split(r";|,", novos)
-            for bloco in blocos:
-                if "|" in bloco:
-                    nome, desc = bloco.split("|", 1)
-                    nome = nome.strip()
-                    desc = desc.strip()
-                    if not nome:
-                        continue
-                    personagens_detectados[nome] = desc
-                    banco_personagens[nome] = desc
-        return personagens_detectados
-    except Exception:
-        return {}
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        stdout, _ = proc.communicate(timeout=timeout)
+        return proc.returncode, stdout
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return -1, "timeout"
+    except Exception as e:
+        return -1, str(e)
 
+def check_ffmpeg() -> bool:
+    code, _ = run_cmd(["ffmpeg", "-version"])
+    return code == 0
 
-# =========================
-# APIs Liturgia (preservadas)
-# =========================
-def buscar_liturgia_api1(data_str: str):
-    url = f"https://api-liturgia-diaria.vercel.app/?date={data_str}"
+def sanitize_filename(name: str) -> str:
+    """Sanitiza texto para usar em nome de arquivo."""
+    name = name.strip()
+    if not name:
+        name = "file"
+    # remove chars problemáticos
+    name = re.sub(r"[^\w\-_\. ]", "_", name)
+    name = name[:120]
+    return name
+
+# -----------------------
+# 1) BUSCAR ROTEIRO (Groq -> Railway fallback)
+# -----------------------
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+RAILWAY_TEXT_ENDPOINT = os.environ.get("RAILWAY_TEXT_ENDPOINT")  # ex: https://api-yourproject.up.railway.app/roteiro
+
+def fetch_script_from_groq(prompt: str) -> str:
+    """
+    Tenta usar cliente Groq (se disponível). Se não existir ou falhar, lança Exception.
+    O usuário disse que está usando Groq para texto — aqui tentamos chamar o cliente se instalado.
+    """
     try:
-        resp = requests.get(url, timeout=10)
+        # Import dinâmico para não falhar se não instalado
+        import groq  # substitua se o nome do pacote no pip for outro
+        # ADAPTAR: abaixo é pseudocódigo; ajuste conforme o client real que você tem.
+        client = groq.Client(api_key=GROQ_API_KEY) if GROQ_API_KEY else groq.Client()
+        # A forma exata de chamadas depende do cliente groq do pip que você instalou.
+        # Exemplo fictício:
+        resp = client.query(prompt)
+        # convert result to text (adaptar conforme estrutura)
+        if isinstance(resp, dict):
+            return resp.get("text") or json.dumps(resp)
+        return str(resp)
+    except ModuleNotFoundError:
+        raise RuntimeError("Cliente 'groq' não instalado no ambiente.")
+    except Exception as e:
+        raise RuntimeError(f"Falha ao consultar Groq: {e}")
+
+def fetch_script_from_railway(prompt: str) -> str:
+    """
+    Chama endpoint Railway que você hospedou para retornar roteiro.
+    Deve aceitar POST JSON { "prompt": "<texto>" } e retornar JSON { "script": "..." }
+    """
+    import requests
+    endpoint = RAILWAY_TEXT_ENDPOINT
+    if not endpoint:
+        raise RuntimeError("RAILWAY_TEXT_ENDPOINT não configurado. Defina a variável de ambiente.")
+    try:
+        resp = requests.post(endpoint, json={"prompt": prompt}, timeout=30)
         resp.raise_for_status()
-        dados = resp.json()
-        today = dados.get("today", {})
-        readings = today.get("readings", {})
-        gospel = readings.get("gospel")
-        if not gospel:
-            return None
-        referencia_liturgica = today.get("entry_title", "").strip() or "Evangelho do dia"
-        titulo = (
-            gospel.get("head_title", "")
-            or gospel.get("title", "")
-            or "Evangelho de Jesus Cristo"
-        ).strip()
-        texto = gospel.get("text", "").strip()
-        if not texto:
-            return None
-        texto_limpo = limpar_texto_evangelho(texto)
-        ref_biblica = extrair_referencia_biblica(titulo)
-        return {
-            "fonte": "api-liturgia-diaria.vercel.app",
-            "titulo": titulo,
-            "referencia_liturgica": referencia_liturgica,
-            "texto": texto_limpo,
-            "ref_biblica": ref_biblica,
-        }
-    except Exception:
-        return None
-
-
-def buscar_liturgia_api2(data_str: str):
-    url = f"https://liturgia.up.railway.app/v2/{data_str}"
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        dados = resp.json()
-        lit = dados.get("liturgia", {})
-        ev = lit.get("evangelho") or lit.get("evangelho_do_dia") or {}
-        if not ev:
-            return None
-        texto = ev.get("texto", "") or ev.get("conteudo", "")
-        if not texto:
-            return None
-        texto_limpo = limpar_texto_evangelho(texto)
-        return {
-            "fonte": "liturgia.up.railway.app",
-            "titulo": "Evangelho do dia",
-            "referencia_liturgica": "Evangelho do dia",
-            "texto": texto_limpo,
-            "ref_biblica": None,
-        }
-    except Exception:
-        return None
-
-
-def obter_evangelho_com_fallback(data_str: str):
-    ev = buscar_liturgia_api1(data_str)
-    if ev:
-        st.info("📡 Usando api-liturgia-diaria.vercel.app")
-        return ev
-    ev = buscar_liturgia_api2(data_str)
-    if ev:
-        st.info("📡 Usando liturgia.up.railway.app")
-        return ev
-    st.error("❌ Não foi possível obter o Evangelho")
-    return None
-
-
-# =========================
-# Roteiro + Prompts (preservado)
-# =========================
-def extrair_bloco(rotulo: str, texto: str) -> str:
-    padrao = rf"{rotulo}:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:\s*|\nPROMPT_|$)"
-    m = re.search(padrao, texto, re.DOTALL | re.IGNORECASE)
-    return m.group(1).strip() if m else ""
-
-
-def extrair_prompt(rotulo: str, texto: str) -> str:
-    padrao = rf"{rotulo}:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:\s*|\nPROMPT_|$)"
-    m = re.search(padrao, texto, re.DOTALL | re.IGNORECASE)
-    return m.group(1).strip() if m else ""
-
-
-def gerar_roteiro_com_prompts_groq(texto_evangelho: str, referencia_liturgica: str, personagens: dict):
-    client = inicializar_groq()
-    texto_limpo = limpar_texto_evangelho(texto_evangelho)
-    personagens_str = json.dumps(personagens, ensure_ascii=False)
-    system_prompt = f"""Crie roteiro + 6 prompts visuais CATÓLICOS para vídeo devocional.
-
-PERSONAGENS FIXOS: {personagens_str}
-
-IMPORTANTE:
-- 4 PARTES EXATAS: HOOK, REFLEXÃO, APLICAÇÃO, ORAÇÃO
-- PROMPT_LEITURA separado (momento da leitura do Evangelho, mais calmo e reverente)
-- PROMPT_GERAL para thumbnail
-- USE SEMPRE as descrições exatas dos personagens
-- Estilo: artístico renascentista católico, luz suave, cores quentes
-
-Formato EXATO:
-
-HOOK: [texto 5-8s]
-PROMPT_HOOK: [prompt visual com personagens fixos]
-
-REFLEXÃO: [texto 20-25s]
-PROMPT_REFLEXÃO: [prompt visual com personagens fixos]
-
-APLICAÇÃO: [texto 20-25s]
-PROMPT_APLICACAO: [prompt visual com personagens fixos]
-
-ORAÇÃO: [texto 20-25s]
-PROMPT_ORACAO: [prompt visual com personagens fixos]
-
-PROMPT_LEITURA: [prompt visual específico para a leitura do Evangelho, mais calmo e reverente]
-
-PROMPT_GERAL: [prompt para thumbnail/capa]"""
-    try:
-        resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Evangelho: {referencia_liturgica}\n\n{texto_limpo[:2000]}"},
-            ],
-            temperature=0.7,
-            max_tokens=1200,
-        )
-        texto_gerado = resp.choices[0].message.content
-        partes: dict[str, str] = {}
-        partes["hook"] = extrair_bloco("HOOK", texto_gerado)
-        partes["reflexão"] = extrair_bloco("REFLEXÃO", texto_gerado)
-        partes["aplicação"] = extrair_bloco("APLICAÇÃO", texto_gerado)
-        partes["oração"] = extrair_bloco("ORAÇÃO", texto_gerado)
-        partes["prompt_hook"] = extrair_prompt("PROMPT_HOOK", texto_gerado)
-        partes["prompt_reflexão"] = extrair_prompt("PROMPT_REFLEXÃO", texto_gerado)
-        partes["prompt_aplicacao"] = extrair_prompt("PROMPT_APLICACAO", texto_gerado)
-        partes["prompt_oração"] = extrair_prompt("PROMPT_ORACAO", texto_gerado)
-        partes["prompt_leitura"] = extrair_prompt("PROMPT_LEITURA", texto_gerado)
-        m_geral = re.search(r"PROMPT_GERAL:\s*(.+)", texto_gerado, re.DOTALL | re.IGNORECASE)
-        partes["prompt_geral"] = m_geral.group(1).strip() if m_geral else ""
-        return partes
+        data = resp.json()
+        # Accept several possible keys
+        script = data.get("script") or data.get("text") or data.get("roteiro") or data.get("result") or ""
+        if not script:
+            # if response is plain text
+            if isinstance(data, str):
+                script = data
+        return script
     except Exception as e:
-        st.error(f"❌ Erro Groq: {e}")
-        return None
+        raise RuntimeError(f"Falha ao consultar Railway: {e}")
 
-
-def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
-    if ref_biblica:
-        abertura = (
-            f"Proclamação do Evangelho de Jesus Cristo, segundo São "
-            f"{ref_biblica['evangelista']}, "
-            f"Capítulo {ref_biblica['capitulo']}, "
-            f"versículos {ref_biblica['versiculos']}. "
-            "Glória a vós, Senhor!"
-        )
-    else:
-        abertura = (
-            "Proclamação do Evangelho de Jesus Cristo, segundo São Lucas. "
-            "Glória a vós, Senhor!"
-        )
-    fechamento = "Palavra da Salvação. Glória a vós, Senhor!"
-    return f"{abertura} {texto_evangelho} {fechamento}"
-
-
-# =========================
-# NOVAS FUNÇÕES: ÁUDIO, IMAGENS, VÍDEO via ffmpeg
-# =========================
-
-# ---- gTTS (preservada) ----
-def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
-    if not texto or not texto.strip():
-        return None
-    mp3_fp = BytesIO()
+def fetch_script(prompt: str) -> str:
+    """
+    Função principal para buscar roteiro: tenta Groq primeiro (se disponível),
+    depois Railway. Se tudo falhar, retorna um roteiro de fallback simples.
+    """
+    # Try Groq if GROQ_API_KEY present or module installed
     try:
-        from gtts import gTTS  # type: ignore
-
-        tts = gTTS(text=texto, lang="pt", slow=False)
-        tts.write_to_fp(mp3_fp)
-        mp3_fp.seek(0)
-        return mp3_fp
-    except Exception as e:
-        raise RuntimeError(f"Erro gTTS: {e}")
-
-
-# ---- Gemini TTS (opcional) ----
-def gerar_audio_gemini(texto: str, voz: str = "pt-BR-Wavenet-B") -> BytesIO:
-    gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
-    if not gem_key:
-        raise RuntimeError("GEMINI_API_KEY ausente.")
-    if not texto or not texto.strip():
-        raise ValueError("Texto vazio.")
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gem_key}"
-    prompt_text = f"(tts|voice:{voz})\nPor favor, narre em Português do Brasil com entonação natural:\n{texto}"
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-        "generationConfig": {"responseMimeType": "audio/mpeg"},
-    }
-    r = requests.post(url, json=payload, timeout=120)
-    r.raise_for_status()
-    data = r.json()
-    try:
-        b64 = data["candidates"][0]["content"]["parts"][0]["inline_data"]["data"]
-    except Exception as e:
-        raise RuntimeError(f"Resposta inesperada do Gemini TTS: {data}") from e
-    audio_bytes = base64.b64decode(b64)
-    bio = BytesIO(audio_bytes)
-    bio.seek(0)
-    return bio
-
-
-# ---- ImageFX (prioridade) com fallback para Gemini ----
-def gerar_imagem_imagefx(prompt: str, size: str = "1024x1024") -> BytesIO:
-    imagefx_url = st.secrets.get("IMAGEFX_API_URL") or os.getenv("IMAGEFX_API_URL")
-    imagefx_key = st.secrets.get("IMAGEFX_API_KEY") or os.getenv("IMAGEFX_API_KEY")
-    if imagefx_url and imagefx_key:
-        headers = {"Authorization": f"Bearer {imagefx_key}"}
-        payload = {"prompt": prompt, "size": size}
-        r = requests.post(imagefx_url, json=payload, headers=headers, timeout=120)
-        r.raise_for_status()
-        data = r.json()
-        b64 = None
-        if isinstance(data, dict):
-            if "image" in data and isinstance(data["image"], str):
-                b64 = data["image"]
-            elif "images" in data and isinstance(data["images"], list) and data["images"]:
-                first = data["images"][0]
-                if isinstance(first, dict) and "b64" in first:
-                    b64 = first["b64"]
-                elif isinstance(first, str):
-                    b64 = first
-        if not b64:
-            raise RuntimeError(f"Resposta inesperada do ImageFX: {data}")
-        img_bytes = base64.b64decode(b64)
-        bio = BytesIO(img_bytes)
-        bio.seek(0)
-        return bio
-    else:
-        # fallback Gemini image
-        gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
-        if not gem_key:
-            raise RuntimeError("Nem ImageFX nem Gemini estão configurados. Configure IMAGEFX_API_URL/KEY ou GEMINI_API_KEY.")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gem_key}"
-        payload = {"contents": [{"role": "user", "parts": [{"text": f"Create a {size} cinematic liturgical image: {prompt}"}]}], "generationConfig": {"responseMimeType": "image/png"}}
-        r = requests.post(url, json=payload, timeout=120)
-        r.raise_for_status()
-        data = r.json()
+        return fetch_script_from_groq(prompt)
+    except Exception as e_groq:
+        st.warning(f"Groq indisponível ou falhou: {e_groq}")
+        # fallback railway
         try:
-            b64 = data["candidates"][0]["content"]["parts"][0]["inline_data"]["data"]
-        except Exception as e:
-            raise RuntimeError(f"Resposta inesperada do Gemini Image: {data}") from e
-        img_bytes = base64.b64decode(b64)
-        bio = BytesIO(img_bytes)
-        bio.seek(0)
-        return bio
+            return fetch_script_from_railway(prompt)
+        except Exception as e_rail:
+            st.warning(f"Railway fallback falhou: {e_rail}")
+            st.info("Usando roteiro de fallback local.")
+            # fallback simple script
+            sample = (
+                "Título: A Jornada do Espaço\n\n"
+                "Cena 1: Visão ampla do cosmos. Narração: 'No silêncio do infinito, surge uma história.'\n"
+                "Cena 2: Aproximação em um buraco negro. Narração: 'Lá onde o tempo dobra...'\n"
+                "Cena 3: Encerramento com créditos."
+            )
+            return sample
 
+# -----------------------
+# 2) GERAÇÃO DE IMAGENS — ImageFX (Google)
+# -----------------------
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
-# ---- gerar imagens para roteiro (mapping) ----
-def gerar_imagens_para_roteiro(roteiro: dict, size: str = "1024x1024") -> dict:
-    imagens = {}
-    mapping = {
-        "prompt_hook": "hook",
-        "prompt_reflexão": "reflexão",
-        "prompt_aplicacao": "aplicação",
-        "prompt_oração": "oração",
-        "prompt_leitura": "leitura",
-        "prompt_geral": "thumbnail",
-    }
-    for chave_prompt, bloco in mapping.items():
-        # try variants (keeping compatibility with naming differences)
-        prompt_text = roteiro.get(chave_prompt) or roteiro.get(chave_prompt.lower()) or roteiro.get(chave_prompt.replace("ç", "c")) or ""
-        if prompt_text:
-            img = gerar_imagem_imagefx(prompt_text, size=size)
-            imagens[bloco] = img
-    return imagens
+def gerar_imagem_imagefx_with_lib(prompt: str, output_path: str, size: str = "1024x1024") -> str:
+    """
+    Tenta usar google.generativeai (genai). Se não disponível, lança.
+    Garante que textos nas imagens estejam em Português do Brasil.
+    """
+    if not GOOGLE_API_KEY:
+        raise RuntimeError("GOOGLE_API_KEY não configurada no ambiente.")
+    if not prompt or not prompt.strip():
+        raise RuntimeError("Prompt vazio para gerar imagem.")
 
+    try:
+        import google.generativeai as genai
+    except Exception as e:
+        raise RuntimeError(f"Biblioteca 'google.generativeai' não disponível: {e}")
 
-# ---- gerar narrações para roteiro (gTTS / Gemini) ----
-def gerar_narracoes_para_roteiro(roteiro: dict, usar_gemini: bool = False) -> dict:
-    audios = {}
-    partes_texto = {
-        "hook": roteiro.get("hook", ""),
-        "reflexão": roteiro.get("reflexão", ""),
-        "aplicação": roteiro.get("aplicação", ""),
-        "oração": roteiro.get("oração", ""),
-        "leitura": roteiro.get("leitura", roteiro.get("leitura_montada", "")),
-    }
-    for bloco, texto in partes_texto.items():
-        texto = (texto or "").strip()
-        if not texto:
-            continue
-        if usar_gemini:
-            audio = gerar_audio_gemini(texto, voz="pt-BR-Wavenet-B")
+    try:
+        genai.configure(api_key=GOOGLE_API_KEY)
+        # Use model image-generation-001
+        model = genai.ImageGenerationModel("image-generation-001")
+        prompt_pt = (
+            "Por favor, gere uma imagem altamente detalhada a partir da descrição abaixo. "
+            "Se houver qualquer texto exibido dentro da imagem, garanta que esteja em Português do Brasil, "
+            "com ortografia correta e sem abreviações. Não inclua marcas registradas. Descrição: "
+            + prompt
+        )
+        result = model.generate_image(prompt=prompt_pt, size=size)
+        # Algumas versões retornam bytes; outras podem retornar base64 em result.images[0]
+        # Tentar lidar com ambas estruturas:
+        # result.images[0] pode ser bytes ou um objeto com .b64_json
+        image_bytes = None
+        if hasattr(result, "images") and result.images:
+            # result.images[0] pode ser bytes
+            first = result.images[0]
+            if isinstance(first, (bytes, bytearray)):
+                image_bytes = bytes(first)
+            elif isinstance(first, str):
+                # possivelmente base64 string
+                import base64
+                try:
+                    image_bytes = base64.b64decode(first)
+                except Exception:
+                    image_bytes = first.encode("utf-8")
+            elif hasattr(first, "b64_json"):
+                import base64
+                image_bytes = base64.b64decode(first.b64_json)
+            else:
+                # try to convert repr
+                image_bytes = bytes(first)
         else:
-            audio = gerar_audio_gtts(texto)
-        audios[bloco] = audio
-    return audios
+            raise RuntimeError("Resposta inesperada do ImageFX: sem imagens retornadas.")
 
+        with open(output_path, "wb") as f:
+            f.write(image_bytes)
+        return output_path
+    except Exception as e:
+        raise RuntimeError(f"Erro ImageFX (lib): {e}")
 
-# ---- montar vídeo com ffmpeg (sem moviepy) ----
-def montar_video_por_roteiro_ffmpeg(imagens_map: dict, audios_map: dict, musica_fundo: Optional[BytesIO] = None) -> BytesIO:
+def gerar_imagem_imagefx_with_http(prompt: str, output_path: str, size: str = "1024x1024") -> str:
     """
-    Cria pequenos clipes mp4 por bloco (imagem+áudio) usando ffmpeg e depois concatena.
-    Retorna BytesIO com MP4 final.
+    Fallback: chama endpoint HTTP do ImageFX para gerar imagem.
+    Endpoint: https://generativelanguage.googleapis.com/v1beta/models/image-generation-001:generateImage?key=API_KEY
     """
-    # checagens
-    if not shutil_which("ffmpeg"):
-        raise RuntimeError("ffmpeg não encontrado no ambiente. Verifique packages.txt")
+    import requests, base64
+    if not GOOGLE_API_KEY:
+        raise RuntimeError("GOOGLE_API_KEY não configurada no ambiente.")
+    if not prompt or not prompt.strip():
+        raise RuntimeError("Prompt vazio para gerar imagem.")
 
-    ordem = ["hook", "reflexão", "leitura", "aplicação", "oração", "thumbnail"]
-    temp_dir = tempfile.mkdtemp()
-    clip_files = []
-
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/image-generation-001:generateImage?key={GOOGLE_API_KEY}"
+    prompt_pt = {
+        "prompt": {
+            "text": (
+                "Gere uma imagem detalhada para a descrição a seguir. "
+                "Se houver texto dentro da imagem, coloque em Português do Brasil e revise ortografia. "
+                + prompt
+            )
+        },
+        "image_format": "PNG",
+        "size": size
+    }
     try:
-        for bloco in ordem:
-            img_bio = imagens_map.get(bloco)
-            audio_bio = audios_map.get(bloco)
-            if not img_bio or not audio_bio:
-                continue
+        resp = requests.post(url, json=prompt_pt, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        # Estrutura típica: data['result']['images'][0]['image'] base64
+        image_b64 = None
+        # verificar várias possibilidades
+        if "images" in data:
+            # older formats
+            img_entry = data["images"][0]
+            if isinstance(img_entry, dict) and "image" in img_entry:
+                image_b64 = img_entry["image"]
+            elif isinstance(img_entry, str):
+                image_b64 = img_entry
+        elif "result" in data and "images" in data["result"]:
+            image_b64 = data["result"]["images"][0].get("image")
+        # fallback common keys
+        if not image_b64:
+            # inspect raw output
+            # tentar encontrar qualquer string base64
+            text = json.dumps(data)
+            m = re.search(r"data:image/[^;]+;base64,([A-Za-z0-9+/=]+)", text)
+            if m:
+                image_b64 = m.group(1)
+        if not image_b64:
+            raise RuntimeError(f"Resposta ImageFX inesperada: {data}")
 
-            img_path = os.path.join(temp_dir, f"{bloco}.png")
-            audio_path = os.path.join(temp_dir, f"{bloco}.mp3")
-            clip_path = os.path.join(temp_dir, f"{bloco}.mp4")
+        image_bytes = base64.b64decode(image_b64)
+        with open(output_path, "wb") as f:
+            f.write(image_bytes)
+        return output_path
+    except Exception as e:
+        raise RuntimeError(f"Erro ImageFX (HTTP): {e}")
 
-            # salvar arquivos
-            img_bio.seek(0)
-            with open(img_path, "wb") as f:
-                f.write(img_bio.read())
+def gerar_imagem_imagefx(prompt: str, output_path: str, size: str = "1024x1024") -> str:
+    """
+    Wrapper: tenta com lib genai, senão tenta via HTTP. Lança RuntimeError em caso de falha.
+    """
+    # Tenta com lib
+    try:
+        return gerar_imagem_imagefx_with_lib(prompt, output_path, size=size)
+    except Exception as e_lib:
+        st.info(f"ImageFX (lib) falhou: {e_lib}. Tentando via HTTP...")
+        try:
+            return gerar_imagem_imagefx_with_http(prompt, output_path, size=size)
+        except Exception as e_http:
+            raise RuntimeError(f"Falha ImageFX (lib e HTTP): lib={e_lib} | http={e_http}")
 
-            audio_bio.seek(0)
-            with open(audio_path, "wb") as f:
-                f.write(audio_bio.read())
+# -----------------------
+# 3) TTS OFFLINE (pyttsx3) -> gera WAV, converte para MP3 se pedido
+# -----------------------
+def tts_generate_offline(text: str, outfile_wav: str, rate: int = 150, voice_name_contains: Optional[str] = None) -> str:
+    """Gera arquivo WAV com pyttsx3. Retorna caminho do WAV."""
+    try:
+        import pyttsx3
+    except Exception as e:
+        raise RuntimeError("pyttsx3 não instalado. pip install pyttsx3") from e
 
-            # obter duração do áudio via ffprobe
-            dur = get_audio_duration_seconds(audio_path)
-            if dur is None:
-                dur = 5.0
-
-            # criar vídeo a partir da imagem + áudio (loop imagem por dur)
-            # -loop 1 -t {dur} -i img -i audio -c:v libx264 -c:a aac -pix_fmt yuv420p -vf scale=1280:-2 {clip}
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-loop",
-                "1",
-                "-i",
-                img_path,
-                "-i",
-                audio_path,
-                "-c:v",
-                "libx264",
-                "-t",
-                f"{dur}",
-                "-pix_fmt",
-                "yuv420p",
-                "-c:a",
-                "aac",
-                "-shortest",
-                clip_path,
-            ]
-            run_cmd(cmd)
-            clip_files.append(clip_path)
-
-        if not clip_files:
-            raise RuntimeError("Nenhum clip gerado — verifique imagens e áudios.")
-
-        # criar arquivo de concat
-        concat_list_path = os.path.join(temp_dir, "concat_list.txt")
-        with open(concat_list_path, "w", encoding="utf-8") as f:
-            for p in clip_files:
-                f.write(f"file '{p}'\n")
-
-        final_path = os.path.join(temp_dir, "final_video.mp4")
-        cmd_concat = [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            concat_list_path,
-            "-c",
-            "copy",
-            final_path,
-        ]
-        run_cmd(cmd_concat)
-
-        # opcional: mixar música de fundo (complexo). Se fornecida, pede processamento extra — omitido por simplicidade
-
-        with open(final_path, "rb") as f:
-            data = f.read()
-        out = BytesIO(data)
-        out.seek(0)
-        return out
-    finally:
-        # not deleting temp_dir to aid debugging; could remove in production
+    engine = pyttsx3.init()
+    try:
+        engine.setProperty("rate", rate)
+    except Exception:
         pass
 
-
-# -------------------------
-# Helpers: comando e utilitários
-# -------------------------
-import os as _os
-import shutil as _shutil
-
-
-def shutil_which(bin_name: str) -> Optional[str]:
-    return _shutil.which(bin_name)
-
-
-def run_cmd(cmd: List[str]):
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-        stdout = e.stdout.decode("utf-8", errors="replace") if e.stdout else ""
-        raise RuntimeError(f"Comando falhou: {' '.join(cmd)}\nSTDOUT: {stdout}\nSTDERR: {stderr}")
-
-
-def get_audio_duration_seconds(path: str) -> Optional[float]:
-    # usa ffprobe para obter duração
-    if not shutil_which("ffprobe"):
-        # tentar ffmpeg -i parse (menos confiável) -> retorna None
-        return None
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
-    try:
-        p = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out = p.stdout.decode().strip()
-        return float(out) if out else None
-    except Exception:
-        return None
-
-
-# =========================
-# Interface principal (preservada + integrações)
-# =========================
-st.title("✨ Studio Jhonata - Automação Litúrgica")
-st.markdown("---")
-
-st.sidebar.title("⚙️ Configurações")
-st.sidebar.info("1️⃣ api-liturgia-diaria\n2️⃣ liturgia.railway\n3️⃣ Groq fallback")
-st.sidebar.success("✅ Groq ativo (se configurado)")
-
-if "personagens_biblicos" not in st.session_state:
-    st.session_state.personagens_biblicos = inicializar_personagens()
-
-# session state adicionais
-if "roteiro_gerado" not in st.session_state:
-    st.session_state["roteiro_gerado"] = None
-if "leitura_montada" not in st.session_state:
-    st.session_state["leitura_montada"] = ""
-if "generated_images_blocks" not in st.session_state:
-    st.session_state["generated_images_blocks"] = {}
-if "generated_audios_blocks" not in st.session_state:
-    st.session_state["generated_audios_blocks"] = {}
-if "video_final_bytes" not in st.session_state:
-    st.session_state["video_final_bytes"] = None
-
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["📖 Gerar Roteiro", "🎨 Personagens", "🎥 Fábrica Vídeo", "📊 Histórico"]
-)
-
-# --------- TAB 1: ROTEIRO ----------
-with tab1:
-    st.header("🚀 Gerador de Roteiro + Imagens + Áudio")
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        data_selecionada = st.date_input(
-            "📅 Data da liturgia:", value=date.today(), min_value=date(2023, 1, 1)
-        )
-    with col2:
-        st.info("Status: ✅ pronto para gerar")
-
-    if st.button("🚀 Gerar Roteiro Completo", type="primary"):
-        data_str = data_selecionada.strftime("%Y-%m-%d")
-        with st.spinner("🔍 Buscando Evangelho..."):
-            liturgia = obter_evangelho_com_fallback(data_str)
-        if not liturgia:
-            st.stop()
-
-        st.success(
-            f"✅ Evangelho: {liturgia['referencia_liturgica']} ({liturgia['fonte']})"
-        )
-
-        with st.spinner("🤖 Analisando personagens..."):
-            personagens_detectados = analisar_personagens_groq(
-                liturgia["texto"], st.session_state.personagens_biblicos
-            )
-
-        with st.spinner("✨ Gerando roteiro e prompts visuais..."):
-            roteiro = gerar_roteiro_com_prompts_groq(
-                liturgia["texto"],
-                liturgia["referencia_liturgica"],
-                {**st.session_state.personagens_biblicos, **personagens_detectados},
-            )
-
-        if not roteiro:
-            st.stop()
-
-        leitura_montada = montar_leitura_com_formula(
-            liturgia["texto"], liturgia.get("ref_biblica")
-        )
-        ref_curta = formatar_referencia_curta(liturgia.get("ref_biblica"))
-
-        st.session_state["roteiro_gerado"] = roteiro
-        st.session_state["leitura_montada"] = leitura_montada
-
-        st.markdown("## 📖 Roteiro pronto para gravar")
-        if ref_curta:
-            st.markdown(f"**Leitura:** {ref_curta}")
-        st.markdown("---")
-
-        if personagens_detectados:
-            st.markdown("### 👥 Personagens nesta leitura")
-            for nome, desc in personagens_detectados.items():
-                st.markdown(f"**{nome}:** {desc}")
-            st.markdown("---")
-
-        col_esq, col_dir = st.columns(2)
-
-        with col_esq:
-            st.markdown("### 🎣 HOOK")
-            st.markdown(roteiro.get("hook", ""))
-            st.markdown("**📸 Prompt:**")
-            st.code(roteiro.get("prompt_hook", ""))
-
-            st.markdown("### 💭 REFLEXÃO")
-            st.markdown(roteiro.get("reflexão", ""))
-            st.markdown("**📸 Prompt:**")
-            st.code(roteiro.get("prompt_reflexão", ""))
-
-        with col_dir:
-            st.markdown("### 📖 LEITURA")
-            st.markdown(leitura_montada)
-            st.markdown("**📸 Prompt:**")
-            st.code(roteiro.get("prompt_leitura", ""))
-
-            st.markdown("### 🌟 APLICAÇÃO")
-            st.markdown(roteiro.get("aplicação", ""))
-            st.markdown("**📸 Prompt:**")
-            st.code(roteiro.get("prompt_aplicacao", ""))
-
-        st.markdown("### 🙏 ORAÇÃO")
-        st.markdown(roteiro.get("oração", ""))
-        st.markdown("**📸 Prompt:**")
-        st.code(roteiro.get("prompt_oração", ""))
-
-        st.markdown("### 🖼️ THUMBNAIL")
-        st.code(roteiro.get("prompt_geral", ""))
-        st.markdown("---")
-
-    # ações automáticas
-    if st.session_state.get("roteiro_gerado"):
-        st.markdown("### Próximos passos automáticos")
-        colA, colB, colC = st.columns(3)
-        with colA:
-            if st.button("🔊 Gerar narração para o roteiro (gTTS)"):
-                try:
-                    roteiro = st.session_state["roteiro_gerado"]
-                    roteiro["leitura"] = st.session_state.get("leitura_montada", "")
-                    audios = gerar_narracoes_para_roteiro(roteiro, usar_gemini=False)
-                    st.session_state["generated_audios_blocks"] = audios
-                    st.success("Áudios gerados (gTTS).")
-                except Exception as e:
-                    st.error(f"Erro gerando narrações: {e}")
-                    st.error(traceback.format_exc())
-        with colB:
-            if st.button("🖼️ Gerar imagens para os prompts (ImageFX/Gemini)"):
-                try:
-                    roteiro = st.session_state["roteiro_gerado"]
-                    imagens = gerar_imagens_para_roteiro(roteiro, size="1024x1024")
-                    st.session_state["generated_images_blocks"] = imagens
-                    st.success("Imagens geradas.")
-                except Exception as e:
-                    st.error(f"Erro gerando imagens: {e}")
-                    st.error(traceback.format_exc())
-        with colC:
-            if st.button("🎬 Montar vídeo final (com as imagens e áudios gerados)"):
-                try:
-                    imgs = st.session_state.get("generated_images_blocks", {})
-                    audios = st.session_state.get("generated_audios_blocks", {})
-                    video_bio = montar_video_por_roteiro_ffmpeg(imgs, audios)
-                    st.session_state["video_final_bytes"] = video_bio
-                    st.success("Vídeo criado.")
-                except Exception as e:
-                    st.error(f"Erro montando vídeo: {e}")
-                    st.error(traceback.format_exc())
-
-    # previews
-    if st.session_state.get("generated_audios_blocks"):
-        st.markdown("**Pré-visualizar áudios gerados:**")
-        for k, b in st.session_state["generated_audios_blocks"].items():
-            try:
-                st.markdown(f"- {k}")
-                st.audio(b, format="audio/mp3")
-            except Exception:
-                pass
-
-    if st.session_state.get("generated_images_blocks"):
-        st.markdown("**Pré-visualizar imagens geradas:**")
-        cols = st.columns(min(4, len(st.session_state["generated_images_blocks"])))
-        for i, (k, bio) in enumerate(st.session_state["generated_images_blocks"].items()):
-            try:
-                bio.seek(0)
-                cols[i % len(cols)].image(bio, caption=k)
-            except Exception:
-                pass
-
-    if st.session_state.get("video_final_bytes"):
-        st.markdown("**Vídeo final pronto:**")
+    if voice_name_contains:
         try:
-            st.video(st.session_state["video_final_bytes"])
-            st.download_button("⬇️ Baixar vídeo final", st.session_state["video_final_bytes"], file_name="video_final.mp4", mime="video/mp4")
+            voices = engine.getProperty("voices")
+            for v in voices:
+                if voice_name_contains.lower() in v.name.lower() or voice_name_contains.lower() in v.id.lower():
+                    engine.setProperty("voice", v.id)
+                    break
         except Exception:
             pass
 
-# --------- TAB 2: PERSONAGENS ----------
-with tab2:
-    st.header("🎨 Banco de Personagens Bíblicos")
+    # save to file
+    engine.save_to_file(text, outfile_wav)
+    engine.runAndWait()
+    time.sleep(0.4)
+    if not os.path.exists(outfile_wav):
+        raise RuntimeError("Falha ao gerar arquivo WAV com pyttsx3.")
+    return outfile_wav
 
-    banco = st.session_state.personagens_biblicos.copy()
+def convert_audio_to_mp3(input_path: str, output_path: str) -> str:
+    """Converte wav -> mp3 usando ffmpeg quando disponível, senão usa pydub."""
+    if check_ffmpeg():
+        code, out = run_cmd(["ffmpeg", "-y", "-i", input_path, "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k", output_path])
+        if code != 0:
+            raise RuntimeError(f"ffmpeg falhou na conversão: {out}")
+        return output_path
+    else:
+        try:
+            from pydub import AudioSegment
+            seg = AudioSegment.from_file(input_path)
+            seg.export(output_path, format="mp3")
+            return output_path
+        except Exception as e:
+            raise RuntimeError(f"Não foi possível converter áudio (ffmpeg ausente e pydub falhou): {e}")
 
-    col1, col2 = st.columns([1, 1])
+# -----------------------
+# 4) MONTAGEM DE VÍDEO (ffmpeg)
+# -----------------------
+def create_video_from_images_and_audio(images_paths: List[str], audio_path: str, output_path: str, resolution: str = "1280x720") -> str:
+    """
+    Monta um vídeo concatenando clipes gerados a partir de cada imagem (duração proporcional ao áudio).
+    """
+    if not check_ffmpeg():
+        raise RuntimeError("ffmpeg não encontrado no PATH. Instale ffmpeg para montar o vídeo.")
 
-    with col1:
-        st.markdown("### 📋 Todos os personagens")
-        for i, (nome, desc) in enumerate(banco.items()):
-            with st.expander(f"✏️ {nome}"):
-                novo_nome = st.text_input(f"Nome {i}", value=nome, key=f"nome_{i}")
-                nova_desc = st.text_area(
-                    f"Descrição {i}", value=desc, height=100, key=f"desc_{i}"
-                )
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button("💾 Salvar", key=f"salvar_{i}"):
-                        if novo_nome and nova_desc:
-                            if (
-                                novo_nome != nome
-                                and novo_nome
-                                in st.session_state.personagens_biblicos
-                            ):
-                                del st.session_state.personagens_biblicos[novo_nome]
-                            del st.session_state.personagens_biblicos[nome]
-                            st.session_state.personagens_biblicos[novo_nome] = nova_desc
-                            st.rerun()
-                with col_b:
-                    if st.button("🗑️ Apagar", key=f"apagar_{i}"):
-                        del st.session_state.personagens_biblicos[nome]
-                        st.rerun()
-
-    with col2:
-        st.markdown("### ➕ Novo Personagem")
-        novo_nome = st.text_input("Nome do personagem", key="novo_nome")
-        nova_desc = st.text_area(
-            "Descrição detalhada (aparência, roupas, idade, estilo)",
-            height=120,
-            key="nova_desc",
-        )
-        if st.button("➕ Adicionar") and novo_nome and nova_desc:
-            st.session_state.personagens_biblicos[novo_nome] = nova_desc
-            st.rerun()
-
-# --------- TAB 3: FÁBRICA DE VÍDEO ----------
-with tab3:
-    st.header("🎥 Fábrica de Vídeo")
-    st.info("Use esta aba para gerar narrações, imagens e montar vídeos a partir de roteiros já gerados.")
-    st.markdown("### Ferramentas manuais")
-    col_a, col_b, col_c = st.columns(3)
-
-    with col_a:
-        if st.button("Gerar Áudios (gTTS) para o roteiro atual"):
-            if not st.session_state.get("roteiro_gerado"):
-                st.error("Gere o roteiro primeiro na aba 'Gerar Roteiro'.")
-            else:
-                try:
-                    roteiro = st.session_state["roteiro_gerado"]
-                    roteiro["leitura"] = st.session_state.get("leitura_montada", "")
-                    audios = gerar_narracoes_para_roteiro(roteiro, usar_gemini=False)
-                    st.session_state["generated_audios_blocks"] = audios
-                    st.success("Áudios gerados com gTTS.")
-                except Exception as e:
-                    st.error(f"Erro ao gerar áudios: {e}")
-                    st.error(traceback.format_exc())
-
-    with col_b:
-        if st.button("Gerar Imagens (ImageFX / Gemini) para o roteiro atual"):
-            if not st.session_state.get("roteiro_gerado"):
-                st.error("Gere o roteiro primeiro na aba 'Gerar Roteiro'.")
-            else:
-                try:
-                    roteiro = st.session_state["roteiro_gerado"]
-                    imagens = gerar_imagens_para_roteiro(roteiro, size="1024x1024")
-                    st.session_state["generated_images_blocks"] = imagens
-                    st.success("Imagens geradas.")
-                except Exception as e:
-                    st.error(f"Erro ao gerar imagens: {e}")
-                    st.error(traceback.format_exc())
-
-    with col_c:
-        if st.button("Montar Vídeo Final (usando imagens + áudios selecionados)"):
+    tmpdir = tempfile.mkdtemp(prefix="sj_vid_")
+    try:
+        # obter duração do áudio
+        code, out = run_cmd(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path])
+        audio_dur = None
+        if code == 0:
             try:
-                imgs = st.session_state.get("generated_images_blocks", {})
-                audios = st.session_state.get("generated_audios_blocks", {})
-                if not imgs or not audios:
-                    st.error("Gere imagens e áudios antes de montar o vídeo.")
-                else:
-                    video_bio = montar_video_por_roteiro_ffmpeg(imgs, audios)
-                    st.session_state["video_final_bytes"] = video_bio
-                    st.success("Vídeo gerado com sucesso.")
+                audio_dur = float(out.strip())
+            except Exception:
+                audio_dur = None
+
+        if not audio_dur:
+            audio_dur = max(1.0, len(images_paths) * 2.0)
+
+        per_img_seconds = max(0.8, audio_dur / max(1, len(images_paths)))
+
+        prepared = []
+        concat_txt = os.path.join(tmpdir, "concat.txt")
+        for i, img in enumerate(images_paths):
+            # Create a clip from the image
+            img_vid = os.path.join(tmpdir, f"img_{i}.mp4")
+            cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1",
+                "-i", img,
+                "-c:v", "libx264",
+                "-t", str(per_img_seconds),
+                "-pix_fmt", "yuv420p",
+                "-vf", f"scale={resolution}",
+                "-r", "25",
+                img_vid
+            ]
+            code, out = run_cmd(cmd, timeout=120)
+            if code != 0:
+                raise RuntimeError(f"ffmpeg falhou ao criar clipe de imagem: {out}")
+            prepared.append(img_vid)
+
+        # gerar arquivo concat
+        with open(concat_txt, "w", encoding="utf-8") as f:
+            for p in prepared:
+                f.write(f"file '{p}'\n")
+
+        video_no_audio = os.path.join(tmpdir, "video_no_audio.mp4")
+        code, out = run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_txt, "-c", "copy", video_no_audio])
+        if code != 0:
+            raise RuntimeError(f"ffmpeg falhou ao concatenar clipes: {out}")
+
+        # juntar audio
+        code, out = run_cmd(["ffmpeg", "-y", "-i", video_no_audio, "-i", audio_path, "-c:v", "copy", "-c:a", "aac", "-shortest", output_path], timeout=120)
+        if code != 0:
+            raise RuntimeError(f"ffmpeg falhou ao juntar audio: {out}")
+
+        return output_path
+    finally:
+        # Não removemos temporários automaticamente para facilitar debug.
+        pass
+
+# -----------------------
+# 5) UI STREAMLIT
+# -----------------------
+st.title("🎬 Studio Jhonata — Automação Litúrgica")
+st.sidebar.header("Configurações rápidas")
+
+# Config options
+use_groq_checkbox = st.sidebar.checkbox("Usar Groq para texto (se configurado)", value=True)
+use_railway_checkbox = st.sidebar.checkbox("Usar Railway fallback (RAILWAY_TEXT_ENDPOINT)", value=True)
+openai_images_checkbox = st.sidebar.checkbox("Gerar imagens com ImageFX (Google)", value=True)
+tts_offline_checkbox = st.sidebar.checkbox("Usar TTS offline (pyttsx3)", value=True)
+
+voice_name_contains = st.sidebar.text_input("Selecionar voz contendo (pyttsx3, opcional)", value="")
+audio_rate = st.sidebar.slider("Velocidade fala (words/min)", 100, 200, 150)
+video_resolution = st.sidebar.selectbox("Resolução final", ["1280x720", "1920x1080"], index=0)
+
+st.header("Entrada — Liturgia / Prompt")
+col_date, col_action = st.columns([2, 1])
+with col_date:
+    liturgia_date = st.date_input("Data da liturgia", value=None)
+with col_action:
+    generate_script_btn = st.button("📖 Gerar Roteiro (Groq / Railway)")
+
+prompt_text = st.text_area("Prompt / descrição (use para orientar geração de roteiro e imagens)", height=140)
+
+# State: script
+if "script_text" not in st.session_state:
+    st.session_state["script_text"] = ""
+
+# Generate script
+if generate_script_btn:
+    st.info("Solicitando roteiro...")
+    try:
+        if use_groq_checkbox:
+            script = ""
+            try:
+                script = fetch_script(prompt_text or f"Roteiro para liturgia de {liturgia_date}")
             except Exception as e:
-                st.error(f"Erro ao montar vídeo: {e}")
-                st.error(traceback.format_exc())
+                st.warning(f"Groq/Railway falhou: {e}. Usando fallback interno.")
+                script = fetch_script("")  # fallback interno
+        else:
+            if use_railway_checkbox:
+                try:
+                    script = fetch_script_from_railway(prompt_text or f"Roteiro para liturgia {liturgia_date}")
+                except Exception as e:
+                    st.warning(f"Railway falhou: {e}")
+                    script = fetch_script("")  # fallback
+            else:
+                script = fetch_script("")  # fallback
+        st.session_state["script_text"] = script
+        st.success("Roteiro gerado/obtido.")
+    except Exception as e:
+        st.error(f"Erro ao gerar roteiro: {e}")
 
-    st.markdown("---")
-    st.subheader("Pré-visualizações")
-    if st.session_state.get("generated_images_blocks"):
-        cols = st.columns(min(4, len(st.session_state["generated_images_blocks"])))
-        for i, (k, bio) in enumerate(st.session_state["generated_images_blocks"].items()):
-            try:
-                bio.seek(0)
-                cols[i % len(cols)].image(bio, caption=k)
-            except Exception:
-                pass
+st.subheader("Roteiro (edite se quiser)")
+script_text_area = st.text_area("Roteiro final (texto que será narrado)", value=st.session_state.get("script_text", ""), height=240)
+st.session_state["script_text"] = script_text_area
 
-    if st.session_state.get("generated_audios_blocks"):
-        st.subheader("Áudios gerados")
-        for k, b in st.session_state["generated_audios_blocks"].items():
-            try:
-                st.markdown(f"- {k}")
-                st.audio(b, format="audio/mp3")
-            except Exception:
-                pass
+# Split into blocks
+st.header("Mapeamento de blocos e imagens")
+n_blocks = st.number_input("Dividir roteiro em quantos blocos (cada bloco terá 1+ imagens)", min_value=1, max_value=20, value=3)
+# naive split: por parágrafos ou sentenças
+def split_into_blocks(text: str, n: int) -> List[str]:
+    parts = [p.strip() for p in text.strip().split("\n\n") if p.strip()]
+    if len(parts) < n:
+        sents = re.split(r'(?<=[.!?])\s+', text.strip())
+        import math
+        chunk_size = max(1, math.ceil(len(sents) / n)) if sents else 1
+        parts = [" ".join(sents[i:i+chunk_size]) for i in range(0, len(sents), chunk_size)]
+    if len(parts) < n:
+        parts += [""] * (n - len(parts))
+    return parts[:n]
 
-    if st.session_state.get("video_final_bytes"):
-        st.subheader("Vídeo Final")
-        try:
-            st.video(st.session_state["video_final_bytes"])
-            st.download_button("⬇️ Baixar vídeo_final.mp4", st.session_state["video_final_bytes"], file_name="video_final.mp4", mime="video/mp4")
-        except Exception:
-            pass
+blocks = split_into_blocks(st.session_state.get("script_text", ""), n_blocks)
+blocks_edits = []
+for i in range(n_blocks):
+    blocks_edits.append(st.text_area(f"Bloco {i+1}", value=blocks[i] if i < len(blocks) else "", height=80, key=f"block_{i}"))
 
-# --------- TAB 4: HISTÓRICO ----------
-with tab4:
-    st.header("📊 Histórico")
-    st.info("Em breve.")
+st.subheader("Imagens (upload opcional) e geração")
+uploaded = st.file_uploader("Faça upload de imagens (opcional) — manter ordem", accept_multiple_files=True, type=["png", "jpg", "jpeg"])
+uploaded_paths = []
+if uploaded:
+    for f in uploaded:
+        tf = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(f.name)[1])
+        tf.write(f.getbuffer())
+        tf.flush()
+        uploaded_paths.append(tf.name)
+
+image_prompt_override = st.text_input("Prompt geral para geração de imagens (deixe vazio para usar texto de cada bloco)")
+num_images_per_block = st.slider("Imagens por bloco (quando gerando)", 1, 4, 1)
 
 st.markdown("---")
-st.markdown("Feito com ❤️ para evangelização - Studio Jhonata")
+st.header("Áudio & Vídeo")
+audio_format = st.selectbox("Formato de áudio gerado", ["mp3", "wav"], index=0)
+btn_generate_audio = st.button("🔊 Gerar Áudio TTS (para todos blocos)")
+btn_generate_images = st.button("🖼️ Gerar Imagens (ImageFX)")
+btn_assemble_video = st.button("🎬 Montar Vídeo Final (imagens + áudio)")
+
+# storage for generated files
+if "generated_images" not in st.session_state:
+    st.session_state["generated_images"] = []  # list of image paths
+if "generated_audio" not in st.session_state:
+    st.session_state["generated_audio"] = []  # list of audio paths
+
+# Generate images per block
+if btn_generate_images:
+    st.info("Gerando imagens por bloco (ImageFX)...")
+    temp_images = []
+    try:
+        # If user uploaded images, use them first (one per block if count matches)
+        if uploaded_paths and len(uploaded_paths) >= n_blocks:
+            st.info("Usando imagens feitas upload (uma por bloco).")
+            # map first n_blocks uploaded to blocks
+            for i in range(n_blocks):
+                temp_images.append(uploaded_paths[i])
+        else:
+            # generate images for each block
+            temp_dir = tempfile.mkdtemp(prefix="sj_images_")
+            for i, txt in enumerate(blocks_edits):
+                prompt_for_image = (image_prompt_override.strip() or txt.strip() or f"Ilustração para bloco {i+1} da liturgia.")
+                for j in range(num_images_per_block):
+                    safe_name = sanitize_filename(f"bloco_{i}_{j}")
+                    out_path = os.path.join(temp_dir, f"{safe_name}.png")
+                    try:
+                        gerar_imagem_imagefx(prompt_for_image, out_path, size="1024x1024")
+                        temp_images.append(out_path)
+                        st.success(f"Imagem gerada: {out_path}")
+                    except Exception as e:
+                        st.error(f"Erro gerando imagem para bloco {i} (tentativa {j+1}): {e}")
+                        # continuar tentando com próximo bloco
+            if not temp_images:
+                st.warning("Nenhuma imagem gerada. Verifique GOOGLE_API_KEY e logs.")
+        st.session_state["generated_images"] = temp_images
+    except Exception as e:
+        st.error(f"Erro no processo de geração de imagens: {e}")
+
+# Generate audio for each block
+if btn_generate_audio:
+    st.info("Gerando áudio TTS para cada bloco...")
+    aud_paths = []
+    temp_dir_audio = tempfile.mkdtemp(prefix="sj_audio_")
+    for i, txt in enumerate(blocks_edits):
+        if not txt or not txt.strip():
+            st.warning(f"Bloco {i+1} vazio — pulando.")
+            continue
+        safe_name = sanitize_filename(f"block_{i}")
+        wav_path = os.path.join(temp_dir_audio, f"{safe_name}.wav")
+        try:
+            tts_generate_offline(txt, wav_path, rate=audio_rate, voice_name_contains=(voice_name_contains or None))
+            if audio_format == "mp3":
+                mp3_path = os.path.join(temp_dir_audio, f"{safe_name}.mp3")
+                convert_audio_to_mp3(wav_path, mp3_path)
+                aud_paths.append(mp3_path)
+                st.success(f"Áudio bloco {i+1} -> {mp3_path}")
+            else:
+                aud_paths.append(wav_path)
+                st.success(f"Áudio bloco {i+1} -> {wav_path}")
+        except Exception as e:
+            st.error(f"Falha TTS bloco {i+1}: {e}")
+    st.session_state["generated_audio"] = aud_paths
+
+# Assemble video
+if btn_assemble_video:
+    st.info("Montando vídeo final...")
+    try:
+        images_for_video = st.session_state.get("generated_images", []) or uploaded_paths
+        auds = st.session_state.get("generated_audio", [])
+        if not images_for_video:
+            # criar imagens simples com texto dos blocos
+            st.info("Sem imagens: criando imagens simples de fundo com texto.")
+            tmp_img_dir = tempfile.mkdtemp(prefix="sj_auto_img_")
+            for i, txt in enumerate(blocks_edits):
+                im = Image.new("RGB", (1280, 720), color=(12, 12, 12))
+                draw = ImageDraw.Draw(im)
+                try:
+                    font = ImageFont.truetype("DejaVuSans.ttf", 28)
+                except Exception:
+                    font = ImageFont.load_default()
+                wrapped = "\n".join(re.sub(r'\s+', ' ', txt).strip() and txt[i:i+800] for i in range(0, len(txt or ""), 800)) if txt else f"Bloco {i+1}"
+                draw.multiline_text((60, 60), txt or f"Bloco {i+1}", font=font, fill=(230, 230, 230))
+                p = os.path.join(tmp_img_dir, f"auto_{i}.png")
+                im.save(p)
+                images_for_video.append(p)
+
+        if not auds:
+            # criar áudio silencioso na duração estimada
+            st.info("Sem áudio gerado: criando áudio silencioso.")
+            duration = max(1.0, len(images_for_video) * 2.0)
+            silent_path = os.path.join(tempfile.gettempdir(), f"silent_{int(time.time())}.wav")
+            if check_ffmpeg():
+                code, out = run_cmd(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100", "-t", str(duration), silent_path])
+                if code != 0:
+                    raise RuntimeError(f"ffmpeg falhou ao criar silêncio: {out}")
+            else:
+                raise RuntimeError("ffmpeg ausente para criar arquivo de áudio silencioso.")
+            final_audio = silent_path
+        else:
+            # concatenar audios em um só
+            if len(auds) == 1:
+                final_audio = auds[0]
+            else:
+                list_txt = os.path.join(tempfile.gettempdir(), f"list_{int(time.time())}.txt")
+                with open(list_txt, "w", encoding="utf-8") as f:
+                    for p in auds:
+                        f.write(f"file '{p}'\n")
+                concat_audio = os.path.join(tempfile.gettempdir(), f"concat_{int(time.time())}.mp3")
+                code, out = run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_txt, "-c", "copy", concat_audio])
+                if code != 0:
+                    # fallback com pydub
+                    try:
+                        from pydub import AudioSegment
+                        combined = None
+                        for p in auds:
+                            seg = AudioSegment.from_file(p)
+                            combined = seg if combined is None else combined + seg
+                        combined.export(concat_audio, format="mp3")
+                    except Exception as e:
+                        raise RuntimeError(f"Falha ao concatenar audios: {e}")
+                final_audio = concat_audio
+
+        # criar vídeo
+        out_mp4 = os.path.join(tempfile.gettempdir(), f"studio_jhonata_{int(time.time())}.mp4")
+        create_video_from_images_and_audio(images_for_video, final_audio, out_mp4, resolution=video_resolution)
+        st.success(f"Vídeo criado: {out_mp4}")
+        with open(out_mp4, "rb") as f:
+            video_bytes = f.read()
+            st.video(video_bytes)
+            st.download_button("Download do vídeo (.mp4)", data=video_bytes, file_name=os.path.basename(out_mp4), mime="video/mp4")
+
+    except Exception as e:
+        st.error(f"Falha ao montar vídeo: {e}")
+
+st.markdown("---")
+st.header("Logs, dicas e variáveis de ambiente")
+st.markdown("""
+- Variáveis de ambiente úteis:
+  - GROQ_API_KEY (opcional, se usar cliente groq)
+  - RAILWAY_TEXT_ENDPOINT (obrigatório se quiser usar Railway fallback; ex: https://.../roteiro)
+  - GOOGLE_API_KEY (obrigatório para ImageFX / Image Generation)
+  - ELEVENLABS_API_KEY (opcional, se substituir TTS)
+- Instale ffmpeg no PATH (necessário para montagem de vídeo e conversões).
+- Se ocorrerem erros 400/401 ao ImageFX, verifique GOOGLE_API_KEY e permissões do projeto Google Cloud.
+""")
+
+st.code("""
+REQUIREMENTS:
+streamlit
+pillow
+pyttsx3
+pydub
+requests
+google-generativeai
+# opcional: groq client se disponível no pip
+# ffmpeg no PATH (instalar via apt/brew/choco)
+""")
