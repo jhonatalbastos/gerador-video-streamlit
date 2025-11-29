@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v7.0)
-# Features: Ordem Ajustada (Hook->Leitura->Reflexão), Editor Full, Upload, Resoluções, Overlay
+# app.py — Studio Jhonata (COMPLETO v8.0)
+# Features: Editor Full, Upload, Resoluções, Editor Visual de Overlay com Preview
 import os
 import re
 import json
@@ -15,7 +15,7 @@ from typing import List, Optional, Tuple, Dict
 import base64
 
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
 
 # Force ffmpeg path for imageio if needed (Streamlit Cloud)
@@ -455,6 +455,46 @@ def resolve_font_path(font_choice: str, uploaded_font: Optional[BytesIO]) -> Opt
         if os.path.exists(font): return font
     return None
 
+def criar_preview_overlay(width: int, height: int, texts: List[Dict], font_path: Optional[str]) -> BytesIO:
+    """Gera uma imagem de preview usando PIL"""
+    # Criar imagem preta
+    img = Image.new("RGB", (width, height), "black")
+    draw = ImageDraw.Draw(img)
+    
+    for item in texts:
+        text = item.get("text", "")
+        if not text: continue
+        
+        size = item.get("size", 30)
+        y = item.get("y", 0)
+        color = item.get("color", "white")
+        
+        # Carregar Fonte
+        try:
+            if font_path and os.path.exists(font_path):
+                font = ImageFont.truetype(font_path, size)
+            else:
+                font = ImageFont.load_default() # Fallback básico
+        except:
+             font = ImageFont.load_default()
+
+        # Calcular posição X (Centralizado)
+        # PIL < 10 tem draw.textsize, PIL >= 10 tem draw.textbbox ou textlength
+        try:
+            length = draw.textlength(text, font=font)
+        except:
+             length = len(text) * size * 0.5 # estimativa grosseira fallback
+
+        x = (width - length) / 2
+        
+        # Desenhar
+        draw.text((x, y), text, fill=color, font=font)
+        
+    bio = BytesIO()
+    img.save(bio, format="PNG")
+    bio.seek(0)
+    return bio
+
 # =========================
 # Interface principal
 # =========================
@@ -471,7 +511,7 @@ motor_escolhido = st.sidebar.selectbox(
     index=0
 )
 
-# Seletor de Resolução (Novo)
+# Seletor de Resolução
 resolucao_escolhida = st.sidebar.selectbox(
     "📏 Resolução do Vídeo",
     ["9:16 (Vertical/Stories)", "16:9 (Horizontal/YouTube)", "1:1 (Quadrado/Feed)"],
@@ -504,6 +544,14 @@ if "video_final_bytes" not in st.session_state:
     st.session_state["video_final_bytes"] = None
 if "meta_dados" not in st.session_state:
     st.session_state["meta_dados"] = {"data": "", "ref": ""}
+    
+# Overlay default settings
+if "overlay_settings" not in st.session_state:
+    st.session_state["overlay_settings"] = {
+        "line1_y": 40, "line1_size": 40,
+        "line2_y": 90, "line2_size": 28,
+        "line3_y": 130, "line3_size": 24,
+    }
 
 tab1, tab2, tab3, tab4 = st.tabs(
     ["📖 Gerar Roteiro", "🎨 Personagens", "🎥 Fábrica Vídeo (Editor)", "📊 Histórico"]
@@ -566,7 +614,6 @@ with tab1:
         roteiro = st.session_state["roteiro_gerado"]
         st.markdown("---")
         
-        # AJUSTE DE ORDEM VISUAL (Hook -> Leitura -> Reflexão -> Aplicação)
         col_esq, col_dir = st.columns(2)
         with col_esq:
             st.markdown("### 🎣 HOOK")
@@ -621,213 +668,263 @@ with tab2:
             st.session_state.personagens_biblicos[nn] = nd
             st.rerun()
 
-# --------- TAB 3: FÁBRICA DE VÍDEO ----------
+# --------- TAB 3: FÁBRICA DE VÍDEO (SPLIT) ----------
 with tab3:
-    st.header("🎥 Editor de Cenas")
-    
-    if not st.session_state.get("roteiro_gerado"):
-        st.warning("⚠️ Gere o roteiro na Aba 1 primeiro.")
-        st.stop()
-    
-    roteiro = st.session_state["roteiro_gerado"]
-    
-    # AJUSTE DE ORDEM DE PROCESSAMENTO (Hook -> Leitura -> Reflexão -> Aplicação -> Oração)
-    blocos_config = [
-        {"id": "hook", "label": "🎣 HOOK", "prompt_key": "prompt_hook", "text_key": "hook"},
-        {"id": "leitura", "label": "📖 LEITURA", "prompt_key": "prompt_leitura", "text_key": "leitura_montada"}, 
-        {"id": "reflexão", "label": "💭 REFLEXÃO", "prompt_key": "prompt_reflexão", "text_key": "reflexão"},
-        {"id": "aplicação", "label": "🌟 APLICAÇÃO", "prompt_key": "prompt_aplicacao", "text_key": "aplicação"},
-        {"id": "oração", "label": "🙏 ORAÇÃO", "prompt_key": "prompt_oração", "text_key": "oração"},
-        {"id": "thumbnail", "label": "🖼️ THUMBNAIL", "prompt_key": "prompt_geral", "text_key": None}
-    ]
+    col_overlay, col_editor = st.columns([1, 2.5])
 
-    # Info da config atual
-    st.info(f"⚙️ Config: **{motor_escolhido}** | Resolução: **{resolucao_escolhida}**")
-
-    for bloco in blocos_config:
-        block_id = bloco["id"]
+    # === COLUNA ESQUERDA: OVERLAY EDITOR ===
+    with col_overlay:
+        st.header("🎚️ Overlay")
+        st.info("Ajuste posição e tamanho dos textos.")
         
-        with st.container(border=True):
-            st.subheader(bloco["label"])
-            col_text, col_media = st.columns([1, 1.2])
+        # Load settings
+        ov_sets = st.session_state["overlay_settings"]
+        
+        with st.expander("Linha 1: Título", expanded=True):
+            ov_sets["line1_size"] = st.slider("Tamanho Fonte", 10, 100, ov_sets["line1_size"], key="s1")
+            ov_sets["line1_y"] = st.slider("Posição Y (Topo)", 0, 500, ov_sets["line1_y"], key="y1")
             
-            with col_text:
-                if bloco["text_key"]:
-                    txt_content = roteiro.get(bloco["text_key"]) if block_id != "leitura" else st.session_state.get("leitura_montada", "")
-                    st.caption("📜 Texto para Narração:")
-                    st.markdown(f"_{txt_content[:250]}..._" if txt_content else "_Sem texto_")
-                    
-                    if st.button(f"🔊 Gerar Áudio ({block_id})", key=f"btn_audio_{block_id}"):
-                        if txt_content:
-                            try:
-                                audio = gerar_audio_gtts(txt_content)
-                                st.session_state["generated_audios_blocks"][block_id] = audio
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erro áudio: {e}")
-                    
-                    if block_id in st.session_state["generated_audios_blocks"]:
-                        st.audio(st.session_state["generated_audios_blocks"][block_id], format="audio/mp3")
+        with st.expander("Linha 2: Data", expanded=True):
+            ov_sets["line2_size"] = st.slider("Tamanho Fonte", 10, 100, ov_sets["line2_size"], key="s2")
+            ov_sets["line2_y"] = st.slider("Posição Y", 0, 500, ov_sets["line2_y"], key="y2")
+            
+        with st.expander("Linha 3: Ref", expanded=True):
+            ov_sets["line3_size"] = st.slider("Tamanho Fonte", 10, 100, ov_sets["line3_size"], key="s3")
+            ov_sets["line3_y"] = st.slider("Posição Y", 0, 500, ov_sets["line3_y"], key="y3")
 
-                prompt_content = roteiro.get(bloco["prompt_key"], "")
-                st.caption("📋 Prompt Visual:")
-                st.code(prompt_content, language="text")
+        st.session_state["overlay_settings"] = ov_sets
+        
+        if st.button("💾 Salvar Ajustes"):
+            st.success("Definido para o próximo render!")
 
-            with col_media:
-                st.caption("🖼️ Imagem da Cena:")
-                current_img = st.session_state["generated_images_blocks"].get(block_id)
-                if current_img:
-                    try:
-                        current_img.seek(0)
-                        st.image(current_img, use_column_width=True)
-                    except Exception:
-                        st.error("Erro ao exibir imagem.")
-                else:
-                    st.info("Nenhuma imagem definida.")
+        st.markdown("### Pré-visualização")
+        # Gerar Preview on-the-fly
+        res_params = get_resolution_params(resolucao_escolhida)
+        preview_w = int(res_params["w"] / 2) # reduzir p/ preview não ficar gigante
+        preview_h = int(res_params["h"] / 2)
+        scale = 0.5
 
-                c_gen, c_up = st.columns([1.5, 2])
+        # Dados fake para preview ou reais se tiver
+        meta = st.session_state.get("meta_dados", {})
+        txt_l1 = "EVANGELHO"
+        txt_l2 = meta.get("data", "29.11.2025")
+        txt_l3 = meta.get("ref", "Lucas, Cap. 1, 26-38")
+        
+        font_p = resolve_font_path(font_choice, uploaded_font_file)
+        
+        preview_texts = [
+            {"text": txt_l1, "size": int(ov_sets["line1_size"] * scale), "y": int(ov_sets["line1_y"] * scale), "color": "white"},
+            {"text": txt_l2, "size": int(ov_sets["line2_size"] * scale), "y": int(ov_sets["line2_y"] * scale), "color": "white"},
+            {"text": txt_l3, "size": int(ov_sets["line3_size"] * scale), "y": int(ov_sets["line3_y"] * scale), "color": "white"},
+        ]
+        
+        prev_img = criar_preview_overlay(preview_w, preview_h, preview_texts, font_p)
+        st.image(prev_img, caption=f"Preview {resolucao_escolhida}", use_column_width=True)
+
+
+    # === COLUNA DIREITA: EDITOR DE CENAS ===
+    with col_editor:
+        st.header("🎥 Editor de Cenas")
+        
+        if not st.session_state.get("roteiro_gerado"):
+            st.warning("⚠️ Gere o roteiro na Aba 1 primeiro.")
+            st.stop()
+        
+        roteiro = st.session_state["roteiro_gerado"]
+        
+        # Ordem: Hook -> Leitura -> Reflexão -> Aplicação -> Oração -> Thumb
+        blocos_config = [
+            {"id": "hook", "label": "🎣 HOOK", "prompt_key": "prompt_hook", "text_key": "hook"},
+            {"id": "leitura", "label": "📖 LEITURA", "prompt_key": "prompt_leitura", "text_key": "leitura_montada"}, 
+            {"id": "reflexão", "label": "💭 REFLEXÃO", "prompt_key": "prompt_reflexão", "text_key": "reflexão"},
+            {"id": "aplicação", "label": "🌟 APLICAÇÃO", "prompt_key": "prompt_aplicacao", "text_key": "aplicação"},
+            {"id": "oração", "label": "🙏 ORAÇÃO", "prompt_key": "prompt_oração", "text_key": "oração"},
+            {"id": "thumbnail", "label": "🖼️ THUMBNAIL", "prompt_key": "prompt_geral", "text_key": None}
+        ]
+
+        st.info(f"⚙️ Config: **{motor_escolhido}** | Resolução: **{resolucao_escolhida}**")
+
+        for bloco in blocos_config:
+            block_id = bloco["id"]
+            
+            with st.container(border=True):
+                st.subheader(bloco["label"])
+                col_text, col_media = st.columns([1, 1.2])
                 
-                with c_gen:
-                    if st.button(f"✨ Gerar ({resolucao_escolhida.split()[0]})", key=f"btn_gen_{block_id}"):
-                        if prompt_content:
-                            with st.spinner(f"Criando no formato {resolucao_escolhida}..."):
+                with col_text:
+                    if bloco["text_key"]:
+                        txt_content = roteiro.get(bloco["text_key"]) if block_id != "leitura" else st.session_state.get("leitura_montada", "")
+                        st.caption("📜 Texto para Narração:")
+                        st.markdown(f"_{txt_content[:250]}..._" if txt_content else "_Sem texto_")
+                        
+                        if st.button(f"🔊 Gerar Áudio ({block_id})", key=f"btn_audio_{block_id}"):
+                            if txt_content:
                                 try:
-                                    img = despachar_geracao_imagem(prompt_content, motor_escolhido, resolucao_escolhida)
-                                    st.session_state["generated_images_blocks"][block_id] = img
-                                    st.success("Gerada!")
+                                    audio = gerar_audio_gtts(txt_content)
+                                    st.session_state["generated_audios_blocks"][block_id] = audio
                                     st.rerun()
                                 except Exception as e:
-                                    st.error(f"Erro: {e}")
-                        else:
-                            st.warning("Sem prompt.")
-                
-                with c_up:
-                    uploaded_file = st.file_uploader(
-                        "Ou envie a sua:", type=["png", "jpg", "jpeg"], key=f"upload_{block_id}"
-                    )
-                    if uploaded_file is not None:
-                        bytes_data = uploaded_file.read()
-                        st.session_state["generated_images_blocks"][block_id] = BytesIO(bytes_data)
-                        st.success("Enviada!")
-
-    st.divider()
-    
-    st.header("🎬 Finalização")
-    usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay: Evangelho, Data, Ref)", value=False)
-
-    if st.button("Renderizar Vídeo Completo (Unir tudo)", type="primary"):
-        with st.status("Renderizando vídeo com efeitos...", expanded=True) as status:
-            try:
-                blocos_relevantes = [b for b in blocos_config if b["id"] != "thumbnail"]
-                
-                if not shutil_which("ffmpeg"):
-                     status.update(label="FFmpeg não encontrado!", state="error")
-                     st.stop()
-                
-                font_path = resolve_font_path(font_choice, uploaded_font_file)
-                if usar_overlay and not font_path:
-                    st.warning("⚠️ Fonte não encontrada. O overlay pode falhar.")
-                
-                temp_dir = tempfile.mkdtemp()
-                clip_files = []
-                
-                meta = st.session_state.get("meta_dados", {})
-                txt_dt = meta.get("data", "")
-                txt_ref = meta.get("ref", "")
-                
-                map_titulos = {
-                    "hook": "EVANGELHO", "leitura": "EVANGELHO",
-                    "reflexão": "REFLEXÃO", "aplicação": "APLICAÇÃO", "oração": "ORAÇÃO"
-                }
-
-                # Parâmetros baseados na resolução
-                res_params = get_resolution_params(resolucao_escolhida)
-                w_out = res_params["w"]
-                h_out = res_params["h"]
-                s_out = f"{w_out}x{h_out}"
-
-                for b in blocos_relevantes:
-                    bid = b["id"]
-                    img_bio = st.session_state["generated_images_blocks"].get(bid)
-                    audio_bio = st.session_state["generated_audios_blocks"].get(bid)
-                    
-                    if not img_bio or not audio_bio:
-                        continue
+                                    st.error(f"Erro áudio: {e}")
                         
-                    st.write(f"Processando clipe: {bid}...")
-                    
-                    img_path = os.path.join(temp_dir, f"{bid}.png")
-                    audio_path = os.path.join(temp_dir, f"{bid}.mp3")
-                    clip_path = os.path.join(temp_dir, f"{bid}.mp4")
-                    
-                    img_bio.seek(0)
-                    with open(img_path, "wb") as f: f.write(img_bio.read())
-                    audio_bio.seek(0)
-                    with open(audio_path, "wb") as f: f.write(audio_bio.read())
-                    
-                    dur = get_audio_duration_seconds(audio_path) or 5.0
-                    frames = int(dur * 25)
+                        if block_id in st.session_state["generated_audios_blocks"]:
+                            st.audio(st.session_state["generated_audios_blocks"][block_id], format="audio/mp3")
 
-                    # Filtro Zoom Pan Adaptado para a resolução
-                    vf_filters = [
-                        f"zoompan=z='min(zoom+0.0010,1.5)':d={frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={s_out}",
-                        f"fade=t=in:st=0:d=1,fade=t=out:st={dur-0.5}:d=0.5"
-                    ]
+                    prompt_content = roteiro.get(bloco["prompt_key"], "")
+                    st.caption("📋 Prompt Visual:")
+                    st.code(prompt_content, language="text")
 
-                    # Overlay Adaptado (Y posicionado relativo a altura)
-                    if usar_overlay and font_path:
-                        titulo_atual = map_titulos.get(bid, "EVANGELHO")
+                with col_media:
+                    st.caption("🖼️ Imagem da Cena:")
+                    current_img = st.session_state["generated_images_blocks"].get(block_id)
+                    if current_img:
+                        try:
+                            current_img.seek(0)
+                            st.image(current_img, use_column_width=True)
+                        except Exception:
+                            st.error("Erro ao exibir imagem.")
+                    else:
+                        st.info("Nenhuma imagem definida.")
+
+                    c_gen, c_up = st.columns([1.5, 2])
+                    
+                    with c_gen:
+                        if st.button(f"✨ Gerar ({resolucao_escolhida.split()[0]})", key=f"btn_gen_{block_id}"):
+                            if prompt_content:
+                                with st.spinner(f"Criando no formato {resolucao_escolhida}..."):
+                                    try:
+                                        img = despachar_geracao_imagem(prompt_content, motor_escolhido, resolucao_escolhida)
+                                        st.session_state["generated_images_blocks"][block_id] = img
+                                        st.success("Gerada!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Erro: {e}")
+                            else:
+                                st.warning("Sem prompt.")
+                    
+                    with c_up:
+                        uploaded_file = st.file_uploader(
+                            "Ou envie a sua:", type=["png", "jpg", "jpeg"], key=f"upload_{block_id}"
+                        )
+                        if uploaded_file is not None:
+                            bytes_data = uploaded_file.read()
+                            st.session_state["generated_images_blocks"][block_id] = BytesIO(bytes_data)
+                            st.success("Enviada!")
+
+        st.divider()
+        
+        st.header("🎬 Finalização")
+        usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay Personalizado)", value=True)
+
+        if st.button("Renderizar Vídeo Completo (Unir tudo)", type="primary"):
+            with st.status("Renderizando vídeo com efeitos...", expanded=True) as status:
+                try:
+                    blocos_relevantes = [b for b in blocos_config if b["id"] != "thumbnail"]
+                    
+                    if not shutil_which("ffmpeg"):
+                        status.update(label="FFmpeg não encontrado!", state="error")
+                        st.stop()
+                    
+                    font_path = resolve_font_path(font_choice, uploaded_font_file)
+                    if usar_overlay and not font_path:
+                        st.warning("⚠️ Fonte não encontrada. O overlay pode falhar.")
+                    
+                    temp_dir = tempfile.mkdtemp()
+                    clip_files = []
+                    
+                    meta = st.session_state.get("meta_dados", {})
+                    txt_dt = meta.get("data", "")
+                    txt_ref = meta.get("ref", "")
+                    
+                    map_titulos = {
+                        "hook": "EVANGELHO", "leitura": "EVANGELHO",
+                        "reflexão": "REFLEXÃO", "aplicação": "APLICAÇÃO", "oração": "ORAÇÃO"
+                    }
+
+                    res_params = get_resolution_params(resolucao_escolhida)
+                    w_out = res_params["w"]
+                    h_out = res_params["h"]
+                    s_out = f"{w_out}x{h_out}"
+
+                    # Carregar configurações do Overlay
+                    sets = st.session_state["overlay_settings"]
+
+                    for b in blocos_relevantes:
+                        bid = b["id"]
+                        img_bio = st.session_state["generated_images_blocks"].get(bid)
+                        audio_bio = st.session_state["generated_audios_blocks"].get(bid)
                         
-                        y1 = 40
-                        y2 = 90
-                        y3 = 130
+                        if not img_bio or not audio_bio:
+                            continue
+                            
+                        st.write(f"Processando clipe: {bid}...")
                         
-                        vf_filters.append(f"drawtext=fontfile='{font_path}':text='{titulo_atual}':fontcolor=white:fontsize=40:x=(w-text_w)/2:y={y1}:shadowcolor=black:shadowx=2:shadowy=2")
-                        vf_filters.append(f"drawtext=fontfile='{font_path}':text='{txt_dt}':fontcolor=white:fontsize=28:x=(w-text_w)/2:y={y2}:shadowcolor=black:shadowx=2:shadowy=2")
-                        vf_filters.append(f"drawtext=fontfile='{font_path}':text='{txt_ref}':fontcolor=white:fontsize=24:x=(w-text_w)/2:y={y3}:shadowcolor=black:shadowx=2:shadowy=2")
+                        img_path = os.path.join(temp_dir, f"{bid}.png")
+                        audio_path = os.path.join(temp_dir, f"{bid}.mp3")
+                        clip_path = os.path.join(temp_dir, f"{bid}.mp4")
+                        
+                        img_bio.seek(0)
+                        with open(img_path, "wb") as f: f.write(img_bio.read())
+                        audio_bio.seek(0)
+                        with open(audio_path, "wb") as f: f.write(audio_bio.read())
+                        
+                        dur = get_audio_duration_seconds(audio_path) or 5.0
+                        frames = int(dur * 25)
 
-                    filter_complex = ",".join(vf_filters)
-                    
-                    cmd = [
-                        "ffmpeg", "-y", 
-                        "-loop", "1", "-i", img_path, 
-                        "-i", audio_path,
-                        "-vf", filter_complex,
-                        "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p",
-                        "-c:a", "aac", "-shortest", 
-                        clip_path
-                    ]
-                    run_cmd(cmd)
-                    clip_files.append(clip_path)
-                
-                if clip_files:
-                    concat_list = os.path.join(temp_dir, "list.txt")
-                    with open(concat_list, "w") as f:
-                        for p in clip_files: f.write(f"file '{p}'\n")
-                    
-                    final_video = os.path.join(temp_dir, "final.mp4")
-                    run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", final_video])
-                    
-                    with open(final_video, "rb") as f:
-                        st.session_state["video_final_bytes"] = BytesIO(f.read())
-                    
-                    status.update(label="Vídeo Renderizado com Sucesso!", state="complete")
-                else:
-                    status.update(label="Nenhum clipe válido gerado.", state="error")
-                    
-            except Exception as e:
-                status.update(label="Erro na renderização", state="error")
-                st.error(f"Detalhes: {e}")
-                st.error(traceback.format_exc())
+                        vf_filters = [
+                            f"zoompan=z='min(zoom+0.0010,1.5)':d={frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={s_out}",
+                            f"fade=t=in:st=0:d=1,fade=t=out:st={dur-0.5}:d=0.5"
+                        ]
 
-    if st.session_state.get("video_final_bytes"):
-        st.success("Vídeo pronto!")
-        st.video(st.session_state["video_final_bytes"])
-        st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
+                        if usar_overlay and font_path:
+                            titulo_atual = map_titulos.get(bid, "EVANGELHO")
+                            
+                            # Usar posições e tamanhos configurados
+                            vf_filters.append(f"drawtext=fontfile='{font_path}':text='{titulo_atual}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}:shadowcolor=black:shadowx=2:shadowy=2")
+                            vf_filters.append(f"drawtext=fontfile='{font_path}':text='{txt_dt}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}:shadowcolor=black:shadowx=2:shadowy=2")
+                            vf_filters.append(f"drawtext=fontfile='{font_path}':text='{txt_ref}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2")
+
+                        filter_complex = ",".join(vf_filters)
+                        
+                        cmd = [
+                            "ffmpeg", "-y", 
+                            "-loop", "1", "-i", img_path, 
+                            "-i", audio_path,
+                            "-vf", filter_complex,
+                            "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", "-shortest", 
+                            clip_path
+                        ]
+                        run_cmd(cmd)
+                        clip_files.append(clip_path)
+                    
+                    if clip_files:
+                        concat_list = os.path.join(temp_dir, "list.txt")
+                        with open(concat_list, "w") as f:
+                            for p in clip_files: f.write(f"file '{p}'\n")
+                        
+                        final_video = os.path.join(temp_dir, "final.mp4")
+                        run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", final_video])
+                        
+                        with open(final_video, "rb") as f:
+                            st.session_state["video_final_bytes"] = BytesIO(f.read())
+                        
+                        status.update(label="Vídeo Renderizado com Sucesso!", state="complete")
+                    else:
+                        status.update(label="Nenhum clipe válido gerado.", state="error")
+                        
+                except Exception as e:
+                    status.update(label="Erro na renderização", state="error")
+                    st.error(f"Detalhes: {e}")
+                    st.error(traceback.format_exc())
+
+        if st.session_state.get("video_final_bytes"):
+            st.success("Vídeo pronto!")
+            st.video(st.session_state["video_final_bytes"])
+            st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
 
 # --------- TAB 4 ----------
 with tab4:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v7.0 - Ordem Reajustada")
+st.caption("Studio Jhonata v8.0 - Editor de Overlay com Preview")
