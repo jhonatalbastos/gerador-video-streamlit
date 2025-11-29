@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO & FINAL)
-# Features: Editor de Cenas, Upload de Imagens, Prompts Copiáveis, Fallback Híbrido Google/Flux
+# app.py — Studio Jhonata (COMPLETO v5.0)
+# Features: Editor Full, Upload, Zoom Ken Burns, Overlay Dinâmico, Seletor de Fontes
 import os
 import re
 import json
@@ -11,7 +11,7 @@ import urllib.parse
 import random
 from io import BytesIO
 from datetime import date
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 import base64
 
 import requests
@@ -316,10 +316,9 @@ def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
     return f"{abertura} {texto_evangelho} {fechamento}"
 
 # =========================
-# FUNÇÕES DE ÁUDIO, IMAGEM, VÍDEO
+# FUNÇÕES DE ÁUDIO & VÍDEO
 # =========================
 
-# ---- gTTS ----
 def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
     if not texto or not texto.strip():
         return None
@@ -333,41 +332,42 @@ def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
     except Exception as e:
         raise RuntimeError(f"Erro gTTS: {e}")
 
-# ---- Gemini TTS ----
-def gerar_audio_gemini(texto: str, voz: str = "pt-BR-Wavenet-B") -> BytesIO:
-    gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
-    if not gem_key:
-        raise RuntimeError("GEMINI_API_KEY ausente.")
-    if not texto or not texto.strip():
-        raise ValueError("Texto vazio.")
+# =========================
+# FUNÇÕES DE IMAGEM (MOTORES)
+# =========================
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gem_key}"
-    prompt_text = f"(tts|voice:{voz})\nPor favor, narre em Português do Brasil com entonação natural:\n{texto}"
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-        "generationConfig": {"responseMimeType": "audio/mpeg"},
-    }
-    r = requests.post(url, json=payload, timeout=120)
+def gerar_imagem_pollinations_flux(prompt: str) -> BytesIO:
+    """Modelo Flux (Alta Qualidade) via Pollinations"""
+    prompt_clean = prompt.replace("\n", " ").strip()[:800]
+    prompt_encoded = urllib.parse.quote(prompt_clean)
+    seed = random.randint(0, 999999)
+    url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?model=flux&width=1024&height=1024&seed={seed}&nologo=true"
+    
+    r = requests.get(url, timeout=40)
     r.raise_for_status()
-    data = r.json()
-    try:
-        b64 = data["candidates"][0]["content"]["parts"][0]["inline_data"]["data"]
-    except Exception as e:
-        raise RuntimeError(f"Resposta inesperada do Gemini TTS: {data}") from e
-    audio_bytes = base64.b64decode(b64)
-    bio = BytesIO(audio_bytes)
+    bio = BytesIO(r.content)
     bio.seek(0)
     return bio
 
-# ---- Google Imagen 3 (Via Gemini API Key) ----
-def gerar_imagem_google_imagen(prompt: str) -> Optional[BytesIO]:
-    """
-    Tenta gerar imagem usando Google Imagen 3.
-    Retorna None se der erro 404 (sem permissão), para acionar fallback.
-    """
+def gerar_imagem_pollinations_turbo(prompt: str) -> BytesIO:
+    """Modelo Turbo (Padrão/Rápido) via Pollinations"""
+    prompt_clean = prompt.replace("\n", " ").strip()[:800]
+    prompt_encoded = urllib.parse.quote(prompt_clean)
+    seed = random.randint(0, 999999)
+    # Sem model=flux, ele usa o padrão (Turbo)
+    url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&seed={seed}&nologo=true"
+    
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    bio = BytesIO(r.content)
+    bio.seek(0)
+    return bio
+
+def gerar_imagem_google_imagen(prompt: str) -> BytesIO:
+    """Google Imagen 3 via API"""
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not gem_key:
-        return None
+        raise RuntimeError("GEMINI_API_KEY não encontrada.")
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key={gem_key}"
     headers = {"Content-Type": "application/json"}
@@ -376,97 +376,33 @@ def gerar_imagem_google_imagen(prompt: str) -> Optional[BytesIO]:
         "parameters": {"sampleCount": 1}
     }
     
-    try:
-        # Timeout curto para não prender o app
-        r = requests.post(url, headers=headers, json=payload, timeout=20)
-        
-        # Se for 404, significa que a chave não tem permissão para Imagen 3 ainda.
-        if r.status_code == 404:
-            return None
-            
-        r.raise_for_status()
-        data = r.json()
-        
-        if "predictions" in data and len(data["predictions"]) > 0:
-            b64 = data["predictions"][0]["bytesBase64Encoded"]
-            bio = BytesIO(base64.b64decode(b64))
-            bio.seek(0)
-            return bio
-        else:
-            return None
-            
-    except Exception:
-        # Qualquer erro de rede ou API, retornamos None para usar o Fallback
-        return None
-
-# ---- Fallback: Pollinations OTIMIZADO (Flux) ----
-def gerar_imagem_pollinations_flux(prompt: str) -> BytesIO:
-    """
-    Fallback robusto usando o modelo Flux no Pollinations.
-    Usa seed aleatória para variar e timeout para não travar.
-    """
-    # Limpa o prompt e codifica
-    prompt_clean = prompt.replace("\n", " ").strip()[:800] # Limite de caracteres
-    prompt_encoded = urllib.parse.quote(prompt_clean)
-    seed = random.randint(0, 999999)
+    r = requests.post(url, headers=headers, json=payload, timeout=45)
+    r.raise_for_status()
+    data = r.json()
     
-    # URL forçando modelo Flux (melhor qualidade) e nologo
-    url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?model=flux&width=1024&height=1024&seed={seed}&nologo=true"
-    
-    try:
-        # Timeout de 30s é essencial para não "carregar eternamente"
-        r = requests.get(url, timeout=30)
-        r.raise_for_status()
-        bio = BytesIO(r.content)
+    if "predictions" in data and len(data["predictions"]) > 0:
+        b64 = data["predictions"][0]["bytesBase64Encoded"]
+        bio = BytesIO(base64.b64decode(b64))
         bio.seek(0)
         return bio
-    except Exception as e:
-        raise RuntimeError(f"Erro no fallback Flux: {e}")
+    else:
+        raise RuntimeError("Resposta inválida do Google Imagen.")
 
-# ---- Gerenciador Híbrido ----
-def gerar_imagem_hibrido_com_feedback(prompt: str) -> Tuple[BytesIO, str]:
-    """
-    Tenta Google -> Se falhar, vai para Flux.
-    Retorna (imagem_bytes, nome_fonte_usada)
-    """
-    # 1. Tentar Custom ImageFX
-    imagefx_url = st.secrets.get("IMAGEFX_API_URL") or os.getenv("IMAGEFX_API_URL")
-    if imagefx_url:
-        try:
-            pass 
-        except: pass
+def despachar_geracao_imagem(prompt: str, motor: str) -> BytesIO:
+    """Redireciona para a função correta baseada na escolha do usuário"""
+    if motor == "Pollinations Flux (Padrão)":
+        return gerar_imagem_pollinations_flux(prompt)
+    elif motor == "Pollinations Turbo":
+        return gerar_imagem_pollinations_turbo(prompt)
+    elif motor == "Google Imagen":
+        return gerar_imagem_google_imagen(prompt)
+    else:
+        # Fallback
+        return gerar_imagem_pollinations_flux(prompt)
 
-    # 2. Tentar Google Imagen 3
-    img = gerar_imagem_google_imagen(prompt)
-    if img:
-        return img, "Google Imagen 3"
-    
-    # 3. Fallback Automático para Flux
-    img_flux = gerar_imagem_pollinations_flux(prompt)
-    return img_flux, "Flux (Pollinations)"
-
-# ---- gerar narrações (utils) ----
-def gerar_narracoes_para_roteiro(roteiro: dict, usar_gemini: bool = False) -> dict:
-    audios = {}
-    partes_texto = {
-        "hook": roteiro.get("hook", ""),
-        "reflexão": roteiro.get("reflexão", ""),
-        "aplicação": roteiro.get("aplicação", ""),
-        "oração": roteiro.get("oração", ""),
-        "leitura": roteiro.get("leitura", roteiro.get("leitura_montada", "")),
-    }
-    for bloco, texto in partes_texto.items():
-        texto = (texto or "").strip()
-        if not texto:
-            continue
-        if usar_gemini:
-            audio = gerar_audio_gemini(texto, voz="pt-BR-Wavenet-B")
-        else:
-            audio = gerar_audio_gtts(texto)
-        audios[bloco] = audio
-    return audios
-
-# ---- Helpers de Sistema ----
+# =========================
+# Helpers
+# =========================
 import shutil as _shutil
 
 def shutil_which(bin_name: str) -> Optional[str]:
@@ -490,15 +426,59 @@ def get_audio_duration_seconds(path: str) -> Optional[float]:
     except Exception:
         return None
 
+def resolve_font_path(font_choice: str, uploaded_font: Optional[BytesIO]) -> Optional[str]:
+    """Resolve o caminho da fonte baseado na escolha do usuário"""
+    
+    # 1. Se for upload personalizado, salvamos num arquivo temporário
+    if font_choice == "Upload Personalizada" and uploaded_font:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp:
+            tmp.write(uploaded_font.getvalue())
+            return tmp.name
+            
+    # 2. Fontes do sistema (Linux/Streamlit Cloud)
+    system_fonts = {
+        "Padrão (Sans)": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", "arial.ttf"],
+        "Serif": ["/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf", "times.ttf"],
+        "Monospace": ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", "courier.ttf"]
+    }
+    
+    candidates = system_fonts.get(font_choice, system_fonts["Padrão (Sans)"])
+    
+    for font in candidates:
+        if os.path.exists(font):
+            return font
+            
+    # Fallback se nada existir
+    return None
+
 # =========================
 # Interface principal
 # =========================
 st.title("✨ Studio Jhonata - Automação Litúrgica")
 st.markdown("---")
 
+# ---- SIDEBAR CONFIG ----
 st.sidebar.title("⚙️ Configurações")
-st.sidebar.info("1️⃣ api-liturgia-diaria\n2️⃣ liturgia.railway\n3️⃣ Groq fallback")
-st.sidebar.success("✅ Groq ativo (se configurado)")
+
+# Seletor de Motor de Imagem
+motor_escolhido = st.sidebar.selectbox(
+    "🎨 Motor de Imagem",
+    ["Pollinations Flux (Padrão)", "Pollinations Turbo", "Google Imagen"],
+    index=0,
+    help="Flux: Melhor qualidade, médio. Turbo: Rápido, qualidade média. Google: Requer API Key."
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🅰️ Fonte do Vídeo")
+font_choice = st.sidebar.selectbox(
+    "Estilo da Fonte",
+    ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"],
+    index=0
+)
+
+uploaded_font_file = None
+if font_choice == "Upload Personalizada":
+    uploaded_font_file = st.sidebar.file_uploader("Arquivo .ttf", type=["ttf"])
 
 if "personagens_biblicos" not in st.session_state:
     st.session_state.personagens_biblicos = inicializar_personagens()
@@ -514,6 +494,9 @@ if "generated_audios_blocks" not in st.session_state:
     st.session_state["generated_audios_blocks"] = {}
 if "video_final_bytes" not in st.session_state:
     st.session_state["video_final_bytes"] = None
+# Armazenar metadados da liturgia para o Overlay
+if "meta_dados" not in st.session_state:
+    st.session_state["meta_dados"] = {"data": "", "ref": ""}
 
 tab1, tab2, tab3, tab4 = st.tabs(
     ["📖 Gerar Roteiro", "🎨 Personagens", "🎥 Fábrica Vídeo (Editor)", "📊 Histórico"]
@@ -532,12 +515,21 @@ with tab1:
 
     if st.button("🚀 Gerar Roteiro Completo", type="primary"):
         data_str = data_selecionada.strftime("%Y-%m-%d")
+        data_formatada_display = data_selecionada.strftime("%d.%m.%Y") # Formato para overlay
+
         with st.status("📝 Gerando roteiro...", expanded=True) as status:
             st.write("🔍 Buscando Evangelho...")
             liturgia = obter_evangelho_com_fallback(data_str)
             if not liturgia:
                 status.update(label="Falha ao buscar evangelho", state="error")
                 st.stop()
+
+            # Guardar metadados para overlay
+            ref_curta = formatar_referencia_curta(liturgia.get("ref_biblica"))
+            st.session_state["meta_dados"] = {
+                "data": data_formatada_display,
+                "ref": ref_curta or "Evangelho do Dia"
+            }
 
             st.write("🤖 Analisando personagens com IA...")
             personagens_detectados = analisar_personagens_groq(
@@ -569,21 +561,25 @@ with tab1:
         roteiro = st.session_state["roteiro_gerado"]
         st.markdown("---")
         
-        # Helper para exibir blocos
-        def show_script_block(title, text, prompt):
-            st.markdown(f"### {title}")
-            st.markdown(text)
-            # st.code adiciona botão de copiar nativamente
-            st.code(prompt, language="text") 
-            st.divider()
-
         col_esq, col_dir = st.columns(2)
         with col_esq:
-            show_script_block("🎣 HOOK", roteiro.get("hook", ""), roteiro.get("prompt_hook", ""))
-            show_script_block("💭 REFLEXÃO", roteiro.get("reflexão", ""), roteiro.get("prompt_reflexão", ""))
+            st.markdown("### 🎣 HOOK")
+            st.markdown(roteiro.get("hook", ""))
+            st.caption("Prompt (Copie na Aba Fábrica):")
+            st.code(roteiro.get("prompt_hook", ""), language="text")
+
+            st.markdown("### 💭 REFLEXÃO")
+            st.markdown(roteiro.get("reflexão", ""))
+            st.code(roteiro.get("prompt_reflexão", ""), language="text")
+            
         with col_dir:
-            show_script_block("📖 LEITURA", st.session_state.get("leitura_montada", "")[:300] + "...", roteiro.get("prompt_leitura", ""))
-            show_script_block("🌟 APLICAÇÃO", roteiro.get("aplicação", ""), roteiro.get("prompt_aplicacao", ""))
+            st.markdown("### 📖 LEITURA")
+            st.markdown(st.session_state.get("leitura_montada", "")[:300] + "...")
+            st.code(roteiro.get("prompt_leitura", ""), language="text")
+            
+            st.markdown("### 🌟 APLICAÇÃO")
+            st.markdown(roteiro.get("aplicação", ""))
+            st.code(roteiro.get("prompt_aplicacao", ""), language="text")
         
         st.markdown("### 🙏 ORAÇÃO")
         st.markdown(roteiro.get("oração", ""))
@@ -619,7 +615,7 @@ with tab2:
             st.session_state.personagens_biblicos[nn] = nd
             st.rerun()
 
-# --------- TAB 3: FÁBRICA DE VÍDEO (EDITOR) ----------
+# --------- TAB 3: FÁBRICA DE VÍDEO (EDITOR COMPLETO) ----------
 with tab3:
     st.header("🎥 Editor de Cenas")
     
@@ -633,11 +629,13 @@ with tab3:
     blocos_config = [
         {"id": "hook", "label": "🎣 HOOK", "prompt_key": "prompt_hook", "text_key": "hook"},
         {"id": "reflexão", "label": "💭 REFLEXÃO", "prompt_key": "prompt_reflexão", "text_key": "reflexão"},
-        {"id": "leitura", "label": "📖 LEITURA", "prompt_key": "prompt_leitura", "text_key": "leitura_montada"}, # usa key especial
+        {"id": "leitura", "label": "📖 LEITURA", "prompt_key": "prompt_leitura", "text_key": "leitura_montada"}, 
         {"id": "aplicação", "label": "🌟 APLICAÇÃO", "prompt_key": "prompt_aplicacao", "text_key": "aplicação"},
         {"id": "oração", "label": "🙏 ORAÇÃO", "prompt_key": "prompt_oração", "text_key": "oração"},
         {"id": "thumbnail", "label": "🖼️ THUMBNAIL", "prompt_key": "prompt_geral", "text_key": None}
     ]
+
+    st.info(f"Motor de Imagem Selecionado: **{motor_escolhido}** (Mude na Sidebar)")
 
     # Renderizar Editor Bloco a Bloco
     for bloco in blocos_config:
@@ -646,108 +644,133 @@ with tab3:
         with st.container(border=True):
             st.subheader(bloco["label"])
             
-            # Texto e Prompt
-            col_text, col_media = st.columns([1, 1])
+            # Layout em colunas
+            col_text, col_media = st.columns([1, 1.2])
             
+            # --- COLUNA 1: Texto e Áudio ---
             with col_text:
                 if bloco["text_key"]:
                     txt_content = roteiro.get(bloco["text_key"]) if block_id != "leitura" else st.session_state.get("leitura_montada", "")
-                    st.caption("Texto:")
-                    st.markdown(f"*{txt_content[:200]}...*" if txt_content else "*Sem texto*")
-                
-                prompt_content = roteiro.get(bloco["prompt_key"], "")
-                st.caption("Prompt Visual (Copie e cole se precisar):")
-                st.code(prompt_content, language="text")
-                
-                # Controle de Áudio Individual
-                if bloco["text_key"]:
+                    st.caption("📜 Texto para Narração:")
+                    st.markdown(f"_{txt_content[:250]}..._" if txt_content else "_Sem texto_")
+                    
                     if st.button(f"🔊 Gerar Áudio ({block_id})", key=f"btn_audio_{block_id}"):
-                        txt_full = roteiro.get(bloco["text_key"]) if block_id != "leitura" else st.session_state.get("leitura_montada", "")
-                        if txt_full:
+                        if txt_content:
                             try:
-                                audio = gerar_audio_gtts(txt_full)
+                                audio = gerar_audio_gtts(txt_content)
                                 st.session_state["generated_audios_blocks"][block_id] = audio
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erro áudio: {e}")
+                    
+                    # Player de áudio
+                    if block_id in st.session_state["generated_audios_blocks"]:
+                        st.audio(st.session_state["generated_audios_blocks"][block_id], format="audio/mp3")
 
+                prompt_content = roteiro.get(bloco["prompt_key"], "")
+                st.caption("📋 Prompt Visual (Copie e cole se precisar):")
+                # Botão de copiar nativo do st.code
+                st.code(prompt_content, language="text")
+
+            # --- COLUNA 2: Imagem (Gerar ou Upload) ---
             with col_media:
-                st.caption("Imagem da Cena:")
+                st.caption("🖼️ Imagem da Cena:")
                 
                 # Exibir Imagem Atual
                 current_img = st.session_state["generated_images_blocks"].get(block_id)
                 if current_img:
                     try:
-                        current_img.seek(0) # CRÍTICO: Resetar ponteiro para visualização
+                        current_img.seek(0)
                         st.image(current_img, use_column_width=True)
                     except Exception:
                         st.error("Erro ao exibir imagem.")
                 else:
-                    st.info("Nenhuma imagem gerada ainda.")
+                    st.info("Nenhuma imagem definida.")
 
-                c_gen, c_up = st.columns(2)
+                # Controles de Imagem
+                c_gen, c_up = st.columns([1.5, 2])
                 
-                # Botão Regenerar
+                # 1. Gerar via IA
                 with c_gen:
-                    if st.button(f"🔄 Gerar IA", key=f"btn_gen_{block_id}"):
+                    if st.button(f"✨ Gerar ({motor_escolhido.split()[0]})", key=f"btn_gen_{block_id}"):
                         if prompt_content:
-                            with st.spinner("Gerando..."):
+                            with st.spinner(f"Criando com {motor_escolhido}..."):
                                 try:
-                                    img, fonte = gerar_imagem_hibrido_com_feedback(prompt_content)
+                                    img = despachar_geracao_imagem(prompt_content, motor_escolhido)
                                     st.session_state["generated_images_blocks"][block_id] = img
-                                    st.success(f"Feito ({fonte})")
+                                    st.success("Gerada!")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Erro: {e}")
                         else:
                             st.warning("Sem prompt.")
                 
-                # Botão Upload
+                # 2. Upload Manual
                 with c_up:
-                    uploaded_file = st.file_uploader(f"📤 Enviar", type=["png", "jpg", "jpeg"], key=f"upload_{block_id}", label_visibility="collapsed")
+                    uploaded_file = st.file_uploader(
+                        "Ou envie a sua:", 
+                        type=["png", "jpg", "jpeg"], 
+                        key=f"upload_{block_id}",
+                        help="Substitui a imagem gerada pela sua."
+                    )
                     if uploaded_file is not None:
-                        # Processar upload imediatamente
+                        # Salvar no session state
                         bytes_data = uploaded_file.read()
                         st.session_state["generated_images_blocks"][block_id] = BytesIO(bytes_data)
-                        st.success("Imagem atualizada!")
-                        # O rerun ajuda a limpar o uploader visualmente e atualizar a imagem mostrada
-                        
-            # Player de áudio se existir
-            if block_id in st.session_state["generated_audios_blocks"]:
-                st.audio(st.session_state["generated_audios_blocks"][block_id], format="audio/mp3")
+                        st.success("Imagem enviada!")
+                        # Rerun para limpar o uploader visualmente
+                        # st.rerun() -> Opcional, o próprio upload já atualiza
 
     st.divider()
     
     # Montagem Final
     st.header("🎬 Finalização")
+    st.caption("Certifique-se de ter imagens e áudios em todas as cenas (exceto Thumbnail que não precisa de áudio).")
+    
+    # Checkbox para Overlay
+    usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay: Evangelho, Data, Ref)", value=False)
+
     if st.button("Renderizar Vídeo Completo (Unir tudo)", type="primary"):
-        with st.status("Renderizando vídeo...", expanded=True) as status:
+        with st.status("Renderizando vídeo com efeitos...", expanded=True) as status:
             try:
-                # Verificar se temos tudo
-                missing_imgs = [b["id"] for b in blocos_config if b["id"] not in st.session_state["generated_images_blocks"]]
-                missing_audios = [b["id"] for b in blocos_config if b["id"] not in st.session_state["generated_audios_blocks"] and b["text_key"]]
+                # Verificar se temos assets suficientes
+                blocos_relevantes = [b for b in blocos_config if b["id"] != "thumbnail"]
                 
-                if missing_imgs:
-                    st.warning(f"Faltam imagens para: {', '.join(missing_imgs)}. O vídeo ignorará esses blocos.")
-                
-                # Montagem
                 if not shutil_which("ffmpeg"):
                      status.update(label="FFmpeg não encontrado!", state="error")
                      st.stop()
                 
+                # Resolver fonte selecionada
+                font_path = resolve_font_path(font_choice, uploaded_font_file)
+                if usar_overlay and not font_path:
+                    st.warning("⚠️ Fonte não encontrada. O overlay pode falhar ou usar a padrão.")
+                
                 temp_dir = tempfile.mkdtemp()
                 clip_files = []
                 
-                ordem = [b["id"] for b in blocos_config]
+                meta = st.session_state.get("meta_dados", {})
+                txt_dt = meta.get("data", "")
+                txt_ref = meta.get("ref", "")
                 
-                for idx, bid in enumerate(ordem):
+                # Mapeamento Dinâmico de Títulos
+                map_titulos = {
+                    "hook": "EVANGELHO",
+                    "leitura": "EVANGELHO",
+                    "reflexão": "REFLEXÃO",
+                    "aplicação": "APLICAÇÃO",
+                    "oração": "ORAÇÃO"
+                }
+
+                for b in blocos_relevantes:
+                    bid = b["id"]
                     img_bio = st.session_state["generated_images_blocks"].get(bid)
                     audio_bio = st.session_state["generated_audios_blocks"].get(bid)
                     
-                    # Se for thumbnail, ignoramos no vídeo (ou colocamos no fim sem audio)
-                    if bid == "thumbnail": continue
-                    
-                    if not img_bio or not audio_bio:
+                    if not img_bio:
+                        st.warning(f"Pulando {bid}: Sem imagem.")
+                        continue
+                    if not audio_bio:
+                        st.warning(f"Pulando {bid}: Sem áudio.")
                         continue
                         
                     st.write(f"Processando clipe: {bid}...")
@@ -762,11 +785,37 @@ with tab3:
                     with open(audio_path, "wb") as f: f.write(audio_bio.read())
                     
                     dur = get_audio_duration_seconds(audio_path) or 5.0
+                    frames = int(dur * 25) # 25fps default
+
+                    # 1. Filtro Zoom Pan (Ken Burns) + Fade In/Out
+                    vf_filters = [
+                        f"zoompan=z='min(zoom+0.0010,1.5)':d={frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1024x1024",
+                        f"fade=t=in:st=0:d=1,fade=t=out:st={dur-0.5}:d=0.5"
+                    ]
+
+                    # 2. Adicionar Overlay Dinâmico
+                    if usar_overlay and font_path:
+                        titulo_atual = map_titulos.get(bid, "EVANGELHO")
+                        
+                        # Linha 1: TÍTULO DINÂMICO (Topo)
+                        vf_filters.append(f"drawtext=fontfile='{font_path}':text='{titulo_atual}':fontcolor=white:fontsize=40:x=(w-text_w)/2:y=40:shadowcolor=black:shadowx=2:shadowy=2")
+                        # Linha 2: DATA
+                        vf_filters.append(f"drawtext=fontfile='{font_path}':text='{txt_dt}':fontcolor=white:fontsize=28:x=(w-text_w)/2:y=90:shadowcolor=black:shadowx=2:shadowy=2")
+                        # Linha 3: REF
+                        vf_filters.append(f"drawtext=fontfile='{font_path}':text='{txt_ref}':fontcolor=white:fontsize=24:x=(w-text_w)/2:y=130:shadowcolor=black:shadowx=2:shadowy=2")
+
+                    filter_complex = ",".join(vf_filters)
                     
-                    # Comando ffmpeg robusto
-                    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path,
-                           "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p",
-                           "-c:a", "aac", "-shortest", clip_path]
+                    # Comando ffmpeg
+                    cmd = [
+                        "ffmpeg", "-y", 
+                        "-loop", "1", "-i", img_path, 
+                        "-i", audio_path,
+                        "-vf", filter_complex,
+                        "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-shortest", 
+                        clip_path
+                    ]
                     run_cmd(cmd)
                     clip_files.append(clip_path)
                 
@@ -781,13 +830,14 @@ with tab3:
                     with open(final_video, "rb") as f:
                         st.session_state["video_final_bytes"] = BytesIO(f.read())
                     
-                    status.update(label="Vídeo Renderizado!", state="complete")
+                    status.update(label="Vídeo Renderizado com Sucesso!", state="complete")
                 else:
-                    status.update(label="Nenhum clipe válido gerado.", state="error")
+                    status.update(label="Nenhum clipe válido gerado. Verifique imagens/áudios.", state="error")
                     
             except Exception as e:
                 status.update(label="Erro na renderização", state="error")
                 st.error(f"Detalhes: {e}")
+                st.error(traceback.format_exc())
 
     if st.session_state.get("video_final_bytes"):
         st.success("Vídeo pronto!")
@@ -799,4 +849,4 @@ with tab4:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v3.0 - Editor Full")
+st.caption("Studio Jhonata v5.0 - Overlay Dinâmico + Fontes")
