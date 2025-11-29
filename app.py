@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v13.1)
-# Features: Fix de Erro ValueError, Persistência, Editor Full, Upload, Resoluções, Efeitos
+# app.py — Studio Jhonata (COMPLETO v14.0)
+# Features: Transições de Texto (Fade In/Out), Persistência, Editor Full, Upload, Resoluções
 import os
 import re
 import json
@@ -39,9 +39,9 @@ st.set_page_config(
 def load_config():
     """Carrega configurações do disco ou retorna padrão"""
     default_settings = {
-        "line1_y": 40, "line1_size": 40, "line1_font": "Padrão (Sans)",
-        "line2_y": 90, "line2_size": 28, "line2_font": "Padrão (Sans)",
-        "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)",
+        "line1_y": 40, "line1_size": 40, "line1_font": "Padrão (Sans)", "line1_anim": "Estático",
+        "line2_y": 90, "line2_size": 28, "line2_font": "Padrão (Sans)", "line2_anim": "Estático",
+        "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)", "line3_anim": "Estático",
         "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5
     }
@@ -533,6 +533,19 @@ def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upl
     bio.seek(0)
     return bio
 
+def get_text_alpha_expr(anim_type: str, duration: float) -> str:
+    """Retorna expressão de alpha para o drawtext baseado na animação escolhida"""
+    if anim_type == "Fade In":
+        # Aparece em 1s
+        return f"alpha='min(1,t/1)'"
+    elif anim_type == "Fade In/Out":
+        # Aparece em 1s, some 1s antes do fim
+        # min(1,t/1) * min(1,(dur-t)/1)
+        return f"alpha='min(1,t/1)*min(1,({duration}-t)/1)'"
+    else:
+        # Estático
+        return "alpha=1"
+
 # =========================
 # Interface principal
 # =========================
@@ -665,31 +678,35 @@ with tab3:
     col_settings, col_preview = st.columns([1, 1])
     ov_sets = st.session_state["overlay_settings"]
     font_options = ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"]
+    anim_options = ["Estático", "Fade In", "Fade In/Out"]
     
     with col_settings:
         with st.expander("✨ Efeitos Visuais (Movimento)", expanded=True):
-            # Safe index logic
             effect_opts = ["Zoom In (Ken Burns)", "Zoom Out", "Panorâmica Esquerda", "Panorâmica Direita", "Estático (Sem movimento)"]
             curr_eff = ov_sets.get("effect_type", effect_opts[0])
             if curr_eff not in effect_opts: curr_eff = effect_opts[0]
             ov_sets["effect_type"] = st.selectbox("Tipo de Movimento", effect_opts, index=effect_opts.index(curr_eff))
             ov_sets["effect_speed"] = st.slider("Intensidade do Movimento", 1, 10, ov_sets.get("effect_speed", 3), help="1 = Muito Lento, 10 = Rápido")
 
-        with st.expander("🎬 Transições", expanded=True):
-            # Safe index logic
+        with st.expander("🎬 Transições de Cena", expanded=True):
             trans_opts = ["Fade (Escurecer)", "Corte Seco (Nenhuma)"]
             curr_trans = ov_sets.get("trans_type", trans_opts[0])
             if curr_trans not in trans_opts: curr_trans = trans_opts[0]
             ov_sets["trans_type"] = st.selectbox("Tipo de Transição", trans_opts, index=trans_opts.index(curr_trans))
             ov_sets["trans_dur"] = st.slider("Duração da Transição (s)", 0.1, 2.0, ov_sets.get("trans_dur", 0.5), 0.1)
 
-        with st.expander("📝 Texto Overlay (Cabeçalho)", expanded=False):
+        with st.expander("📝 Texto Overlay (Cabeçalho)", expanded=True):
             st.markdown("**Linha 1: Título**")
             curr_f1 = ov_sets.get("line1_font", font_options[0])
             if curr_f1 not in font_options: curr_f1 = font_options[0]
             ov_sets["line1_font"] = st.selectbox("Fonte L1", font_options, index=font_options.index(curr_f1), key="f1")
             ov_sets["line1_size"] = st.slider("Tamanho L1", 10, 150, ov_sets.get("line1_size", 40), key="s1")
             ov_sets["line1_y"] = st.slider("Posição Y L1", 0, 800, ov_sets.get("line1_y", 40), key="y1")
+            
+            curr_a1 = ov_sets.get("line1_anim", anim_options[0])
+            if curr_a1 not in anim_options: curr_a1 = anim_options[0]
+            ov_sets["line1_anim"] = st.selectbox("Animação L1", anim_options, index=anim_options.index(curr_a1), key="a1")
+            
             st.markdown("---")
             st.markdown("**Linha 2: Data**")
             curr_f2 = ov_sets.get("line2_font", font_options[0])
@@ -697,6 +714,11 @@ with tab3:
             ov_sets["line2_font"] = st.selectbox("Fonte L2", font_options, index=font_options.index(curr_f2), key="f2")
             ov_sets["line2_size"] = st.slider("Tamanho L2", 10, 150, ov_sets.get("line2_size", 28), key="s2")
             ov_sets["line2_y"] = st.slider("Posição Y L2", 0, 800, ov_sets.get("line2_y", 90), key="y2")
+            
+            curr_a2 = ov_sets.get("line2_anim", anim_options[0])
+            if curr_a2 not in anim_options: curr_a2 = anim_options[0]
+            ov_sets["line2_anim"] = st.selectbox("Animação L2", anim_options, index=anim_options.index(curr_a2), key="a2")
+
             st.markdown("---")
             st.markdown("**Linha 3: Referência**")
             curr_f3 = ov_sets.get("line3_font", font_options[0])
@@ -704,6 +726,10 @@ with tab3:
             ov_sets["line3_font"] = st.selectbox("Fonte L3", font_options, index=font_options.index(curr_f3), key="f3")
             ov_sets["line3_size"] = st.slider("Tamanho L3", 10, 150, ov_sets.get("line3_size", 24), key="s3")
             ov_sets["line3_y"] = st.slider("Posição Y L3", 0, 800, ov_sets.get("line3_y", 130), key="y3")
+            
+            curr_a3 = ov_sets.get("line3_anim", anim_options[0])
+            if curr_a3 not in anim_options: curr_a3 = anim_options[0]
+            ov_sets["line3_anim"] = st.selectbox("Animação L3", anim_options, index=anim_options.index(curr_a3), key="a3")
 
         st.session_state["overlay_settings"] = ov_sets
         if st.button("💾 Salvar Configurações (Persistente)"):
@@ -840,7 +866,6 @@ with tab4:
                 sets = st.session_state["overlay_settings"]
                 speed_val = sets["effect_speed"] * 0.0005 
                 
-                # Configuração Efeitos de Movimento
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
                     zoom_expr = f"z='min(zoom+{speed_val},1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Zoom Out":
@@ -886,9 +911,14 @@ with tab4:
                         f2_path = resolve_font_path(sets["line2_font"], uploaded_font_file)
                         f3_path = resolve_font_path(sets["line3_font"], uploaded_font_file)
                         
-                        if f1_path: vf_filters.append(f"drawtext=fontfile='{f1_path}':text='{titulo_atual}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}:shadowcolor=black:shadowx=2:shadowy=2")
-                        if f2_path: vf_filters.append(f"drawtext=fontfile='{f2_path}':text='{txt_dt}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}:shadowcolor=black:shadowx=2:shadowy=2")
-                        if f3_path: vf_filters.append(f"drawtext=fontfile='{f3_path}':text='{txt_ref}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2")
+                        # Anim alpha
+                        alp1 = get_text_alpha_expr(sets.get("line1_anim", "Estático"), dur)
+                        alp2 = get_text_alpha_expr(sets.get("line2_anim", "Estático"), dur)
+                        alp3 = get_text_alpha_expr(sets.get("line3_anim", "Estático"), dur)
+
+                        if f1_path: vf_filters.append(f"drawtext=fontfile='{f1_path}':text='{titulo_atual}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp1}")
+                        if f2_path: vf_filters.append(f"drawtext=fontfile='{f2_path}':text='{txt_dt}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp2}")
+                        if f3_path: vf_filters.append(f"drawtext=fontfile='{f3_path}':text='{txt_ref}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp3}")
 
                     filter_complex = ",".join(vf_filters)
                     
@@ -922,4 +952,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v13.1 - Config Safe Load")
+st.caption("Studio Jhonata v14.0 - Transições de Texto")
