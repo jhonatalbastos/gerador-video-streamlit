@@ -1,5 +1,5 @@
 # app.py — Studio Jhonata (COMPLETO)
-# Base original + Groq + gTTS + Gemini optional + ImageFX fallback (Pollinations) + montagem de vídeo com ffmpeg (sem moviepy)
+# Base original + Groq + gTTS + Gemini TTS + Google Imagen 3 (via API) + montagem de vídeo com ffmpeg
 import os
 import re
 import json
@@ -377,12 +377,60 @@ def gerar_audio_gemini(texto: str, voz: str = "pt-BR-Wavenet-B") -> BytesIO:
     return bio
 
 
-# ---- ImageFX (prioridade) com fallback para Pollinations.ai ----
-def gerar_imagem_imagefx(prompt: str, size: str = "1024x1024") -> BytesIO:
+# ---- Google Imagen 3 (Via Gemini API Key) ----
+def gerar_imagem_google_imagen(prompt: str) -> BytesIO:
+    """
+    Gera imagem usando o endpoint do Imagen 3 na API do Google AI Studio.
+    Requer GEMINI_API_KEY configurada.
+    """
+    gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not gem_key:
+        raise RuntimeError("GEMINI_API_KEY não encontrada. Configure nos secrets para usar o Google Imagen.")
+
+    # Endpoint oficial para Imagen 3
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key={gem_key}"
+    
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "instances": [
+            {"prompt": prompt}
+        ],
+        "parameters": {
+            "sampleCount": 1,
+            # "aspectRatio": "1:1" # Padrão
+        }
+    }
+    
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=60)
+        r.raise_for_status()
+        data = r.json()
+        
+        # O formato de resposta do Imagen via REST API do Google AI Studio é:
+        # { "predictions": [ { "bytesBase64Encoded": "...", "mimeType": "image/png" } ] }
+        if "predictions" in data and len(data["predictions"]) > 0:
+            b64 = data["predictions"][0]["bytesBase64Encoded"]
+            return BytesIO(base64.b64decode(b64))
+        else:
+            raise RuntimeError(f"Resposta inesperada do Google Imagen: {data}")
+            
+    except Exception as e:
+        # Tratamento de erro detalhado para ajudar no debug
+        err_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                err_msg += f" | Detalhe: {e.response.text}"
+            except:
+                pass
+        raise RuntimeError(f"Erro ao gerar imagem com Google Imagen 3: {err_msg}")
+
+
+# ---- Gerenciador de Imagens (Custom ImageFX ou Google Imagen) ----
+def gerar_imagem_hibrido(prompt: str, size: str = "1024x1024") -> BytesIO:
+    # 1. Tentar URL Customizada do ImageFX (se o usuário tiver configurado)
     imagefx_url = st.secrets.get("IMAGEFX_API_URL") or os.getenv("IMAGEFX_API_URL")
     imagefx_key = st.secrets.get("IMAGEFX_API_KEY") or os.getenv("IMAGEFX_API_KEY")
     
-    # Tentativa 1: ImageFX
     if imagefx_url and imagefx_key:
         try:
             headers = {"Authorization": f"Bearer {imagefx_key}"}
@@ -400,36 +448,13 @@ def gerar_imagem_imagefx(prompt: str, size: str = "1024x1024") -> BytesIO:
                         b64 = first["b64"]
                     elif isinstance(first, str):
                         b64 = first
-            if not b64:
-                raise RuntimeError(f"Resposta inesperada do ImageFX: {data}")
-            img_bytes = base64.b64decode(b64)
-            bio = BytesIO(img_bytes)
-            bio.seek(0)
-            return bio
+            if b64:
+                return BytesIO(base64.b64decode(b64))
         except Exception as e:
-            st.warning(f"⚠️ ImageFX falhou, tentando fallback: {e}")
-            # Se falhar, cai para o bloco else/fallback
-    
-    # Tentativa 2: Fallback (Pollinations.ai)
-    # Gemini 1.5 Flash NÃO gera imagens (gera erro 400), então usamos Pollinations
-    # que é gratuito, não precisa de chave e funciona bem para fallback.
-    try:
-        # Limpar o prompt e codificar para URL
-        prompt_clean = prompt.replace("\n", " ").strip()
-        prompt_encoded = urllib.parse.quote(prompt_clean)
-        seed = random.randint(0, 999999)
-        
-        # Montar URL do Pollinations
-        url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&seed={seed}&nologo=true&model=flux"
-        
-        r = requests.get(url, timeout=60)
-        r.raise_for_status()
-        
-        bio = BytesIO(r.content)
-        bio.seek(0)
-        return bio
-    except Exception as e:
-        raise RuntimeError(f"Erro no fallback de imagem (Pollinations): {e}")
+            st.warning(f"⚠️ API Customizada falhou, tentando Google Imagen 3: {e}")
+
+    # 2. Fallback Oficial: Google Imagen 3 (Substituindo o antigo fallback ruim)
+    return gerar_imagem_google_imagen(prompt)
 
 
 # ---- gerar imagens para roteiro (mapping) ----
@@ -447,7 +472,8 @@ def gerar_imagens_para_roteiro(roteiro: dict, size: str = "1024x1024") -> dict:
         # try variants (keeping compatibility with naming differences)
         prompt_text = roteiro.get(chave_prompt) or roteiro.get(chave_prompt.lower()) or roteiro.get(chave_prompt.replace("ç", "c")) or ""
         if prompt_text:
-            img = gerar_imagem_imagefx(prompt_text, size=size)
+            # Chama a função híbrida (Custom ou Imagen 3)
+            img = gerar_imagem_hibrido(prompt_text, size=size)
             imagens[bloco] = img
     return imagens
 
@@ -743,7 +769,7 @@ with tab1:
                     st.error(f"Erro gerando narrações: {e}")
                     st.error(traceback.format_exc())
         with colB:
-            if st.button("🖼️ Gerar imagens para os prompts (ImageFX/Fallback)"):
+            if st.button("🖼️ Gerar imagens para os prompts (ImageFX/Google)"):
                 try:
                     roteiro = st.session_state["roteiro_gerado"]
                     imagens = gerar_imagens_para_roteiro(roteiro, size="1024x1024")
@@ -861,7 +887,7 @@ with tab3:
                     st.error(traceback.format_exc())
 
     with col_b:
-        if st.button("Gerar Imagens (ImageFX / Fallback) para o roteiro atual"):
+        if st.button("Gerar Imagens (ImageFX / Google) para o roteiro atual"):
             if not st.session_state.get("roteiro_gerado"):
                 st.error("Gere o roteiro primeiro na aba 'Gerar Roteiro'.")
             else:
