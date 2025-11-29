@@ -1,5 +1,5 @@
-# app.py — Gerador de Evangelho (COMPLETO v21.0)
-# Features: Nome Atualizado, Fonte Mobile Ajustada, Legendas, Música, Efeitos
+# app.py — Studio Jhonata (COMPLETO v20.0)
+# Features: Legendas (Karaoke/Estilo), Música Persistente, Geração em Lote, Transições, Overlay
 import os
 import re
 import json
@@ -30,7 +30,7 @@ SAVED_MUSIC_FILE = "saved_bg_music.mp3"
 # Page config
 # =========================
 st.set_page_config(
-    page_title="Gerador de Evangelho", # Nome da aba atualizado
+    page_title="Studio Jhonata",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -514,8 +514,7 @@ def get_text_alpha_expr(anim_type: str, duration: float) -> str:
 # =========================
 # Interface principal
 # =========================
-# Título compacto e centralizado para mobile
-st.markdown("<h3 style='text-align: center;'>Gerador de Evangelho</h3>", unsafe_allow_html=True)
+st.title("✨ Studio Jhonata - Automação Litúrgica")
 st.markdown("---")
 
 # ---- SIDEBAR CONFIG ----
@@ -854,4 +853,4 @@ with tab4:
         st.download_button("⬇️ Baixar", st.session_state["video_final_bytes"], "video.mp4", "video/mp4")
 
 with tab5: st.info("Histórico (Em breve)")
-st.markdown("---"); st.caption("Studio Jhonata v21.0 - Layout Compacto")
+st.markdown("---"); st.caption("Studio Jhonata v20.0 - Legendas & Karaoke")
