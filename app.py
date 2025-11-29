@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v16.0)
-# Features: Fix NameError, Transições, Overlay, Persistência, Efeitos, Upload
+# app.py — Studio Jhonata (COMPLETO v17.0)
+# Features: Geração em Lote (Bulk), Fix NameError, Transições, Overlay, Persistência, Efeitos
 import os
 import re
 import json
@@ -566,9 +566,9 @@ motor_escolhido = st.sidebar.selectbox("🎨 Motor de Imagem", ["Pollinations Fl
 resolucao_escolhida = st.sidebar.selectbox("📏 Resolução do Vídeo", ["9:16 (Vertical/Stories)", "16:9 (Horizontal/YouTube)", "1:1 (Quadrado/Feed)"], index=0)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🅰️ Fonte Global (Fallback)")
-# Restaurada a caixa de seleção global para evitar o erro de 'font_choice is not defined'
-font_choice = st.sidebar.selectbox("Estilo da Fonte Global", ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"], index=0)
+st.sidebar.markdown("### 🅰️ Fonte Global (Upload)")
+# Seletor de fonte global re-adicionado para consistência, mas usado principalmente para upload
+font_choice = st.sidebar.selectbox("Estilo da Fonte Padrão", ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"], index=0)
 uploaded_font_file = st.sidebar.file_uploader("Arquivo .ttf (para opção 'Upload Personalizada')", type=["ttf"])
 
 st.sidebar.info(f"Modo: {motor_escolhido}\nFormato: {resolucao_escolhida}")
@@ -789,6 +789,49 @@ with tab4:
 
     st.info(f"⚙️ Config: **{motor_escolhido}** | Resolução: **{resolucao_escolhida}**")
 
+    # Botões de Geração em Lote (Topo da Fábrica)
+    col_batch_1, col_batch_2 = st.columns(2)
+    with col_batch_1:
+        if st.button("🔊 Gerar Todos os Áudios", use_container_width=True):
+            with st.status("Gerando áudios em lote...", expanded=True) as status:
+                total = len([b for b in blocos_config if b["text_key"]])
+                count = 0
+                for b in blocos_config:
+                    if not b["text_key"]: continue
+                    bid = b["id"]
+                    txt = roteiro.get(b["text_key"]) if bid != "leitura" else st.session_state.get("leitura_montada", "")
+                    if txt:
+                        st.write(f"Gerando áudio: {b['label']}...")
+                        try:
+                            audio = gerar_audio_gtts(txt)
+                            st.session_state["generated_audios_blocks"][bid] = audio
+                            count += 1
+                        except Exception as e:
+                            st.error(f"Erro em {bid}: {e}")
+                status.update(label=f"Concluído! {count}/{total} áudios gerados.", state="complete")
+                st.rerun()
+
+    with col_batch_2:
+        if st.button("✨ Gerar Todas as Imagens", use_container_width=True):
+            with st.status("Gerando imagens em lote...", expanded=True) as status:
+                total = len(blocos_config)
+                count = 0
+                for i, b in enumerate(blocos_config):
+                    bid = b["id"]
+                    prompt = roteiro.get(b["prompt_key"], "")
+                    if prompt:
+                        st.write(f"Gerando imagem ({i+1}/{total}): {b['label']}...")
+                        try:
+                            img = despachar_geracao_imagem(prompt, motor_escolhido, resolucao_escolhida)
+                            st.session_state["generated_images_blocks"][bid] = img
+                            count += 1
+                        except Exception as e:
+                            st.error(f"Erro em {bid}: {e}")
+                status.update(label=f"Concluído! {count}/{total} imagens geradas.", state="complete")
+                st.rerun()
+
+    st.divider()
+
     for bloco in blocos_config:
         block_id = bloco["id"]
         with st.container(border=True):
@@ -856,8 +899,9 @@ with tab4:
                     status.update(label="FFmpeg não encontrado!", state="error")
                     st.stop()
                 
-                # Check da fonte usando a variável global
-                font_path_global = resolve_font_path(font_choice, uploaded_font_file)
+                font_path = resolve_font_path(font_choice, uploaded_font_file)
+                if usar_overlay and not font_path:
+                    st.warning("⚠️ Fonte não encontrada. O overlay pode falhar.")
                 
                 temp_dir = tempfile.mkdtemp()
                 clip_files = []
@@ -919,7 +963,6 @@ with tab4:
                         f2_path = resolve_font_path(sets["line2_font"], uploaded_font_file)
                         f3_path = resolve_font_path(sets["line3_font"], uploaded_font_file)
                         
-                        # Anim alpha
                         alp1 = get_text_alpha_expr(sets.get("line1_anim", "Estático"), dur)
                         alp2 = get_text_alpha_expr(sets.get("line2_anim", "Estático"), dur)
                         alp3 = get_text_alpha_expr(sets.get("line3_anim", "Estático"), dur)
@@ -964,4 +1007,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v16.0 - Final e Corrigida")
+st.caption("Studio Jhonata v17.0 - Geração em Lote")
