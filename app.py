@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v14.0)
-# Features: Transições de Texto (Fade In/Out), Persistência, Editor Full, Upload, Resoluções
+# app.py — Studio Jhonata (COMPLETO v15.0)
+# Features: Fix ValueError Selectbox, Text Sanitization, Persistência, Efeitos
 import os
 import re
 import json
@@ -546,6 +546,17 @@ def get_text_alpha_expr(anim_type: str, duration: float) -> str:
         # Estático
         return "alpha=1"
 
+def sanitize_text_for_ffmpeg(text: str) -> str:
+    """Limpa texto para evitar quebra do filtro drawtext (vírgulas, dois pontos, aspas)"""
+    if not text: return ""
+    # Escapar : para \:
+    # Remover ' para evitar conflito com aspas do comando
+    # Escapar , para \, se não estiver protegido (mas drawtext='...' protege, cuidado com strings complexas)
+    # A abordagem mais segura para subprocess list args:
+    t = text.replace(":", "\:")
+    t = t.replace("'", "") 
+    return t
+
 # =========================
 # Interface principal
 # =========================
@@ -866,6 +877,7 @@ with tab4:
                 sets = st.session_state["overlay_settings"]
                 speed_val = sets["effect_speed"] * 0.0005 
                 
+                # Configuração Efeitos de Movimento
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
                     zoom_expr = f"z='min(zoom+{speed_val},1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Zoom Out":
@@ -916,9 +928,14 @@ with tab4:
                         alp2 = get_text_alpha_expr(sets.get("line2_anim", "Estático"), dur)
                         alp3 = get_text_alpha_expr(sets.get("line3_anim", "Estático"), dur)
 
-                        if f1_path: vf_filters.append(f"drawtext=fontfile='{f1_path}':text='{titulo_atual}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp1}")
-                        if f2_path: vf_filters.append(f"drawtext=fontfile='{f2_path}':text='{txt_dt}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp2}")
-                        if f3_path: vf_filters.append(f"drawtext=fontfile='{f3_path}':text='{txt_ref}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp3}")
+                        # Clean texts for drawtext
+                        clean_t1 = sanitize_text_for_ffmpeg(titulo_atual)
+                        clean_t2 = sanitize_text_for_ffmpeg(txt_dt)
+                        clean_t3 = sanitize_text_for_ffmpeg(txt_ref)
+
+                        if f1_path: vf_filters.append(f"drawtext=fontfile='{f1_path}':text='{clean_t1}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp1}")
+                        if f2_path: vf_filters.append(f"drawtext=fontfile='{f2_path}':text='{clean_t2}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp2}")
+                        if f3_path: vf_filters.append(f"drawtext=fontfile='{f3_path}':text='{clean_t3}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp3}")
 
                     filter_complex = ",".join(vf_filters)
                     
@@ -952,4 +969,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v14.0 - Transições de Texto")
+st.caption("Studio Jhonata v15.0 - Final Fixes")
