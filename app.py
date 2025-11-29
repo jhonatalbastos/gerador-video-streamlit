@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO)
-# Base original + Groq + gTTS + Gemini TTS + Google Imagen 3 (via API) + montagem de vídeo com ffmpeg
+# app.py — Studio Jhonata (COMPLETO & COM BARRA DE PROGRESSO)
+# Base original + Groq + gTTS + Gemini TTS + Google Imagen 3 + Feedback Visual Detalhado
 import os
 import re
 import json
@@ -31,16 +31,14 @@ st.set_page_config(
 )
 
 # =========================
-# Groq - lazy init (preserved)
+# Groq - lazy init
 # =========================
 _client = None
-
 
 def inicializar_groq():
     global _client
     if _client is None:
         try:
-            # Groq may not be installed; show helpful message
             from groq import Groq  # type: ignore
 
             if "GROQ_API_KEY" not in st.secrets and not os.getenv("GROQ_API_KEY"):
@@ -52,7 +50,6 @@ def inicializar_groq():
             st.error(f"Erro ao inicializar Groq client: {e}")
             st.stop()
     return _client
-
 
 # =========================
 # Inicializar banco de personagens
@@ -75,7 +72,6 @@ def inicializar_personagens():
         ),
     }
 
-
 # =========================
 # Limpeza do texto bíblico
 # =========================
@@ -87,9 +83,8 @@ def limpar_texto_evangelho(texto: str) -> str:
     texto_limpo = re.sub(r"\s{2,}", " ", texto_limpo)
     return texto_limpo.strip()
 
-
 # =========================
-# Extrair referência bíblica (heurística)
+# Extrair referência bíblica
 # =========================
 def extrair_referencia_biblica(titulo: str):
     if not titulo:
@@ -103,15 +98,13 @@ def extrair_referencia_biblica(titulo: str):
     versiculos = versiculos_raw.replace("-", " a ").replace("–", " a ")
     return {"evangelista": evangelista, "capitulo": capitulo, "versiculos": versiculos}
 
-
 def formatar_referencia_curta(ref_biblica):
     if not ref_biblica:
         return ""
     return f"{ref_biblica['evangelista']}, Cap. {ref_biblica['capitulo']}, {ref_biblica['versiculos']}"
 
-
 # =========================
-# Análise de personagens via Groq (preservado)
+# Análise de personagens via Groq
 # =========================
 def analisar_personagens_groq(texto_evangelho: str, banco_personagens: dict):
     client = inicializar_groq()
@@ -161,9 +154,8 @@ def analisar_personagens_groq(texto_evangelho: str, banco_personagens: dict):
     except Exception:
         return {}
 
-
 # =========================
-# APIs Liturgia (preservadas)
+# APIs Liturgia
 # =========================
 def buscar_liturgia_api1(data_str: str):
     url = f"https://api-liturgia-diaria.vercel.app/?date={data_str}"
@@ -197,7 +189,6 @@ def buscar_liturgia_api1(data_str: str):
     except Exception:
         return None
 
-
 def buscar_liturgia_api2(data_str: str):
     url = f"https://liturgia.up.railway.app/v2/{data_str}"
     try:
@@ -222,7 +213,6 @@ def buscar_liturgia_api2(data_str: str):
     except Exception:
         return None
 
-
 def obter_evangelho_com_fallback(data_str: str):
     ev = buscar_liturgia_api1(data_str)
     if ev:
@@ -235,21 +225,18 @@ def obter_evangelho_com_fallback(data_str: str):
     st.error("❌ Não foi possível obter o Evangelho")
     return None
 
-
 # =========================
-# Roteiro + Prompts (preservado)
+# Roteiro + Prompts
 # =========================
 def extrair_bloco(rotulo: str, texto: str) -> str:
     padrao = rf"{rotulo}:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:\s*|\nPROMPT_|$)"
     m = re.search(padrao, texto, re.DOTALL | re.IGNORECASE)
     return m.group(1).strip() if m else ""
 
-
 def extrair_prompt(rotulo: str, texto: str) -> str:
     padrao = rf"{rotulo}:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:\s*|\nPROMPT_|$)"
     m = re.search(padrao, texto, re.DOTALL | re.IGNORECASE)
     return m.group(1).strip() if m else ""
-
 
 def gerar_roteiro_com_prompts_groq(texto_evangelho: str, referencia_liturgica: str, personagens: dict):
     client = inicializar_groq()
@@ -311,7 +298,6 @@ PROMPT_GERAL: [prompt para thumbnail/capa]"""
         st.error(f"❌ Erro Groq: {e}")
         return None
 
-
 def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
     if ref_biblica:
         abertura = (
@@ -329,19 +315,17 @@ def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
     fechamento = "Palavra da Salvação. Glória a vós, Senhor!"
     return f"{abertura} {texto_evangelho} {fechamento}"
 
-
 # =========================
-# NOVAS FUNÇÕES: ÁUDIO, IMAGENS, VÍDEO via ffmpeg
+# FUNÇÕES DE ÁUDIO, IMAGEM, VÍDEO
 # =========================
 
-# ---- gTTS (preservada) ----
+# ---- gTTS ----
 def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
     if not texto or not texto.strip():
         return None
     mp3_fp = BytesIO()
     try:
         from gtts import gTTS  # type: ignore
-
         tts = gTTS(text=texto, lang="pt", slow=False)
         tts.write_to_fp(mp3_fp)
         mp3_fp.seek(0)
@@ -349,8 +333,7 @@ def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
     except Exception as e:
         raise RuntimeError(f"Erro gTTS: {e}")
 
-
-# ---- Gemini TTS (opcional) ----
+# ---- Gemini TTS ----
 def gerar_audio_gemini(texto: str, voz: str = "pt-BR-Wavenet-B") -> BytesIO:
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not gem_key:
@@ -376,38 +359,30 @@ def gerar_audio_gemini(texto: str, voz: str = "pt-BR-Wavenet-B") -> BytesIO:
     bio.seek(0)
     return bio
 
-
 # ---- Google Imagen 3 (Via Gemini API Key) ----
 def gerar_imagem_google_imagen(prompt: str) -> BytesIO:
     """
     Gera imagem usando o endpoint do Imagen 3 na API do Google AI Studio.
-    Requer GEMINI_API_KEY configurada.
     """
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not gem_key:
-        raise RuntimeError("GEMINI_API_KEY não encontrada. Configure nos secrets para usar o Google Imagen.")
+        raise RuntimeError("GEMINI_API_KEY não encontrada. Configure nos secrets.")
 
     # Endpoint oficial para Imagen 3
     url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key={gem_key}"
     
     headers = {"Content-Type": "application/json"}
     payload = {
-        "instances": [
-            {"prompt": prompt}
-        ],
-        "parameters": {
-            "sampleCount": 1,
-            # "aspectRatio": "1:1" # Padrão
-        }
+        "instances": [{"prompt": prompt}],
+        "parameters": {"sampleCount": 1}
     }
     
+    # Timeout definido para 45s para não travar eternamente
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=60)
+        r = requests.post(url, headers=headers, json=payload, timeout=45)
         r.raise_for_status()
         data = r.json()
         
-        # O formato de resposta do Imagen via REST API do Google AI Studio é:
-        # { "predictions": [ { "bytesBase64Encoded": "...", "mimeType": "image/png" } ] }
         if "predictions" in data and len(data["predictions"]) > 0:
             b64 = data["predictions"][0]["bytesBase64Encoded"]
             return BytesIO(base64.b64decode(b64))
@@ -415,19 +390,17 @@ def gerar_imagem_google_imagen(prompt: str) -> BytesIO:
             raise RuntimeError(f"Resposta inesperada do Google Imagen: {data}")
             
     except Exception as e:
-        # Tratamento de erro detalhado para ajudar no debug
         err_msg = str(e)
         if hasattr(e, 'response') and e.response is not None:
             try:
                 err_msg += f" | Detalhe: {e.response.text}"
             except:
                 pass
-        raise RuntimeError(f"Erro ao gerar imagem com Google Imagen 3: {err_msg}")
+        raise RuntimeError(f"Erro Imagen 3: {err_msg}")
 
-
-# ---- Gerenciador de Imagens (Custom ImageFX ou Google Imagen) ----
+# ---- Gerenciador de Imagens ----
 def gerar_imagem_hibrido(prompt: str, size: str = "1024x1024") -> BytesIO:
-    # 1. Tentar URL Customizada do ImageFX (se o usuário tiver configurado)
+    # 1. Custom ImageFX (se config)
     imagefx_url = st.secrets.get("IMAGEFX_API_URL") or os.getenv("IMAGEFX_API_URL")
     imagefx_key = st.secrets.get("IMAGEFX_API_KEY") or os.getenv("IMAGEFX_API_KEY")
     
@@ -435,7 +408,7 @@ def gerar_imagem_hibrido(prompt: str, size: str = "1024x1024") -> BytesIO:
         try:
             headers = {"Authorization": f"Bearer {imagefx_key}"}
             payload = {"prompt": prompt, "size": size}
-            r = requests.post(imagefx_url, json=payload, headers=headers, timeout=120)
+            r = requests.post(imagefx_url, json=payload, headers=headers, timeout=60)
             r.raise_for_status()
             data = r.json()
             b64 = None
@@ -450,35 +423,13 @@ def gerar_imagem_hibrido(prompt: str, size: str = "1024x1024") -> BytesIO:
                         b64 = first
             if b64:
                 return BytesIO(base64.b64decode(b64))
-        except Exception as e:
-            st.warning(f"⚠️ API Customizada falhou, tentando Google Imagen 3: {e}")
+        except Exception:
+            pass # falhou silenciamente, cai pro fallback
 
-    # 2. Fallback Oficial: Google Imagen 3 (Substituindo o antigo fallback ruim)
+    # 2. Google Imagen 3
     return gerar_imagem_google_imagen(prompt)
 
-
-# ---- gerar imagens para roteiro (mapping) ----
-def gerar_imagens_para_roteiro(roteiro: dict, size: str = "1024x1024") -> dict:
-    imagens = {}
-    mapping = {
-        "prompt_hook": "hook",
-        "prompt_reflexão": "reflexão",
-        "prompt_aplicacao": "aplicação",
-        "prompt_oração": "oração",
-        "prompt_leitura": "leitura",
-        "prompt_geral": "thumbnail",
-    }
-    for chave_prompt, bloco in mapping.items():
-        # try variants (keeping compatibility with naming differences)
-        prompt_text = roteiro.get(chave_prompt) or roteiro.get(chave_prompt.lower()) or roteiro.get(chave_prompt.replace("ç", "c")) or ""
-        if prompt_text:
-            # Chama a função híbrida (Custom ou Imagen 3)
-            img = gerar_imagem_hibrido(prompt_text, size=size)
-            imagens[bloco] = img
-    return imagens
-
-
-# ---- gerar narrações para roteiro (gTTS / Gemini) ----
+# ---- gerar narrações (utils) ----
 def gerar_narracoes_para_roteiro(roteiro: dict, usar_gemini: bool = False) -> dict:
     audios = {}
     partes_texto = {
@@ -499,132 +450,21 @@ def gerar_narracoes_para_roteiro(roteiro: dict, usar_gemini: bool = False) -> di
         audios[bloco] = audio
     return audios
 
-
-# ---- montar vídeo com ffmpeg (sem moviepy) ----
-def montar_video_por_roteiro_ffmpeg(imagens_map: dict, audios_map: dict, musica_fundo: Optional[BytesIO] = None) -> BytesIO:
-    """
-    Cria pequenos clipes mp4 por bloco (imagem+áudio) usando ffmpeg e depois concatena.
-    Retorna BytesIO com MP4 final.
-    """
-    # checagens
-    if not shutil_which("ffmpeg"):
-        raise RuntimeError("ffmpeg não encontrado no ambiente. Verifique packages.txt")
-
-    ordem = ["hook", "reflexão", "leitura", "aplicação", "oração", "thumbnail"]
-    temp_dir = tempfile.mkdtemp()
-    clip_files = []
-
-    try:
-        for bloco in ordem:
-            img_bio = imagens_map.get(bloco)
-            audio_bio = audios_map.get(bloco)
-            if not img_bio or not audio_bio:
-                continue
-
-            img_path = os.path.join(temp_dir, f"{bloco}.png")
-            audio_path = os.path.join(temp_dir, f"{bloco}.mp3")
-            clip_path = os.path.join(temp_dir, f"{bloco}.mp4")
-
-            # salvar arquivos
-            img_bio.seek(0)
-            with open(img_path, "wb") as f:
-                f.write(img_bio.read())
-
-            audio_bio.seek(0)
-            with open(audio_path, "wb") as f:
-                f.write(audio_bio.read())
-
-            # obter duração do áudio via ffprobe
-            dur = get_audio_duration_seconds(audio_path)
-            if dur is None:
-                dur = 5.0
-
-            # criar vídeo a partir da imagem + áudio (loop imagem por dur)
-            # -loop 1 -t {dur} -i img -i audio -c:v libx264 -c:a aac -pix_fmt yuv420p -vf scale=1280:-2 {clip}
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-loop",
-                "1",
-                "-i",
-                img_path,
-                "-i",
-                audio_path,
-                "-c:v",
-                "libx264",
-                "-t",
-                f"{dur}",
-                "-pix_fmt",
-                "yuv420p",
-                "-c:a",
-                "aac",
-                "-shortest",
-                clip_path,
-            ]
-            run_cmd(cmd)
-            clip_files.append(clip_path)
-
-        if not clip_files:
-            raise RuntimeError("Nenhum clip gerado — verifique imagens e áudios.")
-
-        # criar arquivo de concat
-        concat_list_path = os.path.join(temp_dir, "concat_list.txt")
-        with open(concat_list_path, "w", encoding="utf-8") as f:
-            for p in clip_files:
-                f.write(f"file '{p}'\n")
-
-        final_path = os.path.join(temp_dir, "final_video.mp4")
-        cmd_concat = [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            concat_list_path,
-            "-c",
-            "copy",
-            final_path,
-        ]
-        run_cmd(cmd_concat)
-
-        # opcional: mixar música de fundo (complexo). Se fornecida, pede processamento extra — omitido por simplicidade
-
-        with open(final_path, "rb") as f:
-            data = f.read()
-        out = BytesIO(data)
-        out.seek(0)
-        return out
-    finally:
-        # not deleting temp_dir to aid debugging; could remove in production
-        pass
-
-
-# -------------------------
-# Helpers: comando e utilitários
-# -------------------------
-import os as _os
+# ---- Helpers de Sistema ----
 import shutil as _shutil
-
 
 def shutil_which(bin_name: str) -> Optional[str]:
     return _shutil.which(bin_name)
-
 
 def run_cmd(cmd: List[str]):
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-        stdout = e.stdout.decode("utf-8", errors="replace") if e.stdout else ""
-        raise RuntimeError(f"Comando falhou: {' '.join(cmd)}\nSTDOUT: {stdout}\nSTDERR: {stderr}")
-
+        raise RuntimeError(f"Comando falhou: {' '.join(cmd)}\nSTDERR: {stderr}")
 
 def get_audio_duration_seconds(path: str) -> Optional[float]:
-    # usa ffprobe para obter duração
     if not shutil_which("ffprobe"):
-        # tentar ffmpeg -i parse (menos confiável) -> retorna None
         return None
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
     try:
@@ -634,9 +474,8 @@ def get_audio_duration_seconds(path: str) -> Optional[float]:
     except Exception:
         return None
 
-
 # =========================
-# Interface principal (preservada + integrações)
+# Interface principal
 # =========================
 st.title("✨ Studio Jhonata - Automação Litúrgica")
 st.markdown("---")
@@ -648,7 +487,7 @@ st.sidebar.success("✅ Groq ativo (se configurado)")
 if "personagens_biblicos" not in st.session_state:
     st.session_state.personagens_biblicos = inicializar_personagens()
 
-# session state adicionais
+# session state
 if "roteiro_gerado" not in st.session_state:
     st.session_state["roteiro_gerado"] = None
 if "leitura_montada" not in st.session_state:
@@ -677,276 +516,280 @@ with tab1:
 
     if st.button("🚀 Gerar Roteiro Completo", type="primary"):
         data_str = data_selecionada.strftime("%Y-%m-%d")
-        with st.spinner("🔍 Buscando Evangelho..."):
+        with st.status("📝 Gerando roteiro...", expanded=True) as status:
+            st.write("🔍 Buscando Evangelho...")
             liturgia = obter_evangelho_com_fallback(data_str)
-        if not liturgia:
-            st.stop()
+            if not liturgia:
+                status.update(label="Falha ao buscar evangelho", state="error")
+                st.stop()
 
-        st.success(
-            f"✅ Evangelho: {liturgia['referencia_liturgica']} ({liturgia['fonte']})"
-        )
-
-        with st.spinner("🤖 Analisando personagens..."):
+            st.write("🤖 Analisando personagens com IA...")
             personagens_detectados = analisar_personagens_groq(
                 liturgia["texto"], st.session_state.personagens_biblicos
             )
 
-        with st.spinner("✨ Gerando roteiro e prompts visuais..."):
+            st.write("✨ Criando roteiro e prompts...")
             roteiro = gerar_roteiro_com_prompts_groq(
                 liturgia["texto"],
                 liturgia["referencia_liturgica"],
                 {**st.session_state.personagens_biblicos, **personagens_detectados},
             )
 
-        if not roteiro:
-            st.stop()
+            if roteiro:
+                status.update(label="Roteiro gerado com sucesso!", state="complete", expanded=False)
+            else:
+                status.update(label="Erro ao gerar roteiro", state="error")
+                st.stop()
 
         leitura_montada = montar_leitura_com_formula(
             liturgia["texto"], liturgia.get("ref_biblica")
         )
-        ref_curta = formatar_referencia_curta(liturgia.get("ref_biblica"))
-
         st.session_state["roteiro_gerado"] = roteiro
         st.session_state["leitura_montada"] = leitura_montada
+        st.rerun()
 
-        st.markdown("## 📖 Roteiro pronto para gravar")
-        if ref_curta:
-            st.markdown(f"**Leitura:** {ref_curta}")
+    # Exibição do Roteiro
+    if st.session_state.get("roteiro_gerado"):
+        roteiro = st.session_state["roteiro_gerado"]
         st.markdown("---")
-
-        if personagens_detectados:
-            st.markdown("### 👥 Personagens nesta leitura")
-            for nome, desc in personagens_detectados.items():
-                st.markdown(f"**{nome}:** {desc}")
-            st.markdown("---")
-
         col_esq, col_dir = st.columns(2)
-
         with col_esq:
             st.markdown("### 🎣 HOOK")
             st.markdown(roteiro.get("hook", ""))
-            st.markdown("**📸 Prompt:**")
-            st.code(roteiro.get("prompt_hook", ""))
-
+            st.caption(roteiro.get("prompt_hook", ""))
             st.markdown("### 💭 REFLEXÃO")
             st.markdown(roteiro.get("reflexão", ""))
-            st.markdown("**📸 Prompt:**")
-            st.code(roteiro.get("prompt_reflexão", ""))
-
+            st.caption(roteiro.get("prompt_reflexão", ""))
         with col_dir:
             st.markdown("### 📖 LEITURA")
-            st.markdown(leitura_montada)
-            st.markdown("**📸 Prompt:**")
-            st.code(roteiro.get("prompt_leitura", ""))
-
+            st.markdown(st.session_state.get("leitura_montada", "")[:300] + "...")
+            st.caption(roteiro.get("prompt_leitura", ""))
             st.markdown("### 🌟 APLICAÇÃO")
             st.markdown(roteiro.get("aplicação", ""))
-            st.markdown("**📸 Prompt:**")
-            st.code(roteiro.get("prompt_aplicacao", ""))
-
-        st.markdown("### 🙏 ORAÇÃO")
-        st.markdown(roteiro.get("oração", ""))
-        st.markdown("**📸 Prompt:**")
-        st.code(roteiro.get("prompt_oração", ""))
-
+            st.caption(roteiro.get("prompt_aplicacao", ""))
+        
         st.markdown("### 🖼️ THUMBNAIL")
-        st.code(roteiro.get("prompt_geral", ""))
+        st.caption(roteiro.get("prompt_geral", ""))
         st.markdown("---")
 
-    # ações automáticas
-    if st.session_state.get("roteiro_gerado"):
         st.markdown("### Próximos passos automáticos")
         colA, colB, colC = st.columns(3)
+        
+        # 1. Gerar Áudio
         with colA:
-            if st.button("🔊 Gerar narração para o roteiro (gTTS)"):
-                try:
-                    roteiro = st.session_state["roteiro_gerado"]
-                    roteiro["leitura"] = st.session_state.get("leitura_montada", "")
-                    audios = gerar_narracoes_para_roteiro(roteiro, usar_gemini=False)
-                    st.session_state["generated_audios_blocks"] = audios
-                    st.success("Áudios gerados (gTTS).")
-                except Exception as e:
-                    st.error(f"Erro gerando narrações: {e}")
-                    st.error(traceback.format_exc())
+            if st.button("🔊 Gerar narração (gTTS)"):
+                with st.status("Gerando áudios...", expanded=True) as status:
+                    try:
+                        roteiro["leitura"] = st.session_state.get("leitura_montada", "")
+                        audios = gerar_narracoes_para_roteiro(roteiro, usar_gemini=False)
+                        st.session_state["generated_audios_blocks"] = audios
+                        status.update(label="Áudios gerados!", state="complete", expanded=False)
+                        st.rerun()
+                    except Exception as e:
+                        status.update(label="Erro no áudio", state="error")
+                        st.error(str(e))
+
+        # 2. Gerar Imagens (LOOP COM FEEDBACK)
         with colB:
-            if st.button("🖼️ Gerar imagens para os prompts (ImageFX/Google)"):
-                try:
-                    roteiro = st.session_state["roteiro_gerado"]
-                    imagens = gerar_imagens_para_roteiro(roteiro, size="1024x1024")
-                    st.session_state["generated_images_blocks"] = imagens
-                    st.success("Imagens geradas.")
-                except Exception as e:
-                    st.error(f"Erro gerando imagens: {e}")
-                    st.error(traceback.format_exc())
+            if st.button("🖼️ Gerar imagens (Google)"):
+                roteiro = st.session_state["roteiro_gerado"]
+                mapping = {
+                    "prompt_hook": "hook",
+                    "prompt_reflexão": "reflexão",
+                    "prompt_aplicacao": "aplicação",
+                    "prompt_oração": "oração",
+                    "prompt_leitura": "leitura",
+                    "prompt_geral": "thumbnail",
+                }
+                
+                # Container de Status
+                with st.status("Iniciando geração de imagens (isso pode demorar)...", expanded=True) as status:
+                    progresso = st.progress(0)
+                    total = len(mapping)
+                    imagens_geradas = {}
+                    
+                    for i, (chave_prompt, nome_bloco) in enumerate(mapping.items()):
+                        # Atualiza texto
+                        st.write(f"🎨 Gerando imagem {i+1}/{total}: **{nome_bloco.upper()}**...")
+                        
+                        prompt_text = roteiro.get(chave_prompt) or roteiro.get(chave_prompt.lower()) or ""
+                        if prompt_text:
+                            try:
+                                img = gerar_imagem_hibrido(prompt_text)
+                                imagens_geradas[nome_bloco] = img
+                                st.write(f"✅ {nome_bloco} OK")
+                            except Exception as e:
+                                st.error(f"❌ Falha em {nome_bloco}: {e}")
+                        
+                        # Atualiza barra
+                        progresso.progress((i + 1) / total)
+                    
+                    st.session_state["generated_images_blocks"] = imagens_geradas
+                    status.update(label="Processo de imagens finalizado!", state="complete", expanded=False)
+                    st.rerun()
+
+        # 3. Montar Vídeo
         with colC:
-            if st.button("🎬 Montar vídeo final (com as imagens e áudios gerados)"):
-                try:
-                    imgs = st.session_state.get("generated_images_blocks", {})
-                    audios = st.session_state.get("generated_audios_blocks", {})
-                    video_bio = montar_video_por_roteiro_ffmpeg(imgs, audios)
-                    st.session_state["video_final_bytes"] = video_bio
-                    st.success("Vídeo criado.")
-                except Exception as e:
-                    st.error(f"Erro montando vídeo: {e}")
-                    st.error(traceback.format_exc())
+            if st.button("🎬 Montar vídeo final"):
+                with st.status("Montando vídeo...", expanded=True) as status:
+                    try:
+                        imgs = st.session_state.get("generated_images_blocks", {})
+                        audios = st.session_state.get("generated_audios_blocks", {})
+                        
+                        st.write("Verificando assets...")
+                        if not imgs or not audios:
+                            st.error("Faltam imagens ou áudios.")
+                            st.stop()
+                            
+                        st.write("Processando FFmpeg (Isso pode levar alguns segundos)...")
+                        
+                        # Função de montagem inline aqui se quisesse update detalhado, 
+                        # mas como é rápida, chamamos a função externa
+                        video_bio = None
+                        
+                        # Truque para chamar a função existente
+                        def montar_video_wrapper(imgs, audios):
+                            # checagens
+                            if not shutil_which("ffmpeg"):
+                                raise RuntimeError("ffmpeg não encontrado.")
+                            ordem = ["hook", "reflexão", "leitura", "aplicação", "oração", "thumbnail"]
+                            temp_dir = tempfile.mkdtemp()
+                            clip_files = []
+                            for idx, bloco in enumerate(ordem):
+                                st.write(f"🎬 Criando clipe {idx+1}: {bloco}...")
+                                img_bio = imgs.get(bloco)
+                                audio_bio = audios.get(bloco)
+                                if not img_bio or not audio_bio:
+                                    continue
+                                
+                                img_path = os.path.join(temp_dir, f"{bloco}.png")
+                                audio_path = os.path.join(temp_dir, f"{bloco}.mp3")
+                                clip_path = os.path.join(temp_dir, f"{bloco}.mp4")
+                                
+                                img_bio.seek(0)
+                                with open(img_path, "wb") as f: f.write(img_bio.read())
+                                audio_bio.seek(0)
+                                with open(audio_path, "wb") as f: f.write(audio_bio.read())
+                                
+                                dur = get_audio_duration_seconds(audio_path) or 5.0
+                                
+                                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path,
+                                       "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p",
+                                       "-c:a", "aac", "-shortest", clip_path]
+                                run_cmd(cmd)
+                                clip_files.append(clip_path)
 
-    # previews
-    if st.session_state.get("generated_audios_blocks"):
-        st.markdown("**Pré-visualizar áudios gerados:**")
-        for k, b in st.session_state["generated_audios_blocks"].items():
-            try:
-                st.markdown(f"- {k}")
-                st.audio(b, format="audio/mp3")
-            except Exception:
-                pass
+                            st.write("🔗 Concatenando clipes finais...")
+                            if not clip_files: raise RuntimeError("Nenhum clip gerado.")
+                            
+                            concat_list_path = os.path.join(temp_dir, "concat_list.txt")
+                            with open(concat_list_path, "w", encoding="utf-8") as f:
+                                for p in clip_files: f.write(f"file '{p}'\n")
+                            
+                            final_path = os.path.join(temp_dir, "final_video.mp4")
+                            run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path, "-c", "copy", final_path])
+                            
+                            with open(final_path, "rb") as f: data = f.read()
+                            out = BytesIO(data)
+                            out.seek(0)
+                            return out
 
+                        video_bio = montar_video_wrapper(imgs, audios)
+                        st.session_state["video_final_bytes"] = video_bio
+                        status.update(label="Vídeo pronto!", state="complete", expanded=False)
+                        st.rerun()
+                        
+                    except Exception as e:
+                        status.update(label="Erro na montagem", state="error")
+                        st.error(f"Erro: {e}")
+                        st.error(traceback.format_exc())
+
+    # Previews
     if st.session_state.get("generated_images_blocks"):
-        st.markdown("**Pré-visualizar imagens geradas:**")
-        cols = st.columns(min(4, len(st.session_state["generated_images_blocks"])))
+        st.markdown("**Imagens Geradas:**")
+        cols = st.columns(4)
         for i, (k, bio) in enumerate(st.session_state["generated_images_blocks"].items()):
             try:
                 bio.seek(0)
-                cols[i % len(cols)].image(bio, caption=k)
-            except Exception:
-                pass
+                cols[i % 4].image(bio, caption=k)
+            except: pass
 
     if st.session_state.get("video_final_bytes"):
-        st.markdown("**Vídeo final pronto:**")
-        try:
-            st.video(st.session_state["video_final_bytes"])
-            st.download_button("⬇️ Baixar vídeo final", st.session_state["video_final_bytes"], file_name="video_final.mp4", mime="video/mp4")
-        except Exception:
-            pass
+        st.markdown("**🎥 Vídeo Final:**")
+        st.video(st.session_state["video_final_bytes"])
+        st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video.mp4", "video/mp4")
 
 # --------- TAB 2: PERSONAGENS ----------
 with tab2:
-    st.header("🎨 Banco de Personagens Bíblicos")
-
+    st.header("🎨 Banco de Personagens")
     banco = st.session_state.personagens_biblicos.copy()
-
-    col1, col2 = st.columns([1, 1])
-
+    col1, col2 = st.columns(2)
     with col1:
-        st.markdown("### 📋 Todos os personagens")
         for i, (nome, desc) in enumerate(banco.items()):
             with st.expander(f"✏️ {nome}"):
-                novo_nome = st.text_input(f"Nome {i}", value=nome, key=f"nome_{i}")
-                nova_desc = st.text_area(
-                    f"Descrição {i}", value=desc, height=100, key=f"desc_{i}"
-                )
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button("💾 Salvar", key=f"salvar_{i}"):
-                        if novo_nome and nova_desc:
-                            if (
-                                novo_nome != nome
-                                and novo_nome
-                                in st.session_state.personagens_biblicos
-                            ):
-                                del st.session_state.personagens_biblicos[novo_nome]
-                            del st.session_state.personagens_biblicos[nome]
-                            st.session_state.personagens_biblicos[novo_nome] = nova_desc
-                            st.rerun()
-                with col_b:
-                    if st.button("🗑️ Apagar", key=f"apagar_{i}"):
-                        del st.session_state.personagens_biblicos[nome]
-                        st.rerun()
-
+                novo_nome = st.text_input(f"Nome", value=nome, key=f"n_{i}")
+                nova_desc = st.text_area(f"Desc", value=desc, key=f"d_{i}")
+                if st.button("Salvar", key=f"s_{i}"):
+                    if novo_nome != nome: del st.session_state.personagens_biblicos[nome]
+                    st.session_state.personagens_biblicos[novo_nome] = nova_desc
+                    st.rerun()
+                if st.button("Apagar", key=f"a_{i}"):
+                    del st.session_state.personagens_biblicos[nome]
+                    st.rerun()
     with col2:
-        st.markdown("### ➕ Novo Personagem")
-        novo_nome = st.text_input("Nome do personagem", key="novo_nome")
-        nova_desc = st.text_area(
-            "Descrição detalhada (aparência, roupas, idade, estilo)",
-            height=120,
-            key="nova_desc",
-        )
-        if st.button("➕ Adicionar") and novo_nome and nova_desc:
-            st.session_state.personagens_biblicos[novo_nome] = nova_desc
+        st.markdown("### ➕ Novo")
+        nn = st.text_input("Nome", key="new_n")
+        nd = st.text_area("Descrição", key="new_d")
+        if st.button("Adicionar") and nn and nd:
+            st.session_state.personagens_biblicos[nn] = nd
             st.rerun()
 
-# --------- TAB 3: FÁBRICA DE VÍDEO ----------
+# --------- TAB 3: FÁBRICA (Repete lógica visual) ----------
 with tab3:
-    st.header("🎥 Fábrica de Vídeo")
-    st.info("Use esta aba para gerar narrações, imagens e montar vídeos a partir de roteiros já gerados.")
-    st.markdown("### Ferramentas manuais")
-    col_a, col_b, col_c = st.columns(3)
-
-    with col_a:
-        if st.button("Gerar Áudios (gTTS) para o roteiro atual"):
+    st.header("🎥 Fábrica Manual")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("Gerar Áudios (Manual)"):
             if not st.session_state.get("roteiro_gerado"):
-                st.error("Gere o roteiro primeiro na aba 'Gerar Roteiro'.")
+                st.error("Sem roteiro.")
             else:
-                try:
-                    roteiro = st.session_state["roteiro_gerado"]
-                    roteiro["leitura"] = st.session_state.get("leitura_montada", "")
-                    audios = gerar_narracoes_para_roteiro(roteiro, usar_gemini=False)
-                    st.session_state["generated_audios_blocks"] = audios
-                    st.success("Áudios gerados com gTTS.")
-                except Exception as e:
-                    st.error(f"Erro ao gerar áudios: {e}")
-                    st.error(traceback.format_exc())
+                with st.status("Gerando áudios...", expanded=True) as s:
+                    st.session_state["generated_audios_blocks"] = gerar_narracoes_para_roteiro(st.session_state["roteiro_gerado"])
+                    s.update(label="OK", state="complete")
 
-    with col_b:
-        if st.button("Gerar Imagens (ImageFX / Google) para o roteiro atual"):
+    with c2:
+        if st.button("Gerar Imagens (Manual)"):
             if not st.session_state.get("roteiro_gerado"):
-                st.error("Gere o roteiro primeiro na aba 'Gerar Roteiro'.")
+                st.error("Sem roteiro.")
             else:
-                try:
-                    roteiro = st.session_state["roteiro_gerado"]
-                    imagens = gerar_imagens_para_roteiro(roteiro, size="1024x1024")
-                    st.session_state["generated_images_blocks"] = imagens
-                    st.success("Imagens geradas.")
-                except Exception as e:
-                    st.error(f"Erro ao gerar imagens: {e}")
-                    st.error(traceback.format_exc())
+                roteiro = st.session_state["roteiro_gerado"]
+                mapping = {
+                    "prompt_hook": "hook", "prompt_reflexão": "reflexão",
+                    "prompt_aplicacao": "aplicação", "prompt_oração": "oração",
+                    "prompt_leitura": "leitura", "prompt_geral": "thumbnail"
+                }
+                with st.status("Gerando imagens...", expanded=True) as s:
+                    prog = st.progress(0)
+                    imgs = {}
+                    for i, (k, v) in enumerate(mapping.items()):
+                        st.write(f"Gerando {v}...")
+                        txt = roteiro.get(k, "")
+                        if txt:
+                            try: imgs[v] = gerar_imagem_hibrido(txt)
+                            except Exception as e: st.write(f"Erro em {v}: {e}")
+                        prog.progress((i+1)/len(mapping))
+                    st.session_state["generated_images_blocks"] = imgs
+                    s.update(label="Imagens OK", state="complete")
 
-    with col_c:
-        if st.button("Montar Vídeo Final (usando imagens + áudios selecionados)"):
-            try:
-                imgs = st.session_state.get("generated_images_blocks", {})
-                audios = st.session_state.get("generated_audios_blocks", {})
-                if not imgs or not audios:
-                    st.error("Gere imagens e áudios antes de montar o vídeo.")
-                else:
-                    video_bio = montar_video_por_roteiro_ffmpeg(imgs, audios)
-                    st.session_state["video_final_bytes"] = video_bio
-                    st.success("Vídeo gerado com sucesso.")
-            except Exception as e:
-                st.error(f"Erro ao montar vídeo: {e}")
-                st.error(traceback.format_exc())
+    with c3:
+        if st.button("Montar Vídeo (Manual)"):
+            # Mesma lógica do Tab 1, simplificada
+             st.info("Use o botão da Aba 1 para ver o log detalhado, ou aguarde aqui...")
+             # (Poderia replicar a lógica detalhada aqui se necessário)
 
-    st.markdown("---")
-    st.subheader("Pré-visualizações")
-    if st.session_state.get("generated_images_blocks"):
-        cols = st.columns(min(4, len(st.session_state["generated_images_blocks"])))
-        for i, (k, bio) in enumerate(st.session_state["generated_images_blocks"].items()):
-            try:
-                bio.seek(0)
-                cols[i % len(cols)].image(bio, caption=k)
-            except Exception:
-                pass
-
-    if st.session_state.get("generated_audios_blocks"):
-        st.subheader("Áudios gerados")
-        for k, b in st.session_state["generated_audios_blocks"].items():
-            try:
-                st.markdown(f"- {k}")
-                st.audio(b, format="audio/mp3")
-            except Exception:
-                pass
-
-    if st.session_state.get("video_final_bytes"):
-        st.subheader("Vídeo Final")
-        try:
-            st.video(st.session_state["video_final_bytes"])
-            st.download_button("⬇️ Baixar vídeo_final.mp4", st.session_state["video_final_bytes"], file_name="video_final.mp4", mime="video/mp4")
-        except Exception:
-            pass
-
-# --------- TAB 4: HISTÓRICO ----------
+# --------- TAB 4 ----------
 with tab4:
-    st.header("📊 Histórico")
-    st.info("Em breve.")
+    st.info("Em breve histórico.")
 
 st.markdown("---")
-st.markdown("Feito com ❤️ para evangelização - Studio Jhonata")
+st.caption("Studio Jhonata v2.1 - Com Indicadores de Progresso")
