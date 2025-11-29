@@ -1,5 +1,5 @@
-# app.py — Gerador de Evangelho (COMPLETO v22.0)
-# Features: Fix Roteiro Vazio (Regex Robusto), Legendas, Música, Efeitos, Upload
+# app.py — Gerador de Evangelho (COMPLETO v21.0)
+# Features: Nome Atualizado, Fonte Mobile Ajustada, Legendas, Música, Efeitos
 import os
 import re
 import json
@@ -30,7 +30,7 @@ SAVED_MUSIC_FILE = "saved_bg_music.mp3"
 # Page config
 # =========================
 st.set_page_config(
-    page_title="Gerador de Evangelho",
+    page_title="Gerador de Evangelho", # Nome da aba atualizado
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -41,19 +41,22 @@ st.set_page_config(
 def load_config():
     """Carrega configurações do disco ou retorna padrão"""
     default_settings = {
+        # Overlay Cabeçalho
         "line1_y": 40, "line1_size": 40, "line1_font": "Padrão (Sans)", "line1_anim": "Estático",
         "line2_y": 90, "line2_size": 28, "line2_font": "Padrão (Sans)", "line2_anim": "Estático",
         "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)", "line3_anim": "Estático",
+        # Efeitos Vídeo
         "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
+        # Legendas
         "sub_enabled": False,
         "sub_font": "Padrão (Sans)",
         "sub_size": 45,
-        "sub_y": 100,
+        "sub_y": 100, # Distância do fundo (bottom)
         "sub_color": "#FFFFFF",
         "sub_outline_color": "#000000",
-        "sub_karaoke": False,
+        "sub_karaoke": False, # Efeito Wipe
         "sub_bg_box": False
     }
     
@@ -69,6 +72,7 @@ def load_config():
     return default_settings
 
 def save_config(settings):
+    """Salva configurações no disco"""
     try:
         with open(CONFIG_FILE, "w") as f:
             json.dump(settings, f)
@@ -182,29 +186,35 @@ def formatar_referencia_curta(ref_biblica):
     return f"{ref_biblica['evangelista']}, Cap. {ref_biblica['capitulo']}, {ref_biblica['versiculos']}"
 
 def sanitize_text_for_ffmpeg(text: str) -> str:
+    """Limpa texto para evitar quebra do filtro drawtext"""
     if not text: return ""
+    # Substituir quebras de linha por espaço (o wrapping fará o trabalho)
     t = text.replace("\n", " ")
+    # Escapar caracteres especiais do FFmpeg
     t = t.replace(":", "\\:")
     t = t.replace("'", "")
     t = t.replace("%", "\\%")
     return t
 
 def wrap_text_ffmpeg(text: str, font_path: str, font_size: int, max_width: int) -> str:
+    """Quebra o texto em linhas para caber na largura"""
     if not text: return ""
     try:
         font = ImageFont.truetype(font_path, font_size) if font_path and os.path.exists(font_path) else ImageFont.load_default()
     except:
         font = ImageFont.load_default()
     
+    # Estimativa de caracteres por linha
+    # A largura média de um caractere é aprox 0.6 * tamanho da fonte (para fontes normais)
     avg_char_width = font_size * 0.5 
     chars_per_line = int(max_width / avg_char_width)
     
     wrapper = textwrap.TextWrapper(width=chars_per_line)
     lines = wrapper.wrap(text)
-    return "\n".join(lines)
+    return "\n".join(lines) # FFmpeg drawtext aceita \n
 
 # =========================
-# Groq Logic (Regex melhorada)
+# Groq Logic
 # =========================
 def analisar_personagens_groq(texto_evangelho: str, banco_personagens: dict):
     client = inicializar_groq()
@@ -215,6 +225,9 @@ def analisar_personagens_groq(texto_evangelho: str, banco_personagens: dict):
         "PERSONAGENS: nome1; nome2; nome3\n\n"
         "NOVOS: NomeNovo|descrição_detalhada_aparência_física_roupas_idade_estilo (apenas se não existir no banco)\n\n"
         f"BANCO EXISTENTE: {'; '.join(banco_personagens.keys())}\n\n"
+        "Exemplo:\n"
+        "PERSONAGENS: Jesus; Pedro; fariseus\n"
+        "NOVOS: Mulher Samaritana|mulher de 35 anos, pele morena, véu colorido, jarro d'água, expressão curiosa, túnica tradicional\n"
     )
     try:
         resp = client.chat.completions.create(
@@ -255,47 +268,43 @@ IMPORTANTE:
 - PROMPT_LEITURA separado (momento da leitura do Evangelho, mais calmo e reverente)
 - PROMPT_GERAL para thumbnail
 - Estilo: artístico renascentista católico, luz suave, cores quentes
-- Formato STRICT: Chaves em maiúsculo, sem asteriscos desnecessários.
-
 Formato EXATO:
-HOOK: [texto]
-PROMPT_HOOK: [prompt]
-REFLEXÃO: [texto]
-PROMPT_REFLEXÃO: [prompt]
-APLICAÇÃO: [texto]
-PROMPT_APLICACAO: [prompt]
-ORAÇÃO: [texto]
-PROMPT_ORACAO: [prompt]
-PROMPT_LEITURA: [prompt]
-PROMPT_GERAL: [prompt]"""
+HOOK: [texto 5-8s]
+PROMPT_HOOK: [prompt visual]
+REFLEXÃO: [texto 20-25s]
+PROMPT_REFLEXÃO: [prompt visual]
+APLICAÇÃO: [texto 20-25s]
+PROMPT_APLICACAO: [prompt visual]
+ORAÇÃO: [texto 20-25s]
+PROMPT_ORACAO: [prompt visual]
+PROMPT_LEITURA: [prompt visual]
+PROMPT_GERAL: [prompt thumbnail]"""
     try:
         resp = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": f"Evangelho: {referencia_liturgica}\n\n{texto_limpo[:2000]}"}],
-            temperature=0.7, max_tokens=1500,
+            temperature=0.7, max_tokens=1200,
         )
         texto_gerado = resp.choices[0].message.content
         partes = {}
-        
-        # Regex flexível para capturar blocos mesmo com formatação markdown (**HOOK**, ### HOOK)
-        # Procura por: (quebra de linha ou inicio) + (chars opcionais como * #) + NOME_DO_BLOCO + (chars opcionais) + : + (conteudo)
-        def ext_flex(label):
-            pattern = rf"(?:^|\n)(?:\*\*|#|\s)*{label}(?:\*\*|#|:)*\s*:?\s*(.*?)(?=\n(?:\*\*|#|\s)*[A-ZÁÉÍÓÚÃÕÇ_]{{3,}}|$)"
-            m = re.search(pattern, texto_gerado, re.DOTALL | re.IGNORECASE)
+        def ext(l):
+            m = re.search(rf"{l}:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:\s*|\nPROMPT_|$)", texto_gerado, re.DOTALL | re.IGNORECASE)
             return m.group(1).strip() if m else ""
-
-        partes["hook"] = ext_flex("HOOK")
-        partes["reflexão"] = ext_flex("REFLEXÃO") or ext_flex("REFLEXAO")
-        partes["aplicação"] = ext_flex("APLICAÇÃO") or ext_flex("APLICACAO")
-        partes["oração"] = ext_flex("ORAÇÃO") or ext_flex("ORACAO")
+        def ext_p(l):
+            m = re.search(rf"{l}:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:\s*|\nPROMPT_|$)", texto_gerado, re.DOTALL | re.IGNORECASE)
+            return m.group(1).strip() if m else ""
         
-        partes["prompt_hook"] = ext_flex("PROMPT_HOOK")
-        partes["prompt_reflexão"] = ext_flex("PROMPT_REFLEXÃO") or ext_flex("PROMPT_REFLEXAO")
-        partes["prompt_aplicacao"] = ext_flex("PROMPT_APLICACAO") or ext_flex("PROMPT_APLICAÇÃO")
-        partes["prompt_oração"] = ext_flex("PROMPT_ORACAO") or ext_flex("PROMPT_ORAÇÃO")
-        partes["prompt_leitura"] = ext_flex("PROMPT_LEITURA")
-        partes["prompt_geral"] = ext_flex("PROMPT_GERAL")
-        
+        partes["hook"] = ext("HOOK")
+        partes["reflexão"] = ext("REFLEXÃO")
+        partes["aplicação"] = ext("APLICAÇÃO")
+        partes["oração"] = ext("ORAÇÃO")
+        partes["prompt_hook"] = ext_p("PROMPT_HOOK")
+        partes["prompt_reflexão"] = ext_p("PROMPT_REFLEXÃO")
+        partes["prompt_aplicacao"] = ext_p("PROMPT_APLICACAO")
+        partes["prompt_oração"] = ext_p("PROMPT_ORACAO")
+        partes["prompt_leitura"] = ext_p("PROMPT_LEITURA")
+        m_geral = re.search(r"PROMPT_GERAL:\s*(.+)", texto_gerado, re.DOTALL | re.IGNORECASE)
+        partes["prompt_geral"] = m_geral.group(1).strip() if m_geral else ""
         return partes
     except Exception as e:
         st.error(f"❌ Erro Groq: {e}")
@@ -473,9 +482,17 @@ def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upl
         try: font = ImageFont.truetype(font_path, size) if font_path and os.path.exists(font_path) else ImageFont.load_default()
         except: font = ImageFont.load_default()
         
+        # Posição (Bottom)
+        # Margem de 10%
         margin = int(width * 0.1)
+        max_w = width - (2 * margin)
+        
+        # Simples wrap para preview
         lines = text.split("\n")
+        
+        # Calcular altura total
         total_h = len(lines) * (size + 5)
+        # Posição Y (baseado na config: distância do fundo)
         y_pos = height - subtitle_preview.get("y", 100) - total_h
         
         for i, line in enumerate(lines):
@@ -497,6 +514,7 @@ def get_text_alpha_expr(anim_type: str, duration: float) -> str:
 # =========================
 # Interface principal
 # =========================
+# Título compacto e centralizado para mobile
 st.markdown("<h3 style='text-align: center;'>Gerador de Evangelho</h3>", unsafe_allow_html=True)
 st.markdown("---")
 
@@ -540,22 +558,15 @@ with tab1:
             personagens_detectados = analisar_personagens_groq(liturgia["texto"], st.session_state.personagens_biblicos)
             st.write("✨ Criando roteiro e prompts...")
             roteiro = gerar_roteiro_com_prompts_groq(liturgia["texto"], liturgia["referencia_liturgica"], {**st.session_state.personagens_biblicos, **personagens_detectados})
-            if roteiro and roteiro.get("hook"):
-                status.update(label="Roteiro gerado com sucesso!", state="complete", expanded=False)
-                leitura_montada = montar_leitura_com_formula(liturgia["texto"], liturgia.get("ref_biblica"))
-                st.session_state["roteiro_gerado"] = roteiro
-                st.session_state["leitura_montada"] = leitura_montada
-                st.rerun()
-            else:
-                status.update(label="Erro: Roteiro vazio ou incompleto.", state="error")
-                st.error("A IA retornou um roteiro vazio. Tente novamente.")
-                
+            if roteiro: status.update(label="Roteiro gerado com sucesso!", state="complete", expanded=False)
+            else: status.update(label="Erro ao gerar roteiro", state="error"); st.stop()
+        leitura_montada = montar_leitura_com_formula(liturgia["texto"], liturgia.get("ref_biblica"))
+        st.session_state["roteiro_gerado"] = roteiro
+        st.session_state["leitura_montada"] = leitura_montada
+        st.rerun()
     if st.session_state.get("roteiro_gerado"):
         roteiro = st.session_state["roteiro_gerado"]
         st.success("Roteiro gerado! Vá para 'Overlay & Legendas' para ajustar o visual.")
-        c1, c2 = st.columns(2)
-        with c1: st.markdown("### Hook"); st.caption(roteiro.get("hook", "Vazio"))
-        with c2: st.markdown("### Reflexão"); st.caption(roteiro.get("reflexão", "Vazio"))
 
 # --------- TAB 2: PERSONAGENS ----------
 with tab2:
@@ -843,4 +854,4 @@ with tab4:
         st.download_button("⬇️ Baixar", st.session_state["video_final_bytes"], "video.mp4", "video/mp4")
 
 with tab5: st.info("Histórico (Em breve)")
-st.markdown("---"); st.caption("Studio Jhonata v22.0 - Final e Corrigida")
+st.markdown("---"); st.caption("Studio Jhonata v21.0 - Layout Compacto")
