@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v12.0)
-# Features: Controle de Efeitos (Zoom/Pan), Transições, Fontes Individuais, Overlay, Editor Full
+# app.py — Studio Jhonata (COMPLETO v13.0)
+# Features: Persistência de Dados (Salvar Configs), Editor Full, Upload, Resoluções, Efeitos
 import os
 import re
 import json
@@ -21,6 +21,9 @@ import streamlit as st
 # Force ffmpeg path for imageio if needed (Streamlit Cloud)
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 
+# Arquivo de configuração persistente
+CONFIG_FILE = "overlay_config.json"
+
 # =========================
 # Page config
 # =========================
@@ -29,6 +32,41 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# =========================
+# Persistência de Configurações
+# =========================
+def load_config():
+    """Carrega configurações do disco ou retorna padrão"""
+    default_settings = {
+        "line1_y": 40, "line1_size": 40, "line1_font": "Padrão (Sans)",
+        "line2_y": 90, "line2_size": 28, "line2_font": "Padrão (Sans)",
+        "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)",
+        "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
+        "trans_type": "Fade (Padrão)", "trans_dur": 0.5
+    }
+    
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                saved = json.load(f)
+                # Mesclar com default para garantir que chaves novas não quebrem configs antigas
+                default_settings.update(saved)
+                return default_settings
+        except Exception as e:
+            st.warning(f"Erro ao carregar configurações salvas: {e}")
+    
+    return default_settings
+
+def save_config(settings):
+    """Salva configurações no disco"""
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(settings, f)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar configurações: {e}")
+        return False
 
 # =========================
 # Groq - lazy init
@@ -84,7 +122,7 @@ def limpar_texto_evangelho(texto: str) -> str:
     return texto_limpo.strip()
 
 # =========================
-# Extrair referência bíblica (CORRIGIDO)
+# Extrair referência bíblica (ROBUSTO)
 # =========================
 def extrair_referencia_biblica(titulo: str):
     if not titulo:
@@ -531,17 +569,9 @@ if "video_final_bytes" not in st.session_state:
 if "meta_dados" not in st.session_state:
     st.session_state["meta_dados"] = {"data": "", "ref": ""}
     
-# Overlay default settings
+# Carregar Settings persistentes
 if "overlay_settings" not in st.session_state:
-    st.session_state["overlay_settings"] = {
-        "line1_y": 40, "line1_size": 40, "line1_font": "Padrão (Sans)",
-        "line2_y": 90, "line2_size": 28, "line2_font": "Padrão (Sans)",
-        "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)",
-        # Efeitos
-        "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
-        # Transições
-        "trans_type": "Fade (Padrão)", "trans_dur": 0.5
-    }
+    st.session_state["overlay_settings"] = load_config()
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["📖 Gerar Roteiro", "🎨 Personagens", "🎚️ Overlay & Efeitos", "🎥 Fábrica Vídeo (Editor)", "📊 Histórico"]
@@ -639,12 +669,12 @@ with tab3:
     
     with col_settings:
         with st.expander("✨ Efeitos Visuais (Movimento)", expanded=True):
-            ov_sets["effect_type"] = st.selectbox("Tipo de Movimento", ["Zoom In (Ken Burns)", "Zoom Out", "Panorâmica Esquerda", "Panorâmica Direita", "Estático (Sem movimento)"], index=0)
-            ov_sets["effect_speed"] = st.slider("Intensidade do Movimento", 1, 10, ov_sets["effect_speed"], help="1 = Muito Lento, 10 = Rápido")
+            ov_sets["effect_type"] = st.selectbox("Tipo de Movimento", ["Zoom In (Ken Burns)", "Zoom Out", "Panorâmica Esquerda", "Panorâmica Direita", "Estático (Sem movimento)"], index=["Zoom In (Ken Burns)", "Zoom Out", "Panorâmica Esquerda", "Panorâmica Direita", "Estático (Sem movimento)"].index(ov_sets.get("effect_type", "Zoom In (Ken Burns)")))
+            ov_sets["effect_speed"] = st.slider("Intensidade do Movimento", 1, 10, ov_sets.get("effect_speed", 3), help="1 = Muito Lento, 10 = Rápido")
 
         with st.expander("🎬 Transições", expanded=True):
-            ov_sets["trans_type"] = st.selectbox("Tipo de Transição", ["Fade (Escurecer)", "Corte Seco (Nenhuma)"], index=0)
-            ov_sets["trans_dur"] = st.slider("Duração da Transição (s)", 0.1, 2.0, ov_sets["trans_dur"], 0.1)
+            ov_sets["trans_type"] = st.selectbox("Tipo de Transição", ["Fade (Escurecer)", "Corte Seco (Nenhuma)"], index=["Fade (Escurecer)", "Corte Seco (Nenhuma)"].index(ov_sets.get("trans_type", "Fade (Escurecer)")))
+            ov_sets["trans_dur"] = st.slider("Duração da Transição (s)", 0.1, 2.0, ov_sets.get("trans_dur", 0.5), 0.1)
 
         with st.expander("📝 Texto Overlay (Cabeçalho)", expanded=False):
             st.markdown("**Linha 1: Título**")
@@ -663,8 +693,9 @@ with tab3:
             ov_sets["line3_y"] = st.slider("Posição Y L3", 0, 800, ov_sets["line3_y"], key="y3")
 
         st.session_state["overlay_settings"] = ov_sets
-        if st.button("💾 Salvar Configurações"):
-            st.success("Configuração salva!")
+        if st.button("💾 Salvar Configurações (Persistente)"):
+            if save_config(ov_sets):
+                st.success("Configuração salva no disco com sucesso!")
 
     with col_preview:
         st.subheader("Pré-visualização (Overlay)")
@@ -794,24 +825,19 @@ with tab4:
                 s_out = f"{res_params['w']}x{res_params['h']}"
                 
                 sets = st.session_state["overlay_settings"]
-                speed_val = sets["effect_speed"] * 0.0005 # Escalar 1-10 para algo util no ffmpeg
+                speed_val = sets["effect_speed"] * 0.0005 
                 
-                # Definição de filtros de movimento
+                # Configuração Efeitos de Movimento
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
                     zoom_expr = f"z='min(zoom+{speed_val},1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Zoom Out":
-                    # Truque: zoom começa em 1.5 e diminui. Requer input scale inicial ou controle complexo. 
-                    # Simples: zoom in invertido? Não funciona bem no ffmpeg sem complexidade.
-                    # Vamos usar um zoom out "fake" que na verdade é um crop que aumenta.
-                    # Mas o padrão zoompan é zoom in. Para zoom out, z='max(1,1.5-0.001*on)'.
                     zoom_expr = f"z='max(1,1.5-{speed_val}*on)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Panorâmica Esquerda":
-                    # Zoom fixo, X move
                     zoom_expr = f"z=1.2:x='min(x+{speed_val}*100,iw-iw/zoom)':y='(ih-ih/zoom)/2'"
                 elif sets["effect_type"] == "Panorâmica Direita":
                     zoom_expr = f"z=1.2:x='max(0,x-{speed_val}*100)':y='(ih-ih/zoom)/2'"
-                else: # Estático
-                    zoom_expr = "z=1:x=0:y=0" # Sem efeito, mas precisa manter estrutura ou usar null
+                else: 
+                    zoom_expr = "z=1:x=0:y=0" 
 
                 for b in blocos_relevantes:
                     bid = b["id"]
@@ -832,19 +858,15 @@ with tab4:
                     frames = int(dur * 25)
 
                     vf_filters = []
-                    # 1. Efeito de Movimento (Zoompan)
                     if sets["effect_type"] != "Estático (Sem movimento)":
                         vf_filters.append(f"zoompan={zoom_expr}:d={frames}:s={s_out}")
                     else:
-                        # Apenas garantir tamanho se estático
                         vf_filters.append(f"scale={s_out}")
 
-                    # 2. Transição (Fade In/Out Black)
                     if sets["trans_type"] == "Fade (Escurecer)":
                         td = sets["trans_dur"]
                         vf_filters.append(f"fade=t=in:st=0:d={td},fade=t=out:st={dur-td}:d={td}")
 
-                    # 3. Overlay
                     if usar_overlay:
                         titulo_atual = map_titulos.get(bid, "EVANGELHO")
                         f1_path = resolve_font_path(sets["line1_font"], uploaded_font_file)
@@ -887,4 +909,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v12.0 - Efeitos Avançados")
+st.caption("Studio Jhonata v13.0 - Persistência Total + Efeitos")
