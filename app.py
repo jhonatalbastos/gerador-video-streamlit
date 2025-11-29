@@ -1,5 +1,5 @@
-# app.py — Gerador de Evangelho (v20.0 - Roteiro Intacto + Legendas)
-# Base: v19.5 (Estável) + Feature de Legendas no Overlay
+# app.py — Gerador de Evangelho (v24.0)
+# Base: v19 (Roteiro Estável) + Nova Funcionalidade: Legendas
 import os
 import re
 import json
@@ -41,22 +41,20 @@ st.set_page_config(
 def load_config():
     """Carrega configurações do disco ou retorna padrão"""
     default_settings = {
-        # Overlay Cabeçalho
+        # Cabeçalho
         "line1_y": 40, "line1_size": 40, "line1_font": "Padrão (Sans)", "line1_anim": "Estático",
         "line2_y": 90, "line2_size": 28, "line2_font": "Padrão (Sans)", "line2_anim": "Estático",
         "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)", "line3_anim": "Estático",
-        # Efeitos Vídeo
+        # Efeitos
         "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
-        # Legendas (Novos campos)
+        # NOVO: Legendas
         "sub_enabled": False,
-        "sub_font": "Padrão (Sans)",
-        "sub_size": 45,
-        "sub_y": 100,
+        "sub_size": 40,
         "sub_color": "#FFFFFF",
-        "sub_outline_color": "#000000",
-        "sub_bg_box": False
+        "sub_bg": True, # Fundo preto semitransparente
+        "sub_y_offset": 100 # Distância do rodapé
     }
     
     if os.path.exists(CONFIG_FILE):
@@ -193,9 +191,13 @@ def sanitize_text_for_ffmpeg(text: str) -> str:
     return t
 
 def wrap_text_ffmpeg(text: str, font_path: str, font_size: int, max_width: int) -> str:
-    """Quebra o texto em linhas para caber na largura (Função Visual apenas)"""
+    """Quebra o texto em linhas para caber na largura"""
     if not text: return ""
-    # Estimativa de caracteres por linha
+    try:
+        font = ImageFont.truetype(font_path, font_size) if font_path and os.path.exists(font_path) else ImageFont.load_default()
+    except:
+        font = ImageFont.load_default()
+    
     avg_char_width = font_size * 0.5 
     chars_per_line = int(max_width / avg_char_width)
     
@@ -204,7 +206,7 @@ def wrap_text_ffmpeg(text: str, font_path: str, font_size: int, max_width: int) 
     return "\n".join(lines)
 
 # =========================
-# Lógica de Roteiro (ORIGINAL V19 - INTACTA)
+# Lógica de Roteiro (ORIGINAL V19 - NÃO ALTERADA)
 # =========================
 def extrair_bloco(rotulo: str, texto: str) -> str:
     padrao = rf"{rotulo}:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:\s*|\nPROMPT_|$)"
@@ -287,7 +289,7 @@ PROMPT_GERAL: [prompt thumbnail]"""
         )
         texto_gerado = resp.choices[0].message.content
         partes = {}
-        # Usando a lógica v19 original
+        # Lógica original V19
         partes["hook"] = extrair_bloco("HOOK", texto_gerado)
         partes["reflexão"] = extrair_bloco("REFLEXÃO", texto_gerado)
         partes["aplicação"] = extrair_bloco("APLICAÇÃO", texto_gerado)
@@ -444,7 +446,13 @@ def resolve_font_path(font_choice: str, uploaded_font: Optional[BytesIO]) -> Opt
         if os.path.exists(font): return font
     return None
 
+def get_text_alpha_expr(anim_type: str, duration: float) -> str:
+    if anim_type == "Fade In": return f"alpha='min(1,t/1)'"
+    elif anim_type == "Fade In/Out": return f"alpha='min(1,t/1)*min(1,({duration}-t)/1)'"
+    else: return "alpha=1"
+
 def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upload: Optional[BytesIO], subtitle_preview: Dict = None) -> BytesIO:
+    """Gera preview com Overlay e Legenda"""
     img = Image.new("RGB", (width, height), "black")
     draw = ImageDraw.Draw(img)
     
@@ -470,12 +478,10 @@ def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upl
         size = subtitle_preview.get("size", 40)
         font_path = resolve_font_path(subtitle_preview.get("font", "Padrão (Sans)"), global_upload)
         color = subtitle_preview.get("color", "#FFFFFF")
-        stroke_color = subtitle_preview.get("outline", "#000000")
         
         try: font = ImageFont.truetype(font_path, size) if font_path and os.path.exists(font_path) else ImageFont.load_default()
         except: font = ImageFont.load_default()
         
-        margin = int(width * 0.1)
         lines = text.split("\n")
         total_h = len(lines) * (size + 5)
         y_pos = height - subtitle_preview.get("y", 100) - total_h
@@ -484,17 +490,12 @@ def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upl
             try: length = draw.textlength(line, font=font)
             except: length = len(line) * size * 0.5
             x = (width - length) / 2
-            draw.text((x, y_pos + (i * (size + 5))), line, fill=color, font=font, stroke_width=2, stroke_fill=stroke_color)
+            draw.text((x, y_pos + (i * (size + 5))), line, fill=color, font=font)
 
     bio = BytesIO()
     img.save(bio, format="PNG")
     bio.seek(0)
     return bio
-
-def get_text_alpha_expr(anim_type: str, duration: float) -> str:
-    if anim_type == "Fade In": return f"alpha='min(1,t/1)'"
-    elif anim_type == "Fade In/Out": return f"alpha='min(1,t/1)*min(1,({duration}-t)/1)'"
-    else: return "alpha=1"
 
 # =========================
 # Interface principal
@@ -579,37 +580,33 @@ with tab2:
 
 # --------- TAB 3: OVERLAY & LEGENDAS ----------
 with tab3:
-    st.header("🎚️ Editor Visual (Overlay & Legendas)")
+    st.header("🎚️ Editor Visual")
     col_settings, col_preview = st.columns([1, 1])
     ov_sets = st.session_state["overlay_settings"]
     font_options = ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"]
     anim_options = ["Estático", "Fade In", "Fade In/Out"]
     
     with col_settings:
-        with st.expander("📝 Legendas (Subtitles)", expanded=True):
+        with st.expander("📝 Legendas (Novo)", expanded=True):
             ov_sets["sub_enabled"] = st.toggle("Ativar Legendas", value=ov_sets.get("sub_enabled", False))
             if ov_sets["sub_enabled"]:
-                c1, c2 = st.columns(2)
-                with c1:
-                    ov_sets["sub_color"] = st.color_picker("Cor Texto", ov_sets.get("sub_color", "#FFFFFF"))
-                    ov_sets["sub_font"] = st.selectbox("Fonte Legenda", font_options, index=0)
-                    ov_sets["sub_karaoke"] = st.checkbox("Efeito Karaoke (Wipe)", value=ov_sets.get("sub_karaoke", False))
-                with c2:
-                    ov_sets["sub_outline_color"] = st.color_picker("Cor Borda", ov_sets.get("sub_outline_color", "#000000"))
-                    ov_sets["sub_size"] = st.slider("Tamanho", 20, 100, ov_sets.get("sub_size", 45))
-                    ov_sets["sub_y"] = st.slider("Posição (do fundo)", 0, 500, ov_sets.get("sub_y", 100))
-                
-                ov_sets["sub_bg_box"] = st.checkbox("Fundo Escuro (Box)", value=ov_sets.get("sub_bg_box", False))
+                st.caption("Legenda queimada no vídeo (Hardsub)")
+                ov_sets["sub_size"] = st.slider("Tamanho Legenda", 20, 100, ov_sets.get("sub_size", 40))
+                ov_sets["sub_y_offset"] = st.slider("Posição (do fundo)", 0, 500, ov_sets.get("sub_y_offset", 100))
+                ov_sets["sub_color"] = st.color_picker("Cor Texto", ov_sets.get("sub_color", "#FFFFFF"))
+                ov_sets["sub_bg"] = st.checkbox("Fundo Escuro (Box)", value=ov_sets.get("sub_bg", True))
 
         with st.expander("✨ Efeitos de Vídeo", expanded=False):
             eo = ["Zoom In (Ken Burns)", "Zoom Out", "Panorâmica Esquerda", "Panorâmica Direita", "Estático (Sem movimento)"]
             ce = ov_sets.get("effect_type", eo[0])
-            ov_sets["effect_type"] = st.selectbox("Movimento", eo, index=eo.index(ce) if ce in eo else 0)
+            if ce not in eo: ce = eo[0]
+            ov_sets["effect_type"] = st.selectbox("Movimento", eo, index=eo.index(ce))
             ov_sets["effect_speed"] = st.slider("Velocidade", 1, 10, ov_sets.get("effect_speed", 3))
             
             to = ["Fade (Escurecer)", "Corte Seco (Nenhuma)"]
             ct = ov_sets.get("trans_type", to[0])
-            ov_sets["trans_type"] = st.selectbox("Transição", to, index=to.index(ct) if ct in to else 0)
+            if ct not in to: ct = to[0]
+            ov_sets["trans_type"] = st.selectbox("Transição", to, index=to.index(ct))
             ov_sets["trans_dur"] = st.slider("Duração Transição (s)", 0.1, 2.0, ov_sets.get("trans_dur", 0.5))
 
         with st.expander("📑 Cabeçalho (Topo)", expanded=False):
@@ -637,16 +634,12 @@ with tab3:
             {"text": meta.get("ref", "Lucas, Cap. 1"), "size": int(ov_sets["line3_size"] * scale), "y": int(ov_sets["line3_y"] * scale), "font_style": ov_sets.get("line3_font", "Padrão (Sans)"), "color": "white"},
         ]
         
-        sub_preview = {
-            "enabled": ov_sets["sub_enabled"],
-            "size": int(ov_sets["sub_size"] * scale),
-            "font": ov_sets["sub_font"],
-            "color": ov_sets["sub_color"],
-            "outline": ov_sets["sub_outline_color"],
-            "y": int(ov_sets["sub_y"] * scale)
+        sub_prev = {
+            "enabled": ov_sets["sub_enabled"], "size": int(ov_sets["sub_size"]*scale),
+            "y": int(ov_sets["sub_y_offset"]*scale), "color": ov_sets["sub_color"], "font": "Padrão (Sans)"
         }
         
-        prev_img = criar_preview_overlay(pw, ph, texts, uploaded_font_file, sub_preview)
+        prev_img = criar_preview_overlay(pw, ph, texts, uploaded_font_file, sub_prev)
         st.image(prev_img, caption=f"Preview {resolucao_escolhida}", use_column_width=False)
 
 # --------- TAB 4: FÁBRICA DE VÍDEO ----------
@@ -730,16 +723,6 @@ with tab4:
                 w, h = res["w"], res["h"]
                 s_out = f"{w}x{h}"
                 
-                # Legendas Config
-                sub_on = sets.get("sub_enabled", False)
-                sub_font_p = resolve_font_path(sets.get("sub_font", "Padrão (Sans)"), uploaded_font_file)
-                sub_size = sets.get("sub_size", 45)
-                sub_col = sets.get("sub_color", "#FFFFFF")
-                sub_out = sets.get("sub_outline_color", "#000000")
-                sub_y = h - sets.get("sub_y", 100) # Inverter Y para FFmpeg (y=h-val)
-                sub_karaoke = sets.get("sub_karaoke", False)
-                sub_bg = sets.get("sub_bg_box", False)
-
                 tmp = tempfile.mkdtemp(); clips = []
                 map_t = {"hook": "EVANGELHO", "leitura": "EVANGELHO", "reflexão": "REFLEXÃO", "aplicação": "APLICAÇÃO", "oração": "ORAÇÃO"}
                 meta = st.session_state.get("meta_dados", {})
@@ -777,9 +760,7 @@ with tab4:
                     # Overlay Cabeçalho
                     if usar_overlay and font_p:
                         tit = map_t.get(bid, "EVANGELHO")
-                        # Sanitize
                         t1, t2, t3 = sanitize_text_for_ffmpeg(tit), sanitize_text_for_ffmpeg(meta.get("data","")), sanitize_text_for_ffmpeg(meta.get("ref",""))
-                        # Alphas
                         a1 = get_text_alpha_expr(sets.get("line1_anim", "Estático"), dur)
                         a2 = get_text_alpha_expr(sets.get("line2_anim", "Estático"), dur)
                         a3 = get_text_alpha_expr(sets.get("line3_anim", "Estático"), dur)
@@ -788,21 +769,15 @@ with tab4:
                         vf.append(f"drawtext=fontfile='{font_p}':text='{t2}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}:shadowcolor=black:shadowx=2:shadowy=2:{a2}")
                         vf.append(f"drawtext=fontfile='{font_p}':text='{t3}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2:{a3}")
 
-                    # Legendas
-                    if sub_on and sub_font_p:
-                        # Obter texto do bloco e preparar
+                    # Legendas (NOVO)
+                    if sets["sub_enabled"] and font_p:
                         raw_text = roteiro.get(b["text_key"]) if bid != "leitura" else st.session_state.get("leitura_montada", "")
                         if raw_text:
-                            # Quebrar texto para caber na largura (margem de 100px)
-                            wrapped_text = wrap_text_ffmpeg(raw_text, sub_font_p, sub_size, w - 100)
-                            safe_text = sanitize_text_for_ffmpeg(wrapped_text)
-                            
-                            # Opções de estilo
-                            box_cmd = ":box=1:boxcolor=black@0.6:boxborderw=10" if sub_bg else ""
-                            color_cmd = f"fontcolor={sub_col}"
-                            
-                            # Adicionar filtro
-                            vf.append(f"drawtext=fontfile='{sub_font_p}':text='{safe_text}':fontsize={sub_size}:{color_cmd}:borderw=2:bordercolor={sub_out}:x=(w-text_w)/2:y={sub_y}{box_cmd}")
+                            wrapped = wrap_text_ffmpeg(raw_text, font_p, sets["sub_size"], w - 80)
+                            safe_sub = sanitize_text_for_ffmpeg(wrapped)
+                            sub_y_inv = h - sets["sub_y_offset"]
+                            box_cmd = ":box=1:boxcolor=black@0.6:boxborderw=10" if sets["sub_bg"] else ""
+                            vf.append(f"drawtext=fontfile='{font_p}':text='{safe_sub}':fontsize={sets['sub_size']}:fontcolor={sets['sub_color']}:x=(w-text_w)/2:y={sub_y_inv}{box_cmd}")
 
                     fc = ",".join(vf)
                     run_cmd(["ffmpeg", "-y", "-loop", "1", "-i", p_im, "-i", p_au, "-vf", fc, "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", p_out])
@@ -818,13 +793,11 @@ with tab4:
                     
                     final = os.path.join(tmp, "final.mp4")
                     mus = None
-                    if mus_up: 
-                        mus = os.path.join(tmp, "m.mp3"); 
-                        with open(mus, "wb") as f: f.write(mus_up.getvalue())
+                    if mus_up: mus = os.path.join(tmp, "m.mp3"); open(mus, "wb").write(mus_up.getvalue())
                     elif has_saved: mus = SAVED_MUSIC_FILE
                     
                     if mus:
-                        run_cmd(["ffmpeg", "-y", "-i", v_tmp, "-stream_loop", "-1", "-i", mus, "-filter_complex", f"[1:a]volume={mus_vol}[bg];[0:a][bg]amix=inputs=2:duration=first[a]", "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-shortest", final])
+                        run_cmd(["ffmpeg", "-y", "-i", v_tmp, "-stream_loop", "-1", "-i", mus, "-filter_complex", f"[1:a]volume={sets['music_vol']}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]", "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-shortest", final])
                     else: os.rename(v_tmp, final)
                     
                     with open(final, "rb") as f: st.session_state["video_final_bytes"] = BytesIO(f.read())
@@ -837,4 +810,4 @@ with tab4:
         st.download_button("⬇️ Baixar", st.session_state["video_final_bytes"], "video.mp4", "video/mp4")
 
 with tab5: st.info("Histórico (Em breve)")
-st.markdown("---"); st.caption("Studio Jhonata v20.0 - Legendas & Karaoke")
+st.markdown("---"); st.caption("Studio Jhonata v24.0 - Estável + Legendas")
