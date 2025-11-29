@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v11.0)
-# Features: Correção no Nome do Evangelista, Fontes Individuais, Overlay, Editor Full, Upload
+# app.py — Studio Jhonata (COMPLETO v12.0)
+# Features: Controle de Efeitos (Zoom/Pan), Transições, Fontes Individuais, Overlay, Editor Full
 import os
 import re
 import json
@@ -84,13 +84,12 @@ def limpar_texto_evangelho(texto: str) -> str:
     return texto_limpo.strip()
 
 # =========================
-# Extrair referência bíblica (CORRIGIDO E ROBUSTO)
+# Extrair referência bíblica (CORRIGIDO)
 # =========================
 def extrair_referencia_biblica(titulo: str):
     if not titulo:
         return None
     
-    # 1. Identificar Evangelista por nome fixo (muito mais seguro)
     titulo_lower = titulo.lower()
     mapa_nomes = {
         "mateus": "Mateus", "mt": "Mateus",
@@ -101,19 +100,14 @@ def extrair_referencia_biblica(titulo: str):
     
     evangelista_encontrado = None
     for chave, valor in mapa_nomes.items():
-        # \b garante que é a palavra exata (evita achar 'jo' em 'beijo')
         if re.search(rf"\b{chave}\b", titulo_lower):
             evangelista_encontrado = valor
             break
     
     if not evangelista_encontrado:
-        # Tenta fallback genérico se não achou nome conhecido, mas é arriscado.
-        # Melhor retornar None ou usar heurística anterior com cuidado.
-        # Vamos tentar a heurística antiga apenas se a busca exata falhar.
         m_fallback = re.search(r"(?:São|S\.|Sao|San|St\.?)\s*([A-Za-zÁ-Úá-ú]+)", titulo, re.IGNORECASE)
         if m_fallback:
             nome_cand = m_fallback.group(1).strip()
-            # Filtra falsos positivos comuns como 'o', 'a', 'do'
             if len(nome_cand) > 2:
                 evangelista_encontrado = nome_cand
             else:
@@ -121,8 +115,6 @@ def extrair_referencia_biblica(titulo: str):
         else:
             return None
 
-    # 2. Identificar Capítulo e Versículos (Procura padrão numérico 21, 34-36 ou 21:34-36)
-    # Regex procura: numeros (cap) + separador + numeros (vers)
     m_nums = re.search(r"(\d{1,3})\s*[,:]\s*(\d+(?:[-–]\d+)?)", titulo)
     
     if m_nums:
@@ -369,11 +361,10 @@ def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
         raise RuntimeError(f"Erro gTTS: {e}")
 
 # =========================
-# FUNÇÕES DE IMAGEM (MOTORES COM SUPORTE A RESOLUÇÃO)
+# FUNÇÕES DE IMAGEM
 # =========================
 
 def get_resolution_params(choice: str) -> dict:
-    """Retorna largura, altura e aspect ratio string baseado na escolha"""
     if "9:16" in choice:
         return {"w": 720, "h": 1280, "ratio": "9:16"}
     elif "16:9" in choice:
@@ -382,12 +373,10 @@ def get_resolution_params(choice: str) -> dict:
         return {"w": 1024, "h": 1024, "ratio": "1:1"}
 
 def gerar_imagem_pollinations_flux(prompt: str, width: int, height: int) -> BytesIO:
-    """Modelo Flux via Pollinations com dimensão customizável"""
     prompt_clean = prompt.replace("\n", " ").strip()[:800]
     prompt_encoded = urllib.parse.quote(prompt_clean)
     seed = random.randint(0, 999999)
     url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?model=flux&width={width}&height={height}&seed={seed}&nologo=true"
-    
     r = requests.get(url, timeout=40)
     r.raise_for_status()
     bio = BytesIO(r.content)
@@ -395,12 +384,10 @@ def gerar_imagem_pollinations_flux(prompt: str, width: int, height: int) -> Byte
     return bio
 
 def gerar_imagem_pollinations_turbo(prompt: str, width: int, height: int) -> BytesIO:
-    """Modelo Turbo via Pollinations com dimensão customizável"""
     prompt_clean = prompt.replace("\n", " ").strip()[:800]
     prompt_encoded = urllib.parse.quote(prompt_clean)
     seed = random.randint(0, 999999)
     url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width={width}&height={height}&seed={seed}&nologo=true"
-    
     r = requests.get(url, timeout=30)
     r.raise_for_status()
     bio = BytesIO(r.content)
@@ -408,25 +395,18 @@ def gerar_imagem_pollinations_turbo(prompt: str, width: int, height: int) -> Byt
     return bio
 
 def gerar_imagem_google_imagen(prompt: str, ratio: str) -> BytesIO:
-    """Google Imagen 3 via API com aspect ratio"""
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not gem_key:
         raise RuntimeError("GEMINI_API_KEY não encontrada.")
-
     url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key={gem_key}"
     headers = {"Content-Type": "application/json"}
     payload = {
         "instances": [{"prompt": prompt}],
-        "parameters": {
-            "sampleCount": 1,
-            "aspectRatio": ratio
-        }
+        "parameters": {"sampleCount": 1, "aspectRatio": ratio}
     }
-    
     r = requests.post(url, headers=headers, json=payload, timeout=45)
     r.raise_for_status()
     data = r.json()
-    
     if "predictions" in data and len(data["predictions"]) > 0:
         b64 = data["predictions"][0]["bytesBase64Encoded"]
         bio = BytesIO(base64.b64decode(b64))
@@ -436,9 +416,7 @@ def gerar_imagem_google_imagen(prompt: str, ratio: str) -> BytesIO:
         raise RuntimeError("Resposta inválida do Google Imagen.")
 
 def despachar_geracao_imagem(prompt: str, motor: str, res_choice: str) -> BytesIO:
-    """Redireciona para a função correta com a resolução correta"""
     params = get_resolution_params(res_choice)
-    
     if motor == "Pollinations Flux (Padrão)":
         return gerar_imagem_pollinations_flux(prompt, params["w"], params["h"])
     elif motor == "Pollinations Turbo":
@@ -475,12 +453,10 @@ def get_audio_duration_seconds(path: str) -> Optional[float]:
         return None
 
 def resolve_font_path(font_choice: str, uploaded_font: Optional[BytesIO]) -> Optional[str]:
-    """Resolve o caminho da fonte baseado na escolha do usuário"""
     if font_choice == "Upload Personalizada" and uploaded_font:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp:
             tmp.write(uploaded_font.getvalue())
             return tmp.name
-            
     system_fonts = {
         "Padrão (Sans)": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", "arial.ttf"],
         "Serif": ["/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf", "times.ttf"],
@@ -492,22 +468,16 @@ def resolve_font_path(font_choice: str, uploaded_font: Optional[BytesIO]) -> Opt
     return None
 
 def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upload: Optional[BytesIO]) -> BytesIO:
-    """Gera uma imagem de preview com fontes individuais"""
     img = Image.new("RGB", (width, height), "black")
     draw = ImageDraw.Draw(img)
-    
     for item in texts:
         text = item.get("text", "")
         if not text: continue
-        
         size = item.get("size", 30)
         y = item.get("y", 0)
         color = item.get("color", "white")
         font_style = item.get("font_style", "Padrão (Sans)")
-        
-        # Resolver fonte específica para este item
         font_path = resolve_font_path(font_style, global_upload)
-        
         try:
             if font_path and os.path.exists(font_path):
                 font = ImageFont.truetype(font_path, size)
@@ -515,16 +485,12 @@ def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upl
                 font = ImageFont.load_default()
         except:
              font = ImageFont.load_default()
-
-        # Centralizar
         try:
             length = draw.textlength(text, font=font)
         except:
              length = len(text) * size * 0.5
-
         x = (width - length) / 2
         draw.text((x, y), text, fill=color, font=font)
-        
     bio = BytesIO()
     img.save(bio, format="PNG")
     bio.seek(0)
@@ -539,17 +505,8 @@ st.markdown("---")
 # ---- SIDEBAR CONFIG ----
 st.sidebar.title("⚙️ Configurações")
 
-motor_escolhido = st.sidebar.selectbox(
-    "🎨 Motor de Imagem",
-    ["Pollinations Flux (Padrão)", "Pollinations Turbo", "Google Imagen"],
-    index=0
-)
-
-resolucao_escolhida = st.sidebar.selectbox(
-    "📏 Resolução do Vídeo",
-    ["9:16 (Vertical/Stories)", "16:9 (Horizontal/YouTube)", "1:1 (Quadrado/Feed)"],
-    index=0
-)
+motor_escolhido = st.sidebar.selectbox("🎨 Motor de Imagem", ["Pollinations Flux (Padrão)", "Pollinations Turbo", "Google Imagen"], index=0)
+resolucao_escolhida = st.sidebar.selectbox("📏 Resolução do Vídeo", ["9:16 (Vertical/Stories)", "16:9 (Horizontal/YouTube)", "1:1 (Quadrado/Feed)"], index=0)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🅰️ Upload de Fonte (Global)")
@@ -574,16 +531,20 @@ if "video_final_bytes" not in st.session_state:
 if "meta_dados" not in st.session_state:
     st.session_state["meta_dados"] = {"data": "", "ref": ""}
     
-# Overlay default settings com fontes individuais
+# Overlay default settings
 if "overlay_settings" not in st.session_state:
     st.session_state["overlay_settings"] = {
         "line1_y": 40, "line1_size": 40, "line1_font": "Padrão (Sans)",
         "line2_y": 90, "line2_size": 28, "line2_font": "Padrão (Sans)",
         "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)",
+        # Efeitos
+        "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
+        # Transições
+        "trans_type": "Fade (Padrão)", "trans_dur": 0.5
     }
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["📖 Gerar Roteiro", "🎨 Personagens", "🎚️ Overlay", "🎥 Fábrica Vídeo (Editor)", "📊 Histórico"]
+    ["📖 Gerar Roteiro", "🎨 Personagens", "🎚️ Overlay & Efeitos", "🎥 Fábrica Vídeo (Editor)", "📊 Histórico"]
 )
 
 # --------- TAB 1: ROTEIRO ----------
@@ -591,9 +552,7 @@ with tab1:
     st.header("🚀 Gerador de Roteiro")
     col1, col2 = st.columns([2, 1])
     with col1:
-        data_selecionada = st.date_input(
-            "📅 Data da liturgia:", value=date.today(), min_value=date(2023, 1, 1)
-        )
+        data_selecionada = st.date_input("📅 Data da liturgia:", value=date.today(), min_value=date(2023, 1, 1))
     with col2:
         st.info("Status: ✅ pronto para gerar")
 
@@ -615,16 +574,10 @@ with tab1:
             }
 
             st.write("🤖 Analisando personagens com IA...")
-            personagens_detectados = analisar_personagens_groq(
-                liturgia["texto"], st.session_state.personagens_biblicos
-            )
+            personagens_detectados = analisar_personagens_groq(liturgia["texto"], st.session_state.personagens_biblicos)
 
             st.write("✨ Criando roteiro e prompts...")
-            roteiro = gerar_roteiro_com_prompts_groq(
-                liturgia["texto"],
-                liturgia["referencia_liturgica"],
-                {**st.session_state.personagens_biblicos, **personagens_detectados},
-            )
+            roteiro = gerar_roteiro_com_prompts_groq(liturgia["texto"], liturgia["referencia_liturgica"], {**st.session_state.personagens_biblicos, **personagens_detectados})
 
             if roteiro:
                 status.update(label="Roteiro gerado com sucesso!", state="complete", expanded=False)
@@ -632,9 +585,7 @@ with tab1:
                 status.update(label="Erro ao gerar roteiro", state="error")
                 st.stop()
 
-        leitura_montada = montar_leitura_com_formula(
-            liturgia["texto"], liturgia.get("ref_biblica")
-        )
+        leitura_montada = montar_leitura_com_formula(liturgia["texto"], liturgia.get("ref_biblica"))
         st.session_state["roteiro_gerado"] = roteiro
         st.session_state["leitura_montada"] = leitura_montada
         st.rerun()
@@ -642,35 +593,16 @@ with tab1:
     if st.session_state.get("roteiro_gerado"):
         roteiro = st.session_state["roteiro_gerado"]
         st.markdown("---")
-        
         col_esq, col_dir = st.columns(2)
         with col_esq:
-            st.markdown("### 🎣 HOOK")
-            st.markdown(roteiro.get("hook", ""))
-            st.caption("Prompt:")
-            st.code(roteiro.get("prompt_hook", ""), language="text")
-
-            st.markdown("### 📖 LEITURA")
-            st.markdown(st.session_state.get("leitura_montada", "")[:300] + "...")
-            st.code(roteiro.get("prompt_leitura", ""), language="text")
-
+            st.markdown("### 🎣 HOOK"); st.markdown(roteiro.get("hook", "")); st.code(roteiro.get("prompt_hook", ""), language="text")
+            st.markdown("### 📖 LEITURA"); st.markdown(st.session_state.get("leitura_montada", "")[:300] + "..."); st.code(roteiro.get("prompt_leitura", ""), language="text")
         with col_dir:
-            st.markdown("### 💭 REFLEXÃO")
-            st.markdown(roteiro.get("reflexão", ""))
-            st.code(roteiro.get("prompt_reflexão", ""), language="text")
-            
-            st.markdown("### 🌟 APLICAÇÃO")
-            st.markdown(roteiro.get("aplicação", ""))
-            st.code(roteiro.get("prompt_aplicacao", ""), language="text")
-        
-        st.markdown("### 🙏 ORAÇÃO")
-        st.markdown(roteiro.get("oração", ""))
-        st.code(roteiro.get("prompt_oração", ""), language="text")
-        
-        st.markdown("### 🖼️ THUMBNAIL")
-        st.code(roteiro.get("prompt_geral", ""), language="text")
-        
-        st.success("Roteiro gerado! Configure o visual na aba 'Overlay' e produza na 'Fábrica Vídeo'.")
+            st.markdown("### 💭 REFLEXÃO"); st.markdown(roteiro.get("reflexão", "")); st.code(roteiro.get("prompt_reflexão", ""), language="text")
+            st.markdown("### 🌟 APLICAÇÃO"); st.markdown(roteiro.get("aplicação", "")); st.code(roteiro.get("prompt_aplicacao", ""), language="text")
+        st.markdown("### 🙏 ORAÇÃO"); st.markdown(roteiro.get("oração", "")); st.code(roteiro.get("prompt_oração", ""), language="text")
+        st.markdown("### 🖼️ THUMBNAIL"); st.code(roteiro.get("prompt_geral", ""), language="text")
+        st.success("Roteiro gerado! Vá para 'Overlay & Efeitos' para ajustar o visual.")
 
 # --------- TAB 2: PERSONAGENS ----------
 with tab2:
@@ -697,40 +629,45 @@ with tab2:
             st.session_state.personagens_biblicos[nn] = nd
             st.rerun()
 
-# --------- TAB 3: OVERLAY (DEDICADO) ----------
+# --------- TAB 3: OVERLAY & EFEITOS ----------
 with tab3:
-    st.header("🎚️ Editor de Overlay (Cabeçalho)")
+    st.header("🎚️ Editor de Overlay & Efeitos")
     
     col_settings, col_preview = st.columns([1, 1])
-    
     ov_sets = st.session_state["overlay_settings"]
     font_options = ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"]
     
     with col_settings:
-        st.subheader("Ajustes por Linha")
-        
-        with st.expander("Linha 1: Título (Ex: EVANGELHO)", expanded=True):
+        with st.expander("✨ Efeitos Visuais (Movimento)", expanded=True):
+            ov_sets["effect_type"] = st.selectbox("Tipo de Movimento", ["Zoom In (Ken Burns)", "Zoom Out", "Panorâmica Esquerda", "Panorâmica Direita", "Estático (Sem movimento)"], index=0)
+            ov_sets["effect_speed"] = st.slider("Intensidade do Movimento", 1, 10, ov_sets["effect_speed"], help="1 = Muito Lento, 10 = Rápido")
+
+        with st.expander("🎬 Transições", expanded=True):
+            ov_sets["trans_type"] = st.selectbox("Tipo de Transição", ["Fade (Escurecer)", "Corte Seco (Nenhuma)"], index=0)
+            ov_sets["trans_dur"] = st.slider("Duração da Transição (s)", 0.1, 2.0, ov_sets["trans_dur"], 0.1)
+
+        with st.expander("📝 Texto Overlay (Cabeçalho)", expanded=False):
+            st.markdown("**Linha 1: Título**")
             ov_sets["line1_font"] = st.selectbox("Fonte L1", font_options, index=font_options.index(ov_sets["line1_font"]), key="f1")
             ov_sets["line1_size"] = st.slider("Tamanho L1", 10, 150, ov_sets["line1_size"], key="s1")
             ov_sets["line1_y"] = st.slider("Posição Y L1", 0, 800, ov_sets["line1_y"], key="y1")
-            
-        with st.expander("Linha 2: Data", expanded=True):
+            st.markdown("---")
+            st.markdown("**Linha 2: Data**")
             ov_sets["line2_font"] = st.selectbox("Fonte L2", font_options, index=font_options.index(ov_sets["line2_font"]), key="f2")
             ov_sets["line2_size"] = st.slider("Tamanho L2", 10, 150, ov_sets["line2_size"], key="s2")
             ov_sets["line2_y"] = st.slider("Posição Y L2", 0, 800, ov_sets["line2_y"], key="y2")
-            
-        with st.expander("Linha 3: Referência", expanded=True):
+            st.markdown("---")
+            st.markdown("**Linha 3: Referência**")
             ov_sets["line3_font"] = st.selectbox("Fonte L3", font_options, index=font_options.index(ov_sets["line3_font"]), key="f3")
             ov_sets["line3_size"] = st.slider("Tamanho L3", 10, 150, ov_sets["line3_size"], key="s3")
             ov_sets["line3_y"] = st.slider("Posição Y L3", 0, 800, ov_sets["line3_y"], key="y3")
 
         st.session_state["overlay_settings"] = ov_sets
-        
-        if st.button("💾 Salvar Ajustes de Overlay"):
+        if st.button("💾 Salvar Configurações"):
             st.success("Configuração salva!")
 
     with col_preview:
-        st.subheader("Pré-visualização")
+        st.subheader("Pré-visualização (Overlay)")
         res_params = get_resolution_params(resolucao_escolhida)
         preview_scale_factor = 0.4
         preview_w = int(res_params["w"] * preview_scale_factor)
@@ -742,7 +679,6 @@ with tab3:
         txt_l2 = meta.get("data", "29.11.2025")
         txt_l3 = meta.get("ref", "Lucas, Cap. 1, 26-38")
         
-        # Lista de textos com suas fontes específicas
         preview_texts = [
             {"text": txt_l1, "size": int(ov_sets["line1_size"] * text_scale), "y": int(ov_sets["line1_y"] * text_scale), "font_style": ov_sets["line1_font"], "color": "white"},
             {"text": txt_l2, "size": int(ov_sets["line2_size"] * text_scale), "y": int(ov_sets["line2_y"] * text_scale), "font_style": ov_sets["line2_font"], "color": "white"},
@@ -750,7 +686,7 @@ with tab3:
         ]
         
         prev_img = criar_preview_overlay(preview_w, preview_h, preview_texts, uploaded_font_file)
-        st.image(prev_img, caption=f"Preview em {resolucao_escolhida}", use_column_width=False)
+        st.image(prev_img, caption=f"Preview Overlay em {resolucao_escolhida}", use_column_width=False)
 
 
 # --------- TAB 4: FÁBRICA DE VÍDEO ----------
@@ -776,17 +712,14 @@ with tab4:
 
     for bloco in blocos_config:
         block_id = bloco["id"]
-        
         with st.container(border=True):
             st.subheader(bloco["label"])
             col_text, col_media = st.columns([1, 1.2])
-            
             with col_text:
                 if bloco["text_key"]:
                     txt_content = roteiro.get(bloco["text_key"]) if block_id != "leitura" else st.session_state.get("leitura_montada", "")
                     st.caption("📜 Texto para Narração:")
                     st.markdown(f"_{txt_content[:250]}..._" if txt_content else "_Sem texto_")
-                    
                     if st.button(f"🔊 Gerar Áudio ({block_id})", key=f"btn_audio_{block_id}"):
                         if txt_content:
                             try:
@@ -795,14 +728,11 @@ with tab4:
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erro áudio: {e}")
-                    
                     if block_id in st.session_state["generated_audios_blocks"]:
                         st.audio(st.session_state["generated_audios_blocks"][block_id], format="audio/mp3")
-
                 prompt_content = roteiro.get(bloco["prompt_key"], "")
                 st.caption("📋 Prompt Visual:")
                 st.code(prompt_content, language="text")
-
             with col_media:
                 st.caption("🖼️ Imagem da Cena:")
                 current_img = st.session_state["generated_images_blocks"].get(block_id)
@@ -814,9 +744,7 @@ with tab4:
                         st.error("Erro ao exibir imagem.")
                 else:
                     st.info("Nenhuma imagem definida.")
-
                 c_gen, c_up = st.columns([1.5, 2])
-                
                 with c_gen:
                     if st.button(f"✨ Gerar ({resolucao_escolhida.split()[0]})", key=f"btn_gen_{block_id}"):
                         if prompt_content:
@@ -830,18 +758,14 @@ with tab4:
                                     st.error(f"Erro: {e}")
                         else:
                             st.warning("Sem prompt.")
-                
                 with c_up:
-                    uploaded_file = st.file_uploader(
-                        "Ou envie a sua:", type=["png", "jpg", "jpeg"], key=f"upload_{block_id}"
-                    )
+                    uploaded_file = st.file_uploader("Ou envie a sua:", type=["png", "jpg", "jpeg"], key=f"upload_{block_id}")
                     if uploaded_file is not None:
                         bytes_data = uploaded_file.read()
                         st.session_state["generated_images_blocks"][block_id] = BytesIO(bytes_data)
                         st.success("Enviada!")
 
     st.divider()
-    
     st.header("🎬 Finalização")
     usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay Personalizado)", value=True)
 
@@ -849,22 +773,14 @@ with tab4:
         with st.status("Renderizando vídeo com efeitos...", expanded=True) as status:
             try:
                 blocos_relevantes = [b for b in blocos_config if b["id"] != "thumbnail"]
-                
                 if not shutil_which("ffmpeg"):
                     status.update(label="FFmpeg não encontrado!", state="error")
                     st.stop()
                 
-                # Check fontes overlay se necessário
-                if usar_overlay:
-                    sets = st.session_state["overlay_settings"]
-                    # Resolver fontes para cada linha
-                    f1_path = resolve_font_path(sets["line1_font"], uploaded_font_file)
-                    f2_path = resolve_font_path(sets["line2_font"], uploaded_font_file)
-                    f3_path = resolve_font_path(sets["line3_font"], uploaded_font_file)
-                    
-                    if not (f1_path and f2_path and f3_path):
-                        st.warning("Alguma fonte não foi encontrada. O sistema usará fallback padrão.")
-
+                font_path = resolve_font_path(font_choice, uploaded_font_file)
+                if usar_overlay and not font_path:
+                    st.warning("⚠️ Fonte não encontrada. O overlay pode falhar.")
+                
                 temp_dir = tempfile.mkdtemp()
                 clip_files = []
                 
@@ -872,66 +788,76 @@ with tab4:
                 txt_dt = meta.get("data", "")
                 txt_ref = meta.get("ref", "")
                 
-                map_titulos = {
-                    "hook": "EVANGELHO", "leitura": "EVANGELHO",
-                    "reflexão": "REFLEXÃO", "aplicação": "APLICAÇÃO", "oração": "ORAÇÃO"
-                }
-
+                map_titulos = {"hook": "EVANGELHO", "leitura": "EVANGELHO", "reflexão": "REFLEXÃO", "aplicação": "APLICAÇÃO", "oração": "ORAÇÃO"}
+                
                 res_params = get_resolution_params(resolucao_escolhida)
-                w_out = res_params["w"]
-                h_out = res_params["h"]
-                s_out = f"{w_out}x{h_out}"
-
-                # Carregar configurações do Overlay
+                s_out = f"{res_params['w']}x{res_params['h']}"
+                
                 sets = st.session_state["overlay_settings"]
+                speed_val = sets["effect_speed"] * 0.0005 # Escalar 1-10 para algo util no ffmpeg
+                
+                # Definição de filtros de movimento
+                if sets["effect_type"] == "Zoom In (Ken Burns)":
+                    zoom_expr = f"z='min(zoom+{speed_val},1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                elif sets["effect_type"] == "Zoom Out":
+                    # Truque: zoom começa em 1.5 e diminui. Requer input scale inicial ou controle complexo. 
+                    # Simples: zoom in invertido? Não funciona bem no ffmpeg sem complexidade.
+                    # Vamos usar um zoom out "fake" que na verdade é um crop que aumenta.
+                    # Mas o padrão zoompan é zoom in. Para zoom out, z='max(1,1.5-0.001*on)'.
+                    zoom_expr = f"z='max(1,1.5-{speed_val}*on)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                elif sets["effect_type"] == "Panorâmica Esquerda":
+                    # Zoom fixo, X move
+                    zoom_expr = f"z=1.2:x='min(x+{speed_val}*100,iw-iw/zoom)':y='(ih-ih/zoom)/2'"
+                elif sets["effect_type"] == "Panorâmica Direita":
+                    zoom_expr = f"z=1.2:x='max(0,x-{speed_val}*100)':y='(ih-ih/zoom)/2'"
+                else: # Estático
+                    zoom_expr = "z=1:x=0:y=0" # Sem efeito, mas precisa manter estrutura ou usar null
 
                 for b in blocos_relevantes:
                     bid = b["id"]
                     img_bio = st.session_state["generated_images_blocks"].get(bid)
                     audio_bio = st.session_state["generated_audios_blocks"].get(bid)
-                    
-                    if not img_bio or not audio_bio:
-                        continue
+                    if not img_bio or not audio_bio: continue
                         
                     st.write(f"Processando clipe: {bid}...")
-                    
                     img_path = os.path.join(temp_dir, f"{bid}.png")
                     audio_path = os.path.join(temp_dir, f"{bid}.mp3")
                     clip_path = os.path.join(temp_dir, f"{bid}.mp4")
                     
-                    img_bio.seek(0)
+                    img_bio.seek(0); audio_bio.seek(0)
                     with open(img_path, "wb") as f: f.write(img_bio.read())
-                    audio_bio.seek(0)
                     with open(audio_path, "wb") as f: f.write(audio_bio.read())
                     
                     dur = get_audio_duration_seconds(audio_path) or 5.0
                     frames = int(dur * 25)
 
-                    vf_filters = [
-                        f"zoompan=z='min(zoom+0.0010,1.5)':d={frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={s_out}",
-                        f"fade=t=in:st=0:d=1,fade=t=out:st={dur-0.5}:d=0.5"
-                    ]
+                    vf_filters = []
+                    # 1. Efeito de Movimento (Zoompan)
+                    if sets["effect_type"] != "Estático (Sem movimento)":
+                        vf_filters.append(f"zoompan={zoom_expr}:d={frames}:s={s_out}")
+                    else:
+                        # Apenas garantir tamanho se estático
+                        vf_filters.append(f"scale={s_out}")
 
+                    # 2. Transição (Fade In/Out Black)
+                    if sets["trans_type"] == "Fade (Escurecer)":
+                        td = sets["trans_dur"]
+                        vf_filters.append(f"fade=t=in:st=0:d={td},fade=t=out:st={dur-td}:d={td}")
+
+                    # 3. Overlay
                     if usar_overlay:
-                        sets = st.session_state["overlay_settings"]
                         titulo_atual = map_titulos.get(bid, "EVANGELHO")
+                        f1_path = resolve_font_path(sets["line1_font"], uploaded_font_file)
+                        f2_path = resolve_font_path(sets["line2_font"], uploaded_font_file)
+                        f3_path = resolve_font_path(sets["line3_font"], uploaded_font_file)
                         
-                        # Drawtext individual para cada linha com sua fonte
                         if f1_path: vf_filters.append(f"drawtext=fontfile='{f1_path}':text='{titulo_atual}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}:shadowcolor=black:shadowx=2:shadowy=2")
                         if f2_path: vf_filters.append(f"drawtext=fontfile='{f2_path}':text='{txt_dt}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}:shadowcolor=black:shadowx=2:shadowy=2")
                         if f3_path: vf_filters.append(f"drawtext=fontfile='{f3_path}':text='{txt_ref}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2")
 
                     filter_complex = ",".join(vf_filters)
                     
-                    cmd = [
-                        "ffmpeg", "-y", 
-                        "-loop", "1", "-i", img_path, 
-                        "-i", audio_path,
-                        "-vf", filter_complex,
-                        "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p",
-                        "-c:a", "aac", "-shortest", 
-                        clip_path
-                    ]
+                    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path, "-vf", filter_complex, "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip_path]
                     run_cmd(cmd)
                     clip_files.append(clip_path)
                 
@@ -939,17 +865,13 @@ with tab4:
                     concat_list = os.path.join(temp_dir, "list.txt")
                     with open(concat_list, "w") as f:
                         for p in clip_files: f.write(f"file '{p}'\n")
-                    
                     final_video = os.path.join(temp_dir, "final.mp4")
                     run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", final_video])
-                    
                     with open(final_video, "rb") as f:
                         st.session_state["video_final_bytes"] = BytesIO(f.read())
-                    
                     status.update(label="Vídeo Renderizado com Sucesso!", state="complete")
                 else:
                     status.update(label="Nenhum clipe válido gerado.", state="error")
-                    
             except Exception as e:
                 status.update(label="Erro na renderização", state="error")
                 st.error(f"Detalhes: {e}")
@@ -965,4 +887,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v10.0 - Controle Total de Fontes")
+st.caption("Studio Jhonata v12.0 - Efeitos Avançados")
