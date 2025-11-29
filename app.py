@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v9.0)
-# Features: Abas Separadas (Overlay Dedicado), Editor Full, Upload, Resoluções, Overlay Dinâmico
+# app.py — Studio Jhonata (COMPLETO v10.0)
+# Features: Fontes Individuais por Linha, Overlay Dedicado, Editor Full, Upload, Resoluções
 import os
 import re
 import json
@@ -455,9 +455,8 @@ def resolve_font_path(font_choice: str, uploaded_font: Optional[BytesIO]) -> Opt
         if os.path.exists(font): return font
     return None
 
-def criar_preview_overlay(width: int, height: int, texts: List[Dict], font_path: Optional[str]) -> BytesIO:
-    """Gera uma imagem de preview usando PIL"""
-    # Criar imagem preta
+def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upload: Optional[BytesIO]) -> BytesIO:
+    """Gera uma imagem de preview com fontes individuais"""
     img = Image.new("RGB", (width, height), "black")
     draw = ImageDraw.Draw(img)
     
@@ -468,25 +467,26 @@ def criar_preview_overlay(width: int, height: int, texts: List[Dict], font_path:
         size = item.get("size", 30)
         y = item.get("y", 0)
         color = item.get("color", "white")
+        font_style = item.get("font_style", "Padrão (Sans)")
         
-        # Carregar Fonte
+        # Resolver fonte específica para este item
+        font_path = resolve_font_path(font_style, global_upload)
+        
         try:
             if font_path and os.path.exists(font_path):
                 font = ImageFont.truetype(font_path, size)
             else:
-                font = ImageFont.load_default() # Fallback básico
+                font = ImageFont.load_default()
         except:
              font = ImageFont.load_default()
 
-        # Calcular posição X (Centralizado)
+        # Centralizar
         try:
             length = draw.textlength(text, font=font)
         except:
-             length = len(text) * size * 0.5 # estimativa grosseira fallback
+             length = len(text) * size * 0.5
 
         x = (width - length) / 2
-        
-        # Desenhar
         draw.text((x, y), text, fill=color, font=font)
         
     bio = BytesIO()
@@ -503,14 +503,12 @@ st.markdown("---")
 # ---- SIDEBAR CONFIG ----
 st.sidebar.title("⚙️ Configurações")
 
-# Seletor de Motor
 motor_escolhido = st.sidebar.selectbox(
     "🎨 Motor de Imagem",
     ["Pollinations Flux (Padrão)", "Pollinations Turbo", "Google Imagen"],
     index=0
 )
 
-# Seletor de Resolução
 resolucao_escolhida = st.sidebar.selectbox(
     "📏 Resolução do Vídeo",
     ["9:16 (Vertical/Stories)", "16:9 (Horizontal/YouTube)", "1:1 (Quadrado/Feed)"],
@@ -518,13 +516,9 @@ resolucao_escolhida = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🅰️ Fonte do Vídeo")
-font_choice = st.sidebar.selectbox("Estilo da Fonte", ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"], index=0)
-uploaded_font_file = None
-if font_choice == "Upload Personalizada":
-    uploaded_font_file = st.sidebar.file_uploader("Arquivo .ttf", type=["ttf"])
+st.sidebar.markdown("### 🅰️ Upload de Fonte (Global)")
+uploaded_font_file = st.sidebar.file_uploader("Arquivo .ttf (para opção 'Upload Personalizada')", type=["ttf"])
 
-# Info de status
 st.sidebar.info(f"Modo: {motor_escolhido}\nFormato: {resolucao_escolhida}")
 
 if "personagens_biblicos" not in st.session_state:
@@ -544,15 +538,14 @@ if "video_final_bytes" not in st.session_state:
 if "meta_dados" not in st.session_state:
     st.session_state["meta_dados"] = {"data": "", "ref": ""}
     
-# Overlay default settings
+# Overlay default settings com fontes individuais
 if "overlay_settings" not in st.session_state:
     st.session_state["overlay_settings"] = {
-        "line1_y": 40, "line1_size": 40,
-        "line2_y": 90, "line2_size": 28,
-        "line3_y": 130, "line3_size": 24,
+        "line1_y": 40, "line1_size": 40, "line1_font": "Padrão (Sans)",
+        "line2_y": 90, "line2_size": 28, "line2_font": "Padrão (Sans)",
+        "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)",
     }
 
-# Definição das 5 Abas
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["📖 Gerar Roteiro", "🎨 Personagens", "🎚️ Overlay", "🎥 Fábrica Vídeo (Editor)", "📊 Histórico"]
 )
@@ -671,60 +664,56 @@ with tab2:
 # --------- TAB 3: OVERLAY (DEDICADO) ----------
 with tab3:
     st.header("🎚️ Editor de Overlay (Cabeçalho)")
-    st.info("Personalize a posição, tamanho e aparência dos textos que aparecem sobre o vídeo.")
     
     col_settings, col_preview = st.columns([1, 1])
     
-    # Load settings
     ov_sets = st.session_state["overlay_settings"]
+    font_options = ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"]
     
     with col_settings:
-        st.subheader("Ajustes")
+        st.subheader("Ajustes por Linha")
+        
         with st.expander("Linha 1: Título (Ex: EVANGELHO)", expanded=True):
-            ov_sets["line1_size"] = st.slider("Tamanho Fonte L1", 10, 150, ov_sets["line1_size"], key="s1")
-            ov_sets["line1_y"] = st.slider("Posição Vertical L1", 0, 800, ov_sets["line1_y"], key="y1")
+            ov_sets["line1_font"] = st.selectbox("Fonte L1", font_options, index=font_options.index(ov_sets["line1_font"]), key="f1")
+            ov_sets["line1_size"] = st.slider("Tamanho L1", 10, 150, ov_sets["line1_size"], key="s1")
+            ov_sets["line1_y"] = st.slider("Posição Y L1", 0, 800, ov_sets["line1_y"], key="y1")
             
         with st.expander("Linha 2: Data", expanded=True):
-            ov_sets["line2_size"] = st.slider("Tamanho Fonte L2", 10, 150, ov_sets["line2_size"], key="s2")
-            ov_sets["line2_y"] = st.slider("Posição Vertical L2", 0, 800, ov_sets["line2_y"], key="y2")
+            ov_sets["line2_font"] = st.selectbox("Fonte L2", font_options, index=font_options.index(ov_sets["line2_font"]), key="f2")
+            ov_sets["line2_size"] = st.slider("Tamanho L2", 10, 150, ov_sets["line2_size"], key="s2")
+            ov_sets["line2_y"] = st.slider("Posição Y L2", 0, 800, ov_sets["line2_y"], key="y2")
             
         with st.expander("Linha 3: Referência", expanded=True):
-            ov_sets["line3_size"] = st.slider("Tamanho Fonte L3", 10, 150, ov_sets["line3_size"], key="s3")
-            ov_sets["line3_y"] = st.slider("Posição Vertical L3", 0, 800, ov_sets["line3_y"], key="y3")
+            ov_sets["line3_font"] = st.selectbox("Fonte L3", font_options, index=font_options.index(ov_sets["line3_font"]), key="f3")
+            ov_sets["line3_size"] = st.slider("Tamanho L3", 10, 150, ov_sets["line3_size"], key="s3")
+            ov_sets["line3_y"] = st.slider("Posição Y L3", 0, 800, ov_sets["line3_y"], key="y3")
 
         st.session_state["overlay_settings"] = ov_sets
         
         if st.button("💾 Salvar Ajustes de Overlay"):
-            st.success("Configuração salva para o próximo render!")
+            st.success("Configuração salva!")
 
     with col_preview:
         st.subheader("Pré-visualização")
-        # Gerar Preview on-the-fly
         res_params = get_resolution_params(resolucao_escolhida)
-        
-        # Reduzir escala para preview não ocupar a tela toda, mas mantendo proporção
         preview_scale_factor = 0.4
         preview_w = int(res_params["w"] * preview_scale_factor)
         preview_h = int(res_params["h"] * preview_scale_factor)
-        
-        # Escala dos textos no preview
         text_scale = preview_scale_factor
 
-        # Dados fake para preview ou reais se tiver
         meta = st.session_state.get("meta_dados", {})
         txt_l1 = "EVANGELHO"
         txt_l2 = meta.get("data", "29.11.2025")
         txt_l3 = meta.get("ref", "Lucas, Cap. 1, 26-38")
         
-        font_p = resolve_font_path(font_choice, uploaded_font_file)
-        
+        # Lista de textos com suas fontes específicas
         preview_texts = [
-            {"text": txt_l1, "size": int(ov_sets["line1_size"] * text_scale), "y": int(ov_sets["line1_y"] * text_scale), "color": "white"},
-            {"text": txt_l2, "size": int(ov_sets["line2_size"] * text_scale), "y": int(ov_sets["line2_y"] * text_scale), "color": "white"},
-            {"text": txt_l3, "size": int(ov_sets["line3_size"] * text_scale), "y": int(ov_sets["line3_y"] * text_scale), "color": "white"},
+            {"text": txt_l1, "size": int(ov_sets["line1_size"] * text_scale), "y": int(ov_sets["line1_y"] * text_scale), "font_style": ov_sets["line1_font"], "color": "white"},
+            {"text": txt_l2, "size": int(ov_sets["line2_size"] * text_scale), "y": int(ov_sets["line2_y"] * text_scale), "font_style": ov_sets["line2_font"], "color": "white"},
+            {"text": txt_l3, "size": int(ov_sets["line3_size"] * text_scale), "y": int(ov_sets["line3_y"] * text_scale), "font_style": ov_sets["line3_font"], "color": "white"},
         ]
         
-        prev_img = criar_preview_overlay(preview_w, preview_h, preview_texts, font_p)
+        prev_img = criar_preview_overlay(preview_w, preview_h, preview_texts, uploaded_font_file)
         st.image(prev_img, caption=f"Preview em {resolucao_escolhida}", use_column_width=False)
 
 
@@ -738,7 +727,6 @@ with tab4:
     
     roteiro = st.session_state["roteiro_gerado"]
     
-    # Ordem: Hook -> Leitura -> Reflexão -> Aplicação -> Oração -> Thumb
     blocos_config = [
         {"id": "hook", "label": "🎣 HOOK", "prompt_key": "prompt_hook", "text_key": "hook"},
         {"id": "leitura", "label": "📖 LEITURA", "prompt_key": "prompt_leitura", "text_key": "leitura_montada"}, 
@@ -830,10 +818,17 @@ with tab4:
                     status.update(label="FFmpeg não encontrado!", state="error")
                     st.stop()
                 
-                font_path = resolve_font_path(font_choice, uploaded_font_file)
-                if usar_overlay and not font_path:
-                    st.warning("⚠️ Fonte não encontrada. O overlay pode falhar.")
-                
+                # Check fontes overlay se necessário
+                if usar_overlay:
+                    sets = st.session_state["overlay_settings"]
+                    # Resolver fontes para cada linha
+                    f1_path = resolve_font_path(sets["line1_font"], uploaded_font_file)
+                    f2_path = resolve_font_path(sets["line2_font"], uploaded_font_file)
+                    f3_path = resolve_font_path(sets["line3_font"], uploaded_font_file)
+                    
+                    if not (f1_path and f2_path and f3_path):
+                        st.warning("Alguma fonte não foi encontrada. O sistema usará fallback padrão.")
+
                 temp_dir = tempfile.mkdtemp()
                 clip_files = []
                 
@@ -847,12 +842,7 @@ with tab4:
                 }
 
                 res_params = get_resolution_params(resolucao_escolhida)
-                w_out = res_params["w"]
-                h_out = res_params["h"]
-                s_out = f"{w_out}x{h_out}"
-
-                # Carregar configurações do Overlay
-                sets = st.session_state["overlay_settings"]
+                s_out = f"{res_params['w']}x{res_params['h']}"
 
                 for b in blocos_relevantes:
                     bid = b["id"]
@@ -881,13 +871,14 @@ with tab4:
                         f"fade=t=in:st=0:d=1,fade=t=out:st={dur-0.5}:d=0.5"
                     ]
 
-                    if usar_overlay and font_path:
+                    if usar_overlay:
+                        sets = st.session_state["overlay_settings"]
                         titulo_atual = map_titulos.get(bid, "EVANGELHO")
                         
-                        # Usar posições e tamanhos configurados
-                        vf_filters.append(f"drawtext=fontfile='{font_path}':text='{titulo_atual}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}:shadowcolor=black:shadowx=2:shadowy=2")
-                        vf_filters.append(f"drawtext=fontfile='{font_path}':text='{txt_dt}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}:shadowcolor=black:shadowx=2:shadowy=2")
-                        vf_filters.append(f"drawtext=fontfile='{font_path}':text='{txt_ref}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2")
+                        # Drawtext individual para cada linha com sua fonte
+                        if f1_path: vf_filters.append(f"drawtext=fontfile='{f1_path}':text='{titulo_atual}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}:shadowcolor=black:shadowx=2:shadowy=2")
+                        if f2_path: vf_filters.append(f"drawtext=fontfile='{f2_path}':text='{txt_dt}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}:shadowcolor=black:shadowx=2:shadowy=2")
+                        if f3_path: vf_filters.append(f"drawtext=fontfile='{f3_path}':text='{txt_ref}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2")
 
                     filter_complex = ",".join(vf_filters)
                     
@@ -933,4 +924,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v9.0 - Abas Organizadas")
+st.caption("Studio Jhonata v10.0 - Controle Total de Fontes")
