@@ -1,4 +1,4 @@
-# app.py — Studio Jhonata (COMPLETO v19.1 - Google TTS)
+# app.py — Studio Jhonata (COMPLETO v19.2 - Google TTS + Imagen Fix)
 # Features: Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos
 import os
 import re
@@ -521,7 +521,10 @@ def gerar_imagem_google_imagen(prompt: str, ratio: str) -> BytesIO:
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not gem_key:
         raise RuntimeError("GEMINI_API_KEY não encontrada.")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key={gem_key}"
+    
+    # CORREÇÃO: Atualizando o modelo de imagen-3.0 para imagen-4.0 para resolver o erro 404.
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key={gem_key}"
+    
     headers = {"Content-Type": "application/json"}
     payload = {
         "instances": [{"prompt": prompt}],
@@ -1160,4 +1163,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v19.1 - Música Padrão + Google TTS")
+st.caption("Studio Jhonata v19.2 - Música Padrão + Google TTS + Imagen Fix")
