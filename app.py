@@ -1,4 +1,4 @@
-# app.py — Studio Jhonata (COMPLETO v19.3 - Google TTS/Imagen Fixes)
+# app.py — Studio Jhonata (COMPLETO v19.6 - Contador de Limite TTS)
 # Features: Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos
 import os
 import re
@@ -10,7 +10,7 @@ import subprocess
 import urllib.parse
 import random
 from io import BytesIO
-from datetime import date
+from datetime import date, datetime
 from typing import List, Optional, Tuple, Dict
 import base64
 
@@ -35,6 +35,11 @@ os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 CONFIG_FILE = "overlay_config.json"
 SAVED_MUSIC_FILE = "saved_bg_music.mp3"
 
+# --- NOVO: Limite do Free Tier TTS ---
+# 1.000.000 caracteres/mês para vozes Wavenet (Neural)
+# O Google oferece 4.000.000 para vozes Standard, mas estamos usando WaveNet (melhor qualidade)
+TTS_FREE_LIMIT_CHARS = 1_000_000
+
 # =========================
 # Page config
 # =========================
@@ -55,15 +60,29 @@ def load_config():
         "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)", "line3_anim": "Estático",
         "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
-        "music_vol": 0.15
+        "music_vol": 0.15,
+        # --- NOVO: Campos de rastreamento TTS ---
+        "last_tts_month": datetime.now().strftime("%Y-%m"),
+        "tts_chars_used_monthly": 0
     }
     
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
                 saved = json.load(f)
-                default_settings.update(saved)
-                return default_settings
+                
+                # Mescla as configurações, mas garante os novos campos
+                for key in default_settings:
+                    if key not in saved:
+                        saved[key] = default_settings[key]
+                
+                # --- NOVO: Checagem e Reset Mensal ---
+                current_month = datetime.now().strftime("%Y-%m")
+                if saved.get("last_tts_month") != current_month:
+                    saved["tts_chars_used_monthly"] = 0
+                    saved["last_tts_month"] = current_month
+
+                return saved
         except Exception as e:
             st.warning(f"Erro ao carregar configurações salvas: {e}")
     
@@ -73,7 +92,7 @@ def save_config(settings):
     """Salva configurações no disco"""
     try:
         with open(CONFIG_FILE, "w") as f:
-            json.dump(settings, f)
+            json.dump(settings, f, indent=4)
         return True
     except Exception as e:
         st.error(f"Erro ao salvar configurações: {e}")
@@ -111,6 +130,7 @@ def inicializar_groq():
             from groq import Groq  # type: ignore
 
             if "GROQ_API_KEY" not in st.secrets and not os.getenv("GROQ_API_KEY"):
+                # OBS: O Groq tem uma camada gratuita generosa, mas requer uma chave.
                 st.error("❌ Configure GROQ_API_KEY em Settings → Secrets no Streamlit Cloud.")
                 st.stop()
             api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
@@ -433,7 +453,6 @@ def _gerar_audio_gtts_impl(texto: str) -> Optional[BytesIO]:
 def gerar_audio_google_tts(texto: str) -> Optional[BytesIO]:
     """Gera áudio usando Google Cloud Text-to-Speech (necessita credenciais)"""
     if not texttospeech or not service_account:
-        # Lança um erro claro para ser capturado no despachante
         raise RuntimeError(
             "TTS Premium indisponível. Por favor, adicione 'google-cloud-texttospeech' e 'google-auth' ao requirements.txt "
             "e configure 'GOOGLE_CREDENTIALS_JSON' em Secrets."
@@ -443,19 +462,23 @@ def gerar_audio_google_tts(texto: str) -> Optional[BytesIO]:
     credentials = None
     try:
         credentials_info = st.secrets.get("GOOGLE_CREDENTIALS_JSON")
-        if credentials_info:
-            # Assumir que o segredo contém o JSON da conta de serviço
-            if isinstance(credentials_info, str):
-                credentials_info = json.loads(credentials_info)
-            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+        if not credentials_info:
+            raise ValueError("GOOGLE_CREDENTIALS_JSON não encontrado em Secrets.")
+        
+        # Cria o objeto credentials FORÇANDO o uso do JSON
+        if isinstance(credentials_info, str):
+            credentials_info = json.loads(credentials_info)
+        credentials = service_account.Credentials.from_service_account_info(credentials_info)
         
         # Cliente
         client = texttospeech.TextToSpeechClient(credentials=credentials)
         
+    except ValueError as e:
+        st.error(f"❌ Erro de Credenciais TTS: {e}")
+        raise RuntimeError("Falha na autenticação. Verifique se GOOGLE_CREDENTIALS_JSON está formatado corretamente.")
     except Exception as e:
-        # Captura erros durante a inicialização do cliente/credenciais
-        st.error(f"❌ Erro de inicialização do Google TTS Client. Verifique GOOGLE_CREDENTIALS_JSON: {e}")
-        raise RuntimeError(f"Erro de credenciais/inicialização do Google TTS: {e}")
+        st.error(f"❌ Erro de inicialização do Google TTS Client: {e}")
+        raise RuntimeError(f"Erro de inicialização do Google TTS: {e}")
 
     # 2. Configurar a requisição
     synthesis_input = texttospeech.SynthesisInput(text=texto)
@@ -480,17 +503,44 @@ def gerar_audio_google_tts(texto: str) -> Optional[BytesIO]:
     return audio_fp
 
 def despachar_geracao_audio(texto: str, motor: str) -> Optional[BytesIO]:
-    """Despacha a geração de áudio para o motor escolhido."""
+    """Despacha a geração de áudio para o motor escolhido, com checagem do limite gratuito."""
     if not texto or not texto.strip():
         return None
         
     if motor == "Google Cloud TTS (Premium)":
+        
+        # --- NOVO: Lógica de Limite Gratuito ---
+        config = st.session_state["overlay_settings"]
+        chars_needed = len(texto)
+        chars_used = config.get("tts_chars_used_monthly", 0)
+        
+        if chars_used + chars_needed > TTS_FREE_LIMIT_CHARS:
+            remaining = TTS_FREE_LIMIT_CHARS - chars_used
+            st.warning(
+                f"🚨 LIMITE GRATUITO TTS ATINGIDO! ({chars_used}/{TTS_FREE_LIMIT_CHARS} caracteres). "
+                f"O texto atual ({chars_needed} chars) excederia o limite. "
+                "Caindo para gTTS (Padrão) para evitar cobranças."
+            )
+            return _gerar_audio_gtts_impl(texto)
+        # --- FIM NOVO: Lógica de Limite Gratuito ---
+
         try:
-            return gerar_audio_google_tts(texto)
+            audio = gerar_audio_google_tts(texto)
+            
+            # --- NOVO: Atualiza o contador após o sucesso ---
+            config["tts_chars_used_monthly"] += chars_needed
+            save_config(config) # Salva imediatamente o novo total
+            # --- FIM NOVO ---
+            
+            return audio
+            
         except RuntimeError as e:
             # Captura a falha do TTS Premium e cai para o padrão
             st.warning(f"Falha no TTS Premium: {e}. Usando gTTS (Padrão) como fallback.")
-            return _gerar_audio_gtts_impl(texto)
+            try:
+                return _gerar_audio_gtts_impl(texto)
+            except Exception as e_gtts:
+                raise RuntimeError(f"Falha total: TTS Premium ({e}) e gTTS ({e_gtts}) falharam.")
     else: # "gTTS (Padrão)"
         return _gerar_audio_gtts_impl(texto)
 
@@ -528,62 +578,14 @@ def gerar_imagem_pollinations_turbo(prompt: str, width: int, height: int) -> Byt
     bio.seek(0)
     return bio
 
-def gerar_imagem_google_imagen(prompt: str, ratio: str) -> BytesIO:
-    # Obtém a chave de API
-    gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
-    if not gem_key:
-        raise RuntimeError("GEMINI_API_KEY não encontrada.")
-    
-    # Usa o modelo mais recente
-    model_name = "imagen-4.0-generate-001"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:predict?key={gem_key}"
-    
-    # Sanitiza o prompt para evitar Bad Request por caracteres especiais
-    prompt_clean = prompt.replace("\n", " ").strip()
-    
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "instances": [{"prompt": prompt_clean}],
-        "parameters": {"sampleCount": 1, "aspectRatio": ratio}
-    }
-    
-    try:
-        r = requests.post(url, headers=headers, json=payload, timeout=45)
-        r.raise_for_status() # Lança HTTPError para 4xx/5xx
-        
-        data = r.json()
-        
-        if "predictions" in data and len(data["predictions"]) > 0:
-            b64 = data["predictions"][0]["bytesBase64Encoded"]
-            bio = BytesIO(base64.b64decode(b64))
-            bio.seek(0)
-            return bio
-        else:
-            raise RuntimeError(f"Resposta inválida ou vazia do Google Imagen. JSON: {data}")
-
-    except requests.exceptions.HTTPError as e:
-        # Captura erros 400/404/500
-        error_details = ""
-        try:
-            error_json = r.json()
-            error_details = error_json.get('error', {}).get('message', str(e))
-        except:
-            error_details = str(e)
-
-        raise RuntimeError(f"Falha na API Google Imagen (HTTP {r.status_code}). Detalhes: {error_details}")
-    except Exception as e:
-        raise RuntimeError(f"Erro desconhecido na geração do Google Imagen: {e}")
-
+# Função removida: gerar_imagem_google_imagen (não é gratuita e não é essencial)
 
 def despachar_geracao_imagem(prompt: str, motor: str, res_choice: str) -> BytesIO:
     params = get_resolution_params(res_choice)
-    if motor == "Pollinations Flux (Padrão)":
-        return gerar_imagem_pollinations_flux(prompt, params["w"], params["h"])
-    elif motor == "Pollinations Turbo":
+    # Como o Google Imagen não é gratuito, forçamos o uso dos motores Pollinations (gratuitos).
+    if motor == "Pollinations Turbo":
         return gerar_imagem_pollinations_turbo(prompt, params["w"], params["h"])
-    elif motor == "Google Imagen":
-        return gerar_imagem_google_imagen(prompt, params["ratio"])
-    else:
+    else: # Pollinations Flux (Padrão)
         return gerar_imagem_pollinations_flux(prompt, params["w"], params["h"])
 
 # =========================
@@ -685,20 +687,46 @@ st.markdown("---")
 # ---- SIDEBAR CONFIG ----
 st.sidebar.title("⚙️ Configurações")
 
-motor_escolhido = st.sidebar.selectbox("🎨 Motor de Imagem", ["Pollinations Flux (Padrão)", "Pollinations Turbo", "Google Imagen"], index=0)
+# Atualizado: Apenas motores de imagem gratuitos (Pollinations)
+motor_escolhido = st.sidebar.selectbox("🎨 Motor de Imagem", ["Pollinations Flux (Padrão)", "Pollinations Turbo"], index=0)
 resolucao_escolhida = st.sidebar.selectbox("📏 Resolução do Vídeo", ["9:16 (Vertical/Stories)", "16:9 (Horizontal/YouTube)", "1:1 (Quadrado/Feed)"], index=0)
 
 st.sidebar.markdown("---")
 
-# --- NOVO: Motor TTS ---
+# --- Motor TTS ---
 st.sidebar.markdown("### 🗣️ Motor TTS")
 tts_motor_options = ["Google Cloud TTS (Premium)", "gTTS (Padrão)"]
+
+if "overlay_settings" in st.session_state:
+    config = st.session_state["overlay_settings"]
+    chars_used = config.get("tts_chars_used_monthly", 0)
+    remaining = max(0, TTS_FREE_LIMIT_CHARS - chars_used)
+    
+    st.sidebar.caption(
+        f"Contador TTS Mensal: **{chars_used:,} / {TTS_FREE_LIMIT_CHARS:,}** caracteres."
+    )
+    if remaining == 0:
+        st.sidebar.error("⚠️ LIMITE GRATUITO ATINGIDO. Apenas gTTS está disponível.")
+        if "Google Cloud TTS (Premium)" in tts_motor_options:
+            tts_motor_options.remove("Google Cloud TTS (Premium)")
+    elif remaining < 100000:
+        st.sidebar.warning(f"⚠️ Restam menos de {remaining:,} caracteres.")
+
 if not texttospeech:
-    # Se a biblioteca não estiver instalada, só a opção padrão aparece
     tts_motor_options = ["gTTS (Padrão)"]
     st.sidebar.warning("⚠️ Instale 'google-cloud-texttospeech' e configure 'GOOGLE_CREDENTIALS_JSON' em Secrets para usar a opção Premium.")
-tts_motor_escolhido = st.sidebar.selectbox("Motor de Voz", tts_motor_options, index=0)
-# FIM NOVO
+    
+# Garante que a opção Premium só apareça se as bibliotecas estiverem presentes
+if "Google Cloud TTS (Premium)" in tts_motor_options and not texttospeech:
+    tts_motor_options.remove("Google Cloud TTS (Premium)")
+
+# Se a opção Premium foi removida (por limite ou falta de libs), o índice deve se ajustar
+default_index = 0
+if "Google Cloud TTS (Premium)" not in tts_motor_options and tts_motor_escolhido == "Google Cloud TTS (Premium)":
+    tts_motor_escolhido = "gTTS (Padrão)" # Reseta a seleção
+
+tts_motor_escolhido = st.sidebar.selectbox("Motor de Voz", tts_motor_options, index=tts_motor_options.index(tts_motor_escolhido) if tts_motor_escolhido in tts_motor_options else 0)
+# FIM TTS
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🅰️ Upload de Fonte (Global)")
@@ -723,9 +751,13 @@ if "video_final_bytes" not in st.session_state:
 if "meta_dados" not in st.session_state:
     st.session_state["meta_dados"] = {"data": "", "ref": ""}
     
-# Carregar Settings persistentes
+# Carregar Settings persistentes (já faz o reset mensal)
 if "overlay_settings" not in st.session_state:
     st.session_state["overlay_settings"] = load_config()
+else:
+    # Garante que o reset mensal ocorra também após o primeiro load
+    load_config()
+
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["📖 Gerar Roteiro", "🎨 Personagens", "🎚️ Overlay & Efeitos", "🎥 Fábrica Vídeo (Editor)", "📊 Histórico"]
@@ -956,11 +988,12 @@ with tab4:
                     if prompt:
                         st.write(f"Gerando imagem ({i+1}/{total}): {b['label']}...")
                         try:
+                            # Chama o despachante (que agora só usa Pollinations)
                             img = despachar_geracao_imagem(prompt, motor_escolhido, resolucao_escolhida)
                             st.session_state["generated_images_blocks"][bid] = img
                             count += 1
                         except Exception as e:
-                            st.error(f"Erro em {bid}: {e}")
+                            st.error(f"Erro: {e}")
                 status.update(label=f"Concluído! {count}/{total} imagens geradas.", state="complete")
                 st.rerun()
 
@@ -1007,6 +1040,7 @@ with tab4:
                         if prompt_content:
                             with st.spinner(f"Criando no formato {resolucao_escolhida}..."):
                                 try:
+                                    # Chama o despachante (que agora só usa Pollinations)
                                     img = despachar_geracao_imagem(prompt_content, motor_escolhido, resolucao_escolhida)
                                     st.session_state["generated_images_blocks"][block_id] = img
                                     st.success("Gerada!")
@@ -1197,4 +1231,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v19.3 - Fixes Aplicados")
+st.caption("Studio Jhonata v19.6 - Contador de Limite TTS Aplicado")
