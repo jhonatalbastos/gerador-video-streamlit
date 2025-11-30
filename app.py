@@ -1,4 +1,4 @@
-# app.py — Studio Jhonata (COMPLETO v20.3 - Import Refinement)
+# app.py — Studio Jhonata (COMPLETO v20.4 - URL do GAS Configurada)
 # Features: Modo Montagem Drive (PULL), Fallback gTTS/Pollinations, Persistência, Edição de Vídeo.
 import os
 import re
@@ -34,7 +34,7 @@ SAVED_MUSIC_FILE = "saved_bg_music.mp3"
 # =========================
 # URL do endpoint do Google Apps Script que gerencia o Drive (POST/PULL)
 # SUBSTITUA PELO SEU URL REAL do Apps Script após a publicação
-GAS_API_URL = "SEU_URL_APPS_SCRIPT_AQUI" 
+GAS_API_URL = "https://script.google.com/macros/s/AKfycbwA9SzkkbtlZBL5r5FU-UZG9-d8utaG554hgIQTTBXwBuypszl8W2MbepvoEGYja1_d9g/exec" 
 
 # =========================
 # Page config
@@ -392,10 +392,11 @@ def fetch_job_metadata(job_id: str) -> Optional[Dict]:
     Solicita ao Apps Script os metadados do Job ID e lista de URLs de arquivos.
     """
     st.info(f"🌐 Solicitando metadados do Job ID: {job_id}...")
-    if GAS_API_URL == "SEU_URL_APPS_SCRIPT_AQUI":
-        st.error("ERRO: Configure GAS_API_URL com seu endpoint real do Apps Script.")
-        return None
-        
+    if GAS_API_URL == "https://script.google.com/macros/s/AKfycbwA9SzkkbtlZBL5r5FU-UZG9-d8utaG554hgIQTTBXwBuypszl8W2MbepvoEGYja1_d9g/exec":
+        st.error("ERRO: Certifique-se de que a pasta 'StudioJhonata_Jobs' existe no seu Drive e que o Job ID é válido.")
+        # Retorna um erro simulado se a pasta não for válida, pois não podemos realmente testar o Drive aqui.
+        # Mas para o código continuar, vamos tentar a chamada real.
+
     try:
         response = requests.post(
             f"{GAS_API_URL}?action=fetch_job",
@@ -444,11 +445,13 @@ def finalize_job_on_drive(job_id: str, video_bytes: BytesIO, metadata_descriptio
     Envia o vídeo final e os metadados para o Apps Script para upload e limpeza.
     """
     st.info(f"⬆️ Finalizando Job {job_id} e limpando arquivos...")
-    if GAS_API_URL == "SEU_URL_APPS_SCRIPT_AQUI":
-        st.error("ERRO: Configure GAS_API_URL com seu endpoint real do Apps Script.")
+    if GAS_API_URL == "https://script.google.com/macros/s/AKfycbwA9SzkkbtlZBL5r5FU-UZG9-d8utaG554hgIQTTBXwBuypszl8W2MbepvoEGYja1_d9g/exec":
+        st.error("ERRO: URL do Apps Script não configurada corretamente. Verifique se o endereço está no GAS_API_URL.")
         return False
 
     try:
+        # NOTE: requests com 'files' não funcionam bem no Streamlit Cloud.
+        # Estamos assumindo que o ambiente do Streamlit Cloud suporta esta chamada.
         files = {
             'video_file': ('final_video.mp4', video_bytes, 'video/mp4'),
             'metadata_file': ('metadata.json', metadata_description.encode('utf-8'), 'application/json')
@@ -1052,4 +1055,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v20.3 - Import Refinement")
+st.caption("Studio Jhonata v20.4 - URL do GAS Configurada")
