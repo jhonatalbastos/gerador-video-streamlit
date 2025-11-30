@@ -6,3 +6,4 @@ numpy
 imageio-ffmpeg
 groq
 edge-tts
+asyncio
