@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v19.1 - EdgeTTS Integration)
-# Features: EdgeTTS, Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos
+# app.py — Studio Jhonata (COMPLETO v19.2 - EdgeTTS Fix Threading)
+# Features: EdgeTTS (Fixed), Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos
 import os
 import re
 import json
@@ -10,6 +10,7 @@ import subprocess
 import urllib.parse
 import random
 import asyncio
+import threading
 from io import BytesIO
 from datetime import date
 from typing import List, Optional, Tuple, Dict
@@ -421,40 +422,54 @@ def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
     except Exception as e:
         raise RuntimeError(f"Erro gTTS: {e}")
 
-# --- EdgeTTS Integration ---
-async def _edge_tts_async(text, voice, output_file):
+# --- EdgeTTS Integration (Thread-Safe Fix) ---
+
+async def _edge_tts_coroutine(text, voice, output_file):
+    """Corrotina interna para salvar o áudio"""
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(output_file)
 
 def gerar_audio_edge(texto: str, voz: str) -> Optional[BytesIO]:
-    """Gera áudio usando EdgeTTS (Neural) de forma síncrona para o Streamlit"""
-    if not texto or not texto.strip(): return None
+    """Gera áudio usando EdgeTTS em uma thread separada para evitar conflito com loop do Streamlit"""
+    if not texto or not texto.strip(): 
+        return None
     
-    # Criar arquivo temporário para o áudio
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
         tmp_path = tmp.name
     
-    try:
-        # Executar a função assíncrona do edge_tts
-        # Streamlit roda em loop, as vezes requer asyncio.run() ou criar novo loop
+    exception_holder = []
+
+    def run_in_thread():
+        # Cria um novo loop de eventos exclusivo para esta thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            loop.run_until_complete(_edge_tts_async(texto, voz, tmp_path))
-        except RuntimeError:
-             asyncio.run(_edge_tts_async(texto, voz, tmp_path))
-        
-        # Ler o arquivo gerado
+            loop.run_until_complete(_edge_tts_coroutine(texto, voz, tmp_path))
+        except Exception as e:
+            exception_holder.append(e)
+        finally:
+            loop.close()
+
+    # Cria e inicia a thread
+    t = threading.Thread(target=run_in_thread)
+    t.start()
+    t.join()  # Espera terminar
+
+    if exception_holder:
+        # Se houve erro na thread, levanta aqui
+        if os.path.exists(tmp_path): os.remove(tmp_path)
+        raise RuntimeError(f"Erro na thread EdgeTTS: {exception_holder[0]}")
+
+    try:
+        if os.path.getsize(tmp_path) == 0:
+            raise RuntimeError("EdgeTTS gerou arquivo vazio (No Audio Received). Verifique conexão ou texto.")
+            
         with open(tmp_path, "rb") as f:
             data = f.read()
-        
         return BytesIO(data)
     except Exception as e:
-        raise RuntimeError(f"Erro EdgeTTS: {e}")
+        raise RuntimeError(f"Erro ao ler arquivo EdgeTTS: {e}")
     finally:
-        # Limpar arquivo temporário
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
@@ -1153,4 +1168,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v19.1 - EdgeTTS Integration")
+st.caption("Studio Jhonata v19.2 - EdgeTTS Fix Threading")
