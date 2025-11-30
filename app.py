@@ -1,4 +1,4 @@
-# app.py — Studio Jhonata (COMPLETO v20.2 - Montagem de Drive Integrada)
+# app.py — Studio Jhonata (COMPLETO v20.3 - Import Refinement)
 # Features: Modo Montagem Drive (PULL), Fallback gTTS/Pollinations, Persistência, Edição de Vídeo.
 import os
 import re
@@ -9,11 +9,15 @@ import traceback
 import subprocess
 import urllib.parse
 import random
+import base64
+import shutil as _shutil
+
+# Imports de Tipagem (Standard Library)
 from io import BytesIO
 from datetime import date, datetime
-from typing import List, Optional, Tuple, Dict # IMPORTS CORRIGIDOS
-import base64
+from typing import List, Optional, Tuple, Dict 
 
+# Imports de Bibliotecas Externas
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
@@ -148,7 +152,6 @@ def inicializar_personagens():
 
 # =========================
 # Funções de Liturgia, Roteiro e Análise
-# ... [Estas funções permanecem as mesmas de v20.1] ...
 # =========================
 
 def limpar_texto_evangelho(texto: str) -> str:
@@ -213,17 +216,78 @@ def analisar_personagens_groq(texto_evangelho: str, banco_personagens: dict):
             temperature=0.3,
             max_tokens=400,
         )
-        # ... (lógica de parsing da resposta Groq) ...
-        return {}
+        resultado = resp.choices[0].message.content
+        personagens_detectados = {}
+        m = re.search(r"PERSONAGENS:\s*(.+)", resultado)
+        if m:
+            nomes = [n.strip() for n in m.group(1).split(";") if n.strip()]
+            for nome in nomes:
+                if nome in banco_personagens:
+                    personagens_detectados[nome] = banco_personagens[nome]
+        m2 = re.search(r"NOVOS:\s*(.+)", resultado)
+        if m2:
+            novos = m2.group(1).strip()
+            blocos = re.split(r";|,", novos)
+            for bloco in blocos:
+                if "|" in bloco:
+                    nome, desc = bloco.split("|", 1)
+                    nome = nome.strip()
+                    desc = desc.strip()
+                    if not nome: continue
+                    personagens_detectados[nome] = desc
+                    banco_personagens[nome] = desc
+        return personagens_detectados
     except Exception: return {}
 
 def buscar_liturgia_api1(data_str: str):
-    # ... (lógica de busca API 1) ...
-    return None
+    url = f"https://api-liturgia-diaria.vercel.app/?date={data_str}"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        dados = resp.json()
+        today = dados.get("today", {})
+        readings = today.get("readings", {})
+        gospel = readings.get("gospel")
+        if not gospel: return None
+        referencia_liturgica = today.get("entry_title", "").strip() or "Evangelho do dia"
+        titulo = (
+            gospel.get("head_title", "")
+            or gospel.get("title", "")
+            or "Evangelho de Jesus Cristo"
+        ).strip()
+        texto = gospel.get("text", "").strip()
+        if not texto: return None
+        texto_limpo = limpar_texto_evangelho(texto)
+        ref_biblica = extrair_referencia_biblica(titulo)
+        return {
+            "fonte": "api-liturgia-diaria.vercel.app",
+            "titulo": titulo,
+            "referencia_liturgica": referencia_liturgica,
+            "texto": texto_limpo,
+            "ref_biblica": ref_biblica,
+        }
+    except Exception: return None
 
 def buscar_liturgia_api2(data_str: str):
-    # ... (lógica de busca API 2) ...
-    return None
+    url = f"https://liturgia.up.railway.app/v2/{data_str}"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        dados = resp.json()
+        lit = dados.get("liturgia", {})
+        ev = lit.get("evangelho") or lit.get("evangelho_do_dia") or {}
+        if not ev: return None
+        texto = ev.get("texto", "") or ev.get("conteudo", "")
+        if not texto: return None
+        texto_limpo = limpar_texto_evangelho(texto)
+        return {
+            "fonte": "liturgia.up.railway.app",
+            "titulo": "Evangelho do dia",
+            "referencia_liturgica": "Evangelho do dia",
+            "texto": texto_limpo,
+            "ref_biblica": None,
+        }
+    except Exception: return None
 
 def obter_evangelho_com_fallback(data_str: str):
     ev = buscar_liturgia_api1(data_str)
@@ -246,16 +310,78 @@ def gerar_roteiro_com_prompts_groq(texto_evangelho: str, referencia_liturgica: s
     client = inicializar_groq()
     texto_limpo = limpar_texto_evangelho(texto_evangelho)
     personagens_str = json.dumps(personagens, ensure_ascii=False)
-    system_prompt = f"""Crie roteiro + 6 prompts visuais CATÓLICOS para vídeo devocional.\n..."""
+    system_prompt = f"""Crie roteiro + 6 prompts visuais CATÓLICOS para vídeo devocional.
+
+PERSONAGENS FIXOS: {personagens_str}
+
+IMPORTANTE:
+- 4 PARTES EXATAS: HOOK, REFLEXÃO, APLICAÇÃO, ORAÇÃO
+- PROMPT_LEITURA separado (momento da leitura do Evangelho, mais calmo e reverente)
+- PROMPT_GERAL para thumbnail
+- USE SEMPRE as descrições exatas dos personagens
+- Estilo: artístico renascentista católico, luz suave, cores quentes
+
+Formato EXATO:
+
+HOOK: [texto 5-8s]
+PROMPT_HOOK: [prompt visual com personagens fixos]
+
+REFLEXÃO: [texto 20-25s]
+PROMPT_REFLEXÃO: [prompt visual com personagens fixos]
+
+APLICAÇÃO: [texto 20-25s]
+PROMPT_APLICACAO: [prompt visual com personagens fixos]
+
+ORAÇÃO: [texto 20-25s]
+PROMPT_ORACAO: [prompt visual com personagens fixos]
+
+PROMPT_LEITURA: [prompt visual específico para a leitura do Evangelho, mais calmo e reverente]
+
+PROMPT_GERAL: [prompt para thumbnail/capa]"""
     try:
-        # ... (lógica de chamada Groq) ...
-        return {}
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Evangelho: {referencia_liturgica}\n\n{texto_limpo[:2000]}"},
+            ],
+            temperature=0.7,
+            max_tokens=1200,
+        )
+        texto_gerado = resp.choices[0].message.content
+        partes: dict[str, str] = {}
+        partes["hook"] = extrair_bloco("HOOK", texto_gerado)
+        partes["reflexão"] = extrair_bloco("REFLEXÃO", texto_gerado)
+        partes["aplicação"] = extrair_bloco("APLICAÇÃO", texto_gerado)
+        partes["oração"] = extrair_bloco("ORAÇÃO", texto_gerado)
+        partes["prompt_hook"] = extrair_prompt("PROMPT_HOOK", texto_gerado)
+        partes["prompt_reflexão"] = extrair_prompt("PROMPT_REFLEXÃO", texto_gerado)
+        partes["prompt_aplicacao"] = extrair_prompt("PROMPT_APLICACAO", texto_gerado)
+        partes["prompt_oração"] = extrair_prompt("PROMPT_ORACAO", texto_gerado)
+        partes["prompt_leitura"] = extrair_prompt("PROMPT_LEITURA", texto_gerado)
+        m_geral = re.search(r"PROMPT_GERAL:\s*(.+)", texto_gerado, re.DOTALL | re.IGNORECASE)
+        partes["prompt_geral"] = m_geral.group(1).strip() if m_geral else ""
+        return partes
     except Exception as e:
         st.error(f"❌ Erro Groq: {e}"); return None
 
 def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
-    # ... (lógica de montagem da leitura) ...
-    return ""
+    if ref_biblica:
+        abertura = (
+            f"Proclamação do Evangelho de Jesus Cristo, segundo São "
+            f"{ref_biblica['evangelista']}, "
+            f"Capítulo {ref_biblica['capitulo']}, "
+            f"versículos {ref_biblica['versiculos']}. "
+            "Glória a vós, Senhor!"
+        )
+    else:
+        abertura = (
+            "Proclamação do Evangelho de Jesus Cristo, segundo São Lucas. "
+            "Glória a vós, Senhor!"
+        )
+    fechamento = "Palavra da Salvação. Glória a vós, Senhor!"
+    return f"{abertura} {texto_evangelho} {fechamento}"
+
 
 # =========================
 # FUNÇÕES DE COMUNICAÇÃO COM APPS SCRIPT/DRIVE (NOVAS)
@@ -350,7 +476,6 @@ def finalize_job_on_drive(job_id: str, video_bytes: BytesIO, metadata_descriptio
 
 # =========================
 # FUNÇÕES DE ÁUDIO & IMAGEM (gTTS e Pollinations)
-# ... [Estas funções permanecem as mesmas de v20.1] ...
 # =========================
 
 def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
@@ -400,7 +525,6 @@ def despachar_geracao_imagem(prompt: str, motor: str, res_choice: str) -> BytesI
 
 # =========================
 # Helpers e Utilitários
-# ... [Estas funções permanecem as mesmas de v20.1] ...
 # =========================
 
 def shutil_which(bin_name: str) -> Optional[str]: return _shutil.which(bin_name)
@@ -417,12 +541,48 @@ def get_audio_duration_seconds(path: str) -> Optional[float]:
     except Exception: return None
 
 def resolve_font_path(font_choice: str, uploaded_font: Optional[BytesIO]) -> Optional[str]:
-    # ... (lógica de resolução de fonte) ...
+    if font_choice == "Upload Personalizada" and uploaded_font:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp:
+            tmp.write(uploaded_font.getvalue())
+            return tmp.name
+    system_fonts = {
+        "Padrão (Sans)": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", "arial.ttf"],
+        "Serif": ["/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf", "times.ttf"],
+        "Monospace": ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", "courier.ttf"]
+    }
+    candidates = system_fonts.get(font_choice, system_fonts["Padrão (Sans)"])
+    for font in candidates:
+        if os.path.exists(font): return font
     return None
 
 def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upload: Optional[BytesIO]) -> BytesIO:
-    # ... (lógica de preview de overlay) ...
-    return BytesIO(b'')
+    img = Image.new("RGB", (width, height), "black")
+    draw = ImageDraw.Draw(img)
+    for item in texts:
+        text = item.get("text", "")
+        if not text: continue
+        size = item.get("size", 30)
+        y = item.get("y", 0)
+        color = item.get("color", "white")
+        font_style = item.get("font_style", "Padrão (Sans)")
+        font_path = resolve_font_path(font_style, global_upload)
+        try:
+            if font_path and os.path.exists(font_path):
+                font = ImageFont.truetype(font_path, size)
+            else:
+                font = ImageFont.load_default()
+        except:
+             font = ImageFont.load_default()
+        try:
+            length = draw.textlength(text, font=font)
+        except:
+             length = len(text) * size * 0.5
+        x = (width - length) / 2
+        draw.text((x, y), text, fill=color, font=font)
+    bio = BytesIO()
+    img.save(bio, format="PNG")
+    bio.seek(0)
+    return bio
 
 def get_text_alpha_expr(anim_type: str, duration: float) -> str:
     if anim_type == "Fade In": return f"alpha='min(1,t/1)'"
@@ -553,7 +713,11 @@ with tab4:
                     st.session_state["meta_dados"] = job_data.get("meta_dados", {})
 
                     # 2. Baixa arquivos
-                    images, audios = download_files_from_urls(job_data.get("urls_arquivos", []))
+                    urls_arquivos = job_data.get("urls_arquivos", [])
+                    if len(urls_arquivos) == 0:
+                        st.warning("Nenhum arquivo de imagem/áudio encontrado no Job ID. Verifique o GAS.")
+                    
+                    images, audios = download_files_from_urls(urls_arquivos)
                     st.session_state["generated_images_blocks"] = images
                     st.session_state["generated_audios_blocks"] = audios
                     
@@ -588,30 +752,273 @@ with tab4:
     st.info(f"⚙️ Config: **{motor_escolhido}** | Resolução: **{resolucao_escolhida}** | TTS: **{tts_motor_escolhido}**")
 
     # Botões de Geração em Lote (Áudio/Imagem)
-    # ... (Lógica de botões de lote inalterada, usando gTTS e Pollinations) ...
+    col_batch_1, col_batch_2 = st.columns(2)
+    with col_batch_1:
+        if st.button("🔊 Gerar Todos os Áudios", use_container_width=True):
+            with st.status("Gerando áudios em lote...", expanded=True) as status:
+                total = len([b for b in blocos_config if b["text_key"]])
+                count = 0
+                for b in blocos_config:
+                    if not b["text_key"]: continue
+                    bid = b["id"]
+                    txt = roteiro.get(b["text_key"]) if bid != "leitura" else st.session_state.get("leitura_montada", "")
+                    if txt:
+                        st.write(f"Gerando áudio: {b['label']}...")
+                        try:
+                            audio = despachar_geracao_audio(txt)
+                            st.session_state["generated_audios_blocks"][bid] = audio
+                            count += 1
+                        except Exception as e:
+                            st.error(f"Erro em {bid}: {e}")
+                status.update(label=f"Concluído! {count}/{total} áudios gerados.", state="complete")
+                st.rerun()
 
-    # Visualização de Cenas
-    # ... (Lógica de visualização de cenas inalterada) ...
+    with col_batch_2:
+        if st.button("✨ Gerar Todas as Imagens", use_container_width=True):
+            with st.status("Gerando imagens em lote...", expanded=True) as status:
+                total = len(blocos_config)
+                count = 0
+                for i, b in enumerate(blocos_config):
+                    bid = b["id"]
+                    prompt = roteiro.get(b["prompt_key"], "")
+                    if prompt:
+                        st.write(f"Gerando imagem ({i+1}/{total}): {b['label']}...")
+                        try:
+                            img = despachar_geracao_imagem(prompt, motor_escolhido, resolucao_escolhida)
+                            st.session_state["generated_images_blocks"][bid] = img
+                            count += 1
+                        except Exception as e:
+                            st.error(f"Erro: {e}")
+                status.update(label=f"Concluído! {count}/{total} imagens geradas.", state="complete")
+                st.rerun()
+
+    st.divider()
+
+    for bloco in blocos_config:
+        block_id = bloco["id"]
+        with st.container(border=True):
+            st.subheader(bloco["label"])
+            col_text, col_media = st.columns([1, 1.2])
+            with col_text:
+                if bloco["text_key"]:
+                    txt_content = roteiro.get(bloco["text_key"]) if block_id != "leitura" else st.session_state.get("leitura_montada", "")
+                    st.caption("📜 Texto para Narração:")
+                    st.markdown(f"_{txt_content[:250]}..._" if txt_content else "_Sem texto_")
+                    if st.button(f"🔊 Gerar Áudio ({block_id})", key=f"btn_audio_{block_id}"):
+                        if txt_content:
+                            try:
+                                # Chama o dispatcher (agora só gTTS)
+                                audio = despachar_geracao_audio(txt_content)
+                                st.session_state["generated_audios_blocks"][block_id] = audio
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erro áudio: {e}")
+                    if block_id in st.session_state["generated_audios_blocks"]:
+                        st.audio(st.session_state["generated_audios_blocks"][block_id], format="audio/mp3")
+                prompt_content = roteiro.get(bloco["prompt_key"], "")
+                st.caption("📋 Prompt Visual:")
+                st.code(prompt_content, language="text")
+            with col_media:
+                st.caption("🖼️ Imagem da Cena:")
+                current_img = st.session_state["generated_images_blocks"].get(block_id)
+                if current_img:
+                    try:
+                        current_img.seek(0)
+                        st.image(current_img, use_column_width=True)
+                    except Exception:
+                        st.error("Erro ao exibir imagem.")
+                else:
+                    st.info("Nenhuma imagem definida.")
+                c_gen, c_up = st.columns([1.5, 2])
+                with c_gen:
+                    if st.button(f"✨ Gerar ({resolucao_escolhida.split()[0]})", key=f"btn_gen_{block_id}"):
+                        if prompt_content:
+                            with st.spinner(f"Criando no formato {resolucao_escolhida}..."):
+                                try:
+                                    # Chama o despachante (agora só Pollinations)
+                                    img = despachar_geracao_imagem(prompt_content, motor_escolhido, resolucao_escolhida)
+                                    st.session_state["generated_images_blocks"][block_id] = img
+                                    st.success("Gerada!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Erro: {e}")
+                        else:
+                            st.warning("Sem prompt.")
+                with c_up:
+                    uploaded_file = st.file_uploader("Ou envie a sua:", type=["png", "jpg", "jpeg"], key=f"upload_{block_id}")
+                    if uploaded_file is not None:
+                        bytes_data = uploaded_file.read()
+                        st.session_state["generated_images_blocks"][block_id] = BytesIO(bytes_data)
+                        st.success("Enviada!")
 
     st.divider()
     st.header("🎬 Finalização")
     usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay Personalizado)", value=True)
     
-    # Música de Fundo
-    # ... (Lógica de música de fundo inalterada) ...
+    st.subheader("🎵 Música de Fundo (Opcional)")
+    
+    # Check if saved music exists
+    saved_music_exists = os.path.exists(SAVED_MUSIC_FILE)
+    
+    col_mus_1, col_mus_2 = st.columns(2)
+    
+    with col_mus_1:
+        if saved_music_exists:
+            st.success("💾 Música Padrão Ativa")
+            st.audio(SAVED_MUSIC_FILE)
+            if st.button("❌ Remover Música Padrão"):
+                if delete_music_file():
+                    st.rerun()
+        else:
+            st.info("Nenhuma música padrão salva.")
 
-    # Botão Renderizar
+    with col_mus_2:
+        music_upload = st.file_uploader("Upload Música (MP3)", type=["mp3"])
+        if music_upload:
+            st.audio(music_upload)
+            if st.button("💾 Salvar como Música Padrão"):
+                if save_music_file(music_upload.getvalue()):
+                    st.success("Música padrão salva!")
+                    st.rerun()
+
+    music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, load_config().get("music_vol", 0.15))
+
     if st.button("Renderizar Vídeo Completo (Unir tudo)", type="primary"):
-        # ... (Lógica de renderização FFmpeg inalterada) ...
-        # [Código de Renderização Aqui]
-        # ...
+        with st.status("Renderizando vídeo com efeitos...", expanded=True) as status:
+            try:
+                blocos_relevantes = [b for b in blocos_config if b["id"] != "thumbnail"]
+                if not shutil_which("ffmpeg"):
+                    status.update(label="FFmpeg não encontrado!", state="error")
+                    st.stop()
+                
+                font_path = resolve_font_path(font_choice, uploaded_font_file)
+                if usar_overlay and not font_path:
+                    st.warning("⚠️ Fonte não encontrada. O overlay pode falhar.")
+                
+                temp_dir = tempfile.mkdtemp()
+                clip_files = []
+                
+                meta = st.session_state.get("meta_dados", {})
+                txt_dt = meta.get("data", "")
+                txt_ref = meta.get("ref", "")
+                
+                map_titulos = {"hook": "EVANGELHO", "leitura": "EVANGELHO", "reflexão": "REFLEXÃO", "aplicação": "APLICAÇÃO", "oração": "ORAÇÃO"}
+                
+                res_params = get_resolution_params(resolucao_escolhida)
+                s_out = f"{res_params['w']}x{res_params['h']}"
+                
+                sets = st.session_state["overlay_settings"]
+                speed_val = sets["effect_speed"] * 0.0005 
+                
+                if sets["effect_type"] == "Zoom In (Ken Burns)":
+                    zoom_expr = f"z='min(zoom+{speed_val},1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                elif sets["effect_type"] == "Zoom Out":
+                    zoom_expr = f"z='max(1,1.5-{speed_val}*on)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                elif sets["effect_type"] == "Panorâmica Esquerda":
+                    zoom_expr = f"z=1.2:x='min(x+{speed_val}*100,iw-iw/zoom)':y='(ih-ih/zoom)/2'"
+                elif sets["effect_type"] == "Panorâmica Direita":
+                    zoom_expr = f"z=1.2:x='max(0,x-{speed_val}*100)':y='(ih-ih/zoom)/2'"
+                else: 
+                    zoom_expr = "z=1:x=0:y=0" 
 
-        # Mock de sucesso (remova na versão final)
-        # st.session_state["video_final_bytes"] = BytesIO(b'video_mock_data')
+                for b in blocos_relevantes:
+                    bid = b["id"]
+                    img_bio = st.session_state["generated_images_blocks"].get(bid)
+                    audio_bio = st.session_state["generated_audios_blocks"].get(bid)
+                    if not img_bio or not audio_bio: continue
+                        
+                    st.write(f"Processando clipe: {bid}...")
+                    img_path = os.path.join(temp_dir, f"{bid}.png")
+                    audio_path = os.path.join(temp_dir, f"{bid}.mp3")
+                    clip_path = os.path.join(temp_dir, f"{bid}.mp4")
+                    
+                    img_bio.seek(0); audio_bio.seek(0)
+                    with open(img_path, "wb") as f: f.write(img_bio.read())
+                    with open(audio_path, "wb") as f: f.write(audio_bio.read())
+                    
+                    dur = get_audio_duration_seconds(audio_path) or 5.0
+                    frames = int(dur * 25)
 
-        if st.session_state.get("video_final_bytes"):
-            st.success("Vídeo pronto!")
-            st.video(st.session_state["video_final_bytes"])
+                    vf_filters = []
+                    if sets["effect_type"] != "Estático (Sem movimento)":
+                        vf_filters.append(f"zoompan={zoom_expr}:d={frames}:s={s_out}")
+                    else:
+                        vf_filters.append(f"scale={s_out}")
+
+                    if sets["trans_type"] == "Fade (Escurecer)":
+                        td = sets["trans_dur"]
+                        vf_filters.append(f"fade=t=in:st=0:d={td},fade=t=out:st={dur-td}:d={td}")
+
+                    if usar_overlay:
+                        titulo_atual = map_titulos.get(bid, "EVANGELHO")
+                        f1_path = resolve_font_path(sets["line1_font"], uploaded_font_file)
+                        f2_path = resolve_font_path(sets["line2_font"], uploaded_font_file)
+                        f3_path = resolve_font_path(sets["line3_font"], uploaded_font_file)
+                        
+                        alp1 = get_text_alpha_expr(sets.get("line1_anim", "Estático"), dur)
+                        alp2 = get_text_alpha_expr(sets.get("line2_anim", "Estático"), dur)
+                        alp3 = get_text_alpha_expr(sets.get("line3_anim", "Estático"), dur)
+
+                        clean_t1 = sanitize_text_for_ffmpeg(titulo_atual)
+                        clean_t2 = sanitize_text_for_ffmpeg(txt_dt)
+                        clean_t3 = sanitize_text_for_ffmpeg(txt_ref)
+
+                        if f1_path: vf_filters.append(f"drawtext=fontfile='{f1_path}':text='{clean_t1}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp1}")
+                        if f2_path: vf_filters.append(f"drawtext=fontfile='{f2_path}':text='{clean_t2}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp2}")
+                        if f3_path: vf_filters.append(f"drawtext=fontfile='{f3_path}':text='{clean_t3}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp3}")
+
+                    filter_complex = ",".join(vf_filters)
+                    
+                    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path, "-vf", filter_complex, "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip_path]
+                    run_cmd(cmd)
+                    clip_files.append(clip_path)
+                
+                if clip_files:
+                    concat_list = os.path.join(temp_dir, "list.txt")
+                    with open(concat_list, "w") as f:
+                        for p in clip_files: f.write(f"file '{p}'\n")
+                    
+                    temp_video = os.path.join(temp_dir, "temp_video.mp4")
+                    run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", temp_video])
+                    
+                    final_path = os.path.join(temp_dir, "final.mp4")
+                    
+                    # Lógica de Música: 1. Uploaded, 2. Saved Default, 3. None
+                    music_source_path = None
+                    
+                    if music_upload:
+                        music_source_path = os.path.join(temp_dir, "bg.mp3")
+                        with open(music_source_path, "wb") as f: f.write(music_upload.getvalue())
+                    elif saved_music_exists:
+                        music_source_path = SAVED_MUSIC_FILE
+                        
+                    if music_source_path:
+                        cmd_mix = [
+                            "ffmpeg", "-y",
+                            "-i", temp_video,
+                            "-stream_loop", "-1", "-i", music_source_path,
+                            "-filter_complex", f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]",
+                            "-map", "0:v", "-map", "[a]",
+                            "-c:v", "copy", "-c:a", "aac", "-shortest",
+                            final_path
+                        ]
+                        run_cmd(cmd_mix)
+                    else:
+                        os.rename(temp_video, final_path)
+
+                    with open(final_path, "rb") as f:
+                        st.session_state["video_final_bytes"] = BytesIO(f.read())
+                    status.update(label="Vídeo Renderizado com Sucesso!", state="complete")
+                else:
+                    status.update(label="Nenhum clipe válido gerado.", state="error")
+            except Exception as e:
+                status.update(label="Erro na renderização", state="error")
+                st.error(f"Detalhes: {e}")
+                st.error(traceback.format_exc())
+
+    if st.session_state.get("video_final_bytes"):
+        st.success("Vídeo pronto!")
+        st.video(st.session_state["video_final_bytes"])
             
     # --- NOVO FLUXO DE FINALIZAÇÃO (PÓS-RENDERIZAÇÃO) ---
     if st.session_state.get("video_final_bytes") and st.session_state.get("job_id_ativo"):
@@ -645,4 +1052,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v20.2 - Montagem de Drive Integrada")
+st.caption("Studio Jhonata v20.3 - Import Refinement")
