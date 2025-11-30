@@ -7,3 +7,5 @@ imageio-ffmpeg
 groq
 edge-tts
 asyncio
+google-cloud-texttospeech
+google-auth
