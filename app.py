@@ -1,4 +1,4 @@
-# app.py — Studio Jhonata (COMPLETO v19.2 - Google TTS + Imagen Fix)
+# app.py — Studio Jhonata (COMPLETO v19.3 - Google TTS/Imagen Fixes)
 # Features: Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos
 import os
 import re
@@ -23,6 +23,7 @@ try:
     from google.cloud import texttospeech
     from google.oauth2 import service_account
 except ImportError:
+    # Estas variáveis serão None se a biblioteca não estiver instalada
     texttospeech = None
     service_account = None
 # Fim import TTS
@@ -432,7 +433,11 @@ def _gerar_audio_gtts_impl(texto: str) -> Optional[BytesIO]:
 def gerar_audio_google_tts(texto: str) -> Optional[BytesIO]:
     """Gera áudio usando Google Cloud Text-to-Speech (necessita credenciais)"""
     if not texttospeech or not service_account:
-        raise RuntimeError("Biblioteca google-cloud-texttospeech não instalada ou dependência faltante.")
+        # Lança um erro claro para ser capturado no despachante
+        raise RuntimeError(
+            "TTS Premium indisponível. Por favor, adicione 'google-cloud-texttospeech' e 'google-auth' ao requirements.txt "
+            "e configure 'GOOGLE_CREDENTIALS_JSON' em Secrets."
+        )
 
     # 1. Tentar configurar as credenciais a partir do segredo do Streamlit
     credentials = None
@@ -448,7 +453,8 @@ def gerar_audio_google_tts(texto: str) -> Optional[BytesIO]:
         client = texttospeech.TextToSpeechClient(credentials=credentials)
         
     except Exception as e:
-        st.error(f"❌ Erro ao inicializar Google TTS Client. Verifique 'GOOGLE_CREDENTIALS_JSON' em Secrets: {e}")
+        # Captura erros durante a inicialização do cliente/credenciais
+        st.error(f"❌ Erro de inicialização do Google TTS Client. Verifique GOOGLE_CREDENTIALS_JSON: {e}")
         raise RuntimeError(f"Erro de credenciais/inicialização do Google TTS: {e}")
 
     # 2. Configurar a requisição
@@ -479,7 +485,12 @@ def despachar_geracao_audio(texto: str, motor: str) -> Optional[BytesIO]:
         return None
         
     if motor == "Google Cloud TTS (Premium)":
-        return gerar_audio_google_tts(texto)
+        try:
+            return gerar_audio_google_tts(texto)
+        except RuntimeError as e:
+            # Captura a falha do TTS Premium e cai para o padrão
+            st.warning(f"Falha no TTS Premium: {e}. Usando gTTS (Padrão) como fallback.")
+            return _gerar_audio_gtts_impl(texto)
     else: # "gTTS (Padrão)"
         return _gerar_audio_gtts_impl(texto)
 
@@ -518,28 +529,51 @@ def gerar_imagem_pollinations_turbo(prompt: str, width: int, height: int) -> Byt
     return bio
 
 def gerar_imagem_google_imagen(prompt: str, ratio: str) -> BytesIO:
+    # Obtém a chave de API
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not gem_key:
         raise RuntimeError("GEMINI_API_KEY não encontrada.")
     
-    # CORREÇÃO: Atualizando o modelo de imagen-3.0 para imagen-4.0 para resolver o erro 404.
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key={gem_key}"
+    # Usa o modelo mais recente
+    model_name = "imagen-4.0-generate-001"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:predict?key={gem_key}"
+    
+    # Sanitiza o prompt para evitar Bad Request por caracteres especiais
+    prompt_clean = prompt.replace("\n", " ").strip()
     
     headers = {"Content-Type": "application/json"}
     payload = {
-        "instances": [{"prompt": prompt}],
+        "instances": [{"prompt": prompt_clean}],
         "parameters": {"sampleCount": 1, "aspectRatio": ratio}
     }
-    r = requests.post(url, headers=headers, json=payload, timeout=45)
-    r.raise_for_status()
-    data = r.json()
-    if "predictions" in data and len(data["predictions"]) > 0:
-        b64 = data["predictions"][0]["bytesBase64Encoded"]
-        bio = BytesIO(base64.b64decode(b64))
-        bio.seek(0)
-        return bio
-    else:
-        raise RuntimeError("Resposta inválida do Google Imagen.")
+    
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=45)
+        r.raise_for_status() # Lança HTTPError para 4xx/5xx
+        
+        data = r.json()
+        
+        if "predictions" in data and len(data["predictions"]) > 0:
+            b64 = data["predictions"][0]["bytesBase64Encoded"]
+            bio = BytesIO(base64.b64decode(b64))
+            bio.seek(0)
+            return bio
+        else:
+            raise RuntimeError(f"Resposta inválida ou vazia do Google Imagen. JSON: {data}")
+
+    except requests.exceptions.HTTPError as e:
+        # Captura erros 400/404/500
+        error_details = ""
+        try:
+            error_json = r.json()
+            error_details = error_json.get('error', {}).get('message', str(e))
+        except:
+            error_details = str(e)
+
+        raise RuntimeError(f"Falha na API Google Imagen (HTTP {r.status_code}). Detalhes: {error_details}")
+    except Exception as e:
+        raise RuntimeError(f"Erro desconhecido na geração do Google Imagen: {e}")
+
 
 def despachar_geracao_imagem(prompt: str, motor: str, res_choice: str) -> BytesIO:
     params = get_resolution_params(res_choice)
@@ -660,7 +694,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 🗣️ Motor TTS")
 tts_motor_options = ["Google Cloud TTS (Premium)", "gTTS (Padrão)"]
 if not texttospeech:
-    # Remove a opção premium se a biblioteca não estiver disponível
+    # Se a biblioteca não estiver instalada, só a opção padrão aparece
     tts_motor_options = ["gTTS (Padrão)"]
     st.sidebar.warning("⚠️ Instale 'google-cloud-texttospeech' e configure 'GOOGLE_CREDENTIALS_JSON' em Secrets para usar a opção Premium.")
 tts_motor_escolhido = st.sidebar.selectbox("Motor de Voz", tts_motor_options, index=0)
@@ -1163,4 +1197,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v19.2 - Música Padrão + Google TTS + Imagen Fix")
+st.caption("Studio Jhonata v19.3 - Fixes Aplicados")
