@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (VERSÃO 19.0 RESTAURADA)
-# Features: Roteiro Estável, Música Persistente, Geração em Lote, Transições, Overlay, Efeitos
+# app.py — Studio Jhonata (COMPLETO v19.0)
+# Features: Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos
 import os
 import re
 import json
@@ -29,13 +29,13 @@ SAVED_MUSIC_FILE = "saved_bg_music.mp3"
 # Page config
 # =========================
 st.set_page_config(
-    page_title="Gerador de Evangelho",
+    page_title="Studio Jhonata",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # =========================
-# Persistência de Configurações
+# Persistência de Configurações e Arquivos
 # =========================
 def load_config():
     """Carrega configurações do disco ou retorna padrão"""
@@ -313,7 +313,7 @@ def obter_evangelho_com_fallback(data_str: str):
     return None
 
 # =========================
-# Roteiro + Prompts (LÓGICA ORIGINAL V19)
+# Roteiro + Prompts
 # =========================
 def extrair_bloco(rotulo: str, texto: str) -> str:
     padrao = rf"{rotulo}:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:\s*|\nPROMPT_|$)"
@@ -578,7 +578,7 @@ def sanitize_text_for_ffmpeg(text: str) -> str:
 # =========================
 # Interface principal
 # =========================
-st.markdown("<h3 style='text-align: center;'>Gerador de Evangelho</h3>", unsafe_allow_html=True)
+st.title("✨ Studio Jhonata - Automação Litúrgica")
 st.markdown("---")
 
 # ---- SIDEBAR CONFIG ----
@@ -588,9 +588,7 @@ motor_escolhido = st.sidebar.selectbox("🎨 Motor de Imagem", ["Pollinations Fl
 resolucao_escolhida = st.sidebar.selectbox("📏 Resolução do Vídeo", ["9:16 (Vertical/Stories)", "16:9 (Horizontal/YouTube)", "1:1 (Quadrado/Feed)"], index=0)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🅰️ Fonte Global (Upload)")
-# Seletor de fonte global re-adicionado para consistência, mas usado principalmente para upload
-font_choice = st.sidebar.selectbox("Estilo da Fonte Padrão", ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"], index=0)
+st.sidebar.markdown("### 🅰️ Upload de Fonte (Global)")
 uploaded_font_file = st.sidebar.file_uploader("Arquivo .ttf (para opção 'Upload Personalizada')", type=["ttf"])
 
 st.sidebar.info(f"Modo: {motor_escolhido}\nFormato: {resolucao_escolhida}")
@@ -913,12 +911,33 @@ with tab4:
     st.header("🎬 Finalização")
     usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay Personalizado)", value=True)
     
-    st.subheader("🎵 Música")
-    has_saved = os.path.exists(SAVED_MUSIC_FILE)
-    if has_saved: st.success("Música Padrão Ativa"); st.audio(SAVED_MUSIC_FILE)
-    mus_up = st.file_uploader("Upload Música", type=["mp3"])
-    if mus_up and st.button("Salvar como Padrão"): save_music_file(mus_up.getvalue()); st.rerun()
-    mus_vol = st.slider("Volume Música", 0.0, 1.0, load_config().get("music_vol", 0.15))
+    st.subheader("🎵 Música de Fundo (Opcional)")
+    
+    # Check if saved music exists
+    saved_music_exists = os.path.exists(SAVED_MUSIC_FILE)
+    
+    col_mus_1, col_mus_2 = st.columns(2)
+    
+    with col_mus_1:
+        if saved_music_exists:
+            st.success("💾 Música Padrão Ativa")
+            st.audio(SAVED_MUSIC_FILE)
+            if st.button("❌ Remover Música Padrão"):
+                if delete_music_file():
+                    st.rerun()
+        else:
+            st.info("Nenhuma música padrão salva.")
+
+    with col_mus_2:
+        music_upload = st.file_uploader("Upload Música (MP3)", type=["mp3"])
+        if music_upload:
+            st.audio(music_upload)
+            if st.button("💾 Salvar como Música Padrão"):
+                if save_music_file(music_upload.getvalue()):
+                    st.success("Música padrão salva!")
+                    st.rerun()
+
+    music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, load_config().get("music_vol", 0.15))
 
     if st.button("Renderizar Vídeo Completo (Unir tudo)", type="primary"):
         with st.status("Renderizando vídeo com efeitos...", expanded=True) as status:
@@ -947,7 +966,6 @@ with tab4:
                 sets = st.session_state["overlay_settings"]
                 speed_val = sets["effect_speed"] * 0.0005 
                 
-                # Configuração Efeitos de Movimento
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
                     zoom_expr = f"z='min(zoom+{speed_val},1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Zoom Out":
@@ -993,7 +1011,6 @@ with tab4:
                         f2_path = resolve_font_path(sets["line2_font"], uploaded_font_file)
                         f3_path = resolve_font_path(sets["line3_font"], uploaded_font_file)
                         
-                        # Anim alpha
                         alp1 = get_text_alpha_expr(sets.get("line1_anim", "Estático"), dur)
                         alp2 = get_text_alpha_expr(sets.get("line2_anim", "Estático"), dur)
                         alp3 = get_text_alpha_expr(sets.get("line3_anim", "Estático"), dur)
@@ -1025,10 +1042,10 @@ with tab4:
                     # Lógica de Música: 1. Uploaded, 2. Saved Default, 3. None
                     music_source_path = None
                     
-                    if mus_up:
+                    if music_upload:
                         music_source_path = os.path.join(temp_dir, "bg.mp3")
-                        with open(music_source_path, "wb") as f: f.write(mus_up.getvalue())
-                    elif has_saved:
+                        with open(music_source_path, "wb") as f: f.write(music_upload.getvalue())
+                    elif saved_music_exists:
                         music_source_path = SAVED_MUSIC_FILE
                         
                     if music_source_path:
@@ -1036,7 +1053,7 @@ with tab4:
                             "ffmpeg", "-y",
                             "-i", temp_video,
                             "-stream_loop", "-1", "-i", music_source_path,
-                            "-filter_complex", f"[1:a]volume={mus_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]",
+                            "-filter_complex", f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]",
                             "-map", "0:v", "-map", "[a]",
                             "-c:v", "copy", "-c:a", "aac", "-shortest",
                             final_path
@@ -1065,4 +1082,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v19.5 - Estável")
+st.caption("Studio Jhonata v19.0 - Música Padrão")
