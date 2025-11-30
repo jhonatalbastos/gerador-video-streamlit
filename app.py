@@ -1,6 +1,7 @@
-# app.py — Studio Jhonata (COMPLETO v19.2 - EdgeTTS Fix Threading)
-# Features: EdgeTTS (Fixed), Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos
+# app.py — Studio Jhonata (COMPLETO v19.3 - EdgeTTS Subprocess Fix)
+# Features: EdgeTTS (Subprocess), Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos
 import os
+import sys
 import re
 import json
 import time
@@ -9,15 +10,18 @@ import traceback
 import subprocess
 import urllib.parse
 import random
-import asyncio
-import threading
 from io import BytesIO
 from datetime import date
 from typing import List, Optional, Tuple, Dict
 import base64
 
 import requests
-import edge_tts  # Requer pip install edge-tts
+# edge_tts será usado via subprocesso, mas mantemos import para verificação se instalado
+try:
+    import edge_tts
+except ImportError:
+    pass
+
 from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
 
@@ -422,56 +426,80 @@ def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
     except Exception as e:
         raise RuntimeError(f"Erro gTTS: {e}")
 
-# --- EdgeTTS Integration (Thread-Safe Fix) ---
-
-async def _edge_tts_coroutine(text, voice, output_file):
-    """Corrotina interna para salvar o áudio"""
-    communicate = edge_tts.Communicate(text, voice)
-    await communicate.save(output_file)
+# --- EdgeTTS Integration (Subprocess Isolation) ---
 
 def gerar_audio_edge(texto: str, voz: str) -> Optional[BytesIO]:
-    """Gera áudio usando EdgeTTS em uma thread separada para evitar conflito com loop do Streamlit"""
+    """
+    Gera áudio usando EdgeTTS rodando um script Python em subprocesso.
+    Isso evita conflitos de 'event loop' entre o Streamlit e o EdgeTTS.
+    """
     if not texto or not texto.strip(): 
         return None
     
+    # Arquivo temporário para o resultado
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-        tmp_path = tmp.name
+        output_path = tmp.name
+
+    # Código do worker script
+    worker_code = """
+import sys
+import asyncio
+import edge_tts
+
+async def main():
+    try:
+        text = sys.argv[1]
+        voice = sys.argv[2]
+        output_file = sys.argv[3]
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(output_file)
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.run(main())
+"""
     
-    exception_holder = []
-
-    def run_in_thread():
-        # Cria um novo loop de eventos exclusivo para esta thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(_edge_tts_coroutine(texto, voz, tmp_path))
-        except Exception as e:
-            exception_holder.append(e)
-        finally:
-            loop.close()
-
-    # Cria e inicia a thread
-    t = threading.Thread(target=run_in_thread)
-    t.start()
-    t.join()  # Espera terminar
-
-    if exception_holder:
-        # Se houve erro na thread, levanta aqui
-        if os.path.exists(tmp_path): os.remove(tmp_path)
-        raise RuntimeError(f"Erro na thread EdgeTTS: {exception_holder[0]}")
+    # Criar arquivo .py temporário
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".py", mode="w") as py_file:
+        py_file.write(worker_code)
+        py_script_path = py_file.name
 
     try:
-        if os.path.getsize(tmp_path) == 0:
-            raise RuntimeError("EdgeTTS gerou arquivo vazio (No Audio Received). Verifique conexão ou texto.")
+        # Usa sys.executable para garantir que usamos o mesmo python environment
+        # Passa argumentos via CLI
+        cmd = [sys.executable, py_script_path, texto, voz, output_path]
+        
+        # Executa
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        
+        # Verifica erros
+        if res.returncode != 0:
+            raise RuntimeError(f"Falha no Subprocesso EdgeTTS: {res.stderr}")
             
-        with open(tmp_path, "rb") as f:
+        # Verifica se o arquivo foi criado e tem conteúdo
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raise RuntimeError("O arquivo de áudio foi criado vazio ou não existe.")
+            
+        # Lê o resultado
+        with open(output_path, "rb") as f:
             data = f.read()
+            
         return BytesIO(data)
+
     except Exception as e:
-        raise RuntimeError(f"Erro ao ler arquivo EdgeTTS: {e}")
+        raise RuntimeError(f"Erro EdgeTTS (Isolation): {e}")
     finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        # Limpeza
+        if os.path.exists(py_script_path):
+            try: os.remove(py_script_path)
+            except: pass
+        if os.path.exists(output_path):
+            try: os.remove(output_path)
+            except: pass
 
 def despachar_geracao_audio(texto: str, motor: str, voz_edge: str = "") -> Optional[BytesIO]:
     """Seleciona qual motor de áudio usar"""
@@ -1168,4 +1196,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v19.2 - EdgeTTS Fix Threading")
+st.caption("Studio Jhonata v19.3 - EdgeTTS Subprocess Fix")
