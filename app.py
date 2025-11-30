@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v20.4 - URL do GAS Configurada)
-# Features: Modo Montagem Drive (PULL), Fallback gTTS/Pollinations, Persistência, Edição de Vídeo.
+# app.py — Studio Jhonata (COMPLETO v21.0 - Disparo de Job no GAS)
+# Features: Nova função para disparar geração de Job no Google Apps Script.
 import os
 import re
 import json
@@ -33,7 +33,6 @@ SAVED_MUSIC_FILE = "saved_bg_music.mp3"
 # VARIÁVEIS DO NOVO FLUXO 
 # =========================
 # URL do endpoint do Google Apps Script que gerencia o Drive (POST/PULL)
-# SUBSTITUA PELO SEU URL REAL do Apps Script após a publicação
 GAS_API_URL = "https://script.google.com/macros/s/AKfycbwA9SzkkbtlZBL5r5FU-UZG9-d8utaG554hgIQTTBXwBuypszl8W2MbepvoEGYja1_d9g/exec" 
 
 # =========================
@@ -387,15 +386,39 @@ def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
 # FUNÇÕES DE COMUNICAÇÃO COM APPS SCRIPT/DRIVE (NOVAS)
 # =========================
 
+def dispatch_new_job_to_gas(date_str: str) -> Optional[Dict]:
+    """
+    Dispara a criação de um novo Job de roteiro, imagem e áudio no Apps Script.
+    """
+    st.info(f"🌐 Disparando Job de Geração para {date_str} no Apps Script...")
+    
+    payload = {"date_str": date_str}
+    
+    try:
+        response = requests.post(
+            f"{GAS_API_URL}?action=generate_new_job",
+            json=payload,
+            timeout=120 # O tempo limite é maior porque o GAS irá executar IA e geração de mídia
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get("status") == "success":
+            st.success(f"Job de Geração iniciado com sucesso! ID: {data.get('job_id')}")
+            return data
+        else:
+            st.error(f"Erro ao disparar Job de Geração: {data.get('message', 'Resposta inválida do GAS.')}")
+            return None
+    except Exception as e:
+        st.error(f"Erro de comunicação/timeout com o Apps Script: {e}")
+        return None
+
 def fetch_job_metadata(job_id: str) -> Optional[Dict]:
     """
     Solicita ao Apps Script os metadados do Job ID e lista de URLs de arquivos.
     """
     st.info(f"🌐 Solicitando metadados do Job ID: {job_id}...")
-    if GAS_API_URL == "https://script.google.com/macros/s/AKfycbwA9SzkkbtlZBL5r5FU-UZG9-d8utaG554hgIQTTBXwBuypszl8W2MbepvoEGYja1_d9g/exec":
-        st.error("ERRO: Certifique-se de que a pasta 'StudioJhonata_Jobs' existe no seu Drive e que o Job ID é válido.")
-        # Retorna um erro simulado se a pasta não for válida, pois não podemos realmente testar o Drive aqui.
-        # Mas para o código continuar, vamos tentar a chamada real.
+    # NOTE: O erro de configuração será tratado pela chamada ao GAS
 
     try:
         response = requests.post(
@@ -445,10 +468,7 @@ def finalize_job_on_drive(job_id: str, video_bytes: BytesIO, metadata_descriptio
     Envia o vídeo final e os metadados para o Apps Script para upload e limpeza.
     """
     st.info(f"⬆️ Finalizando Job {job_id} e limpando arquivos...")
-    if GAS_API_URL == "https://script.google.com/macros/s/AKfycbwA9SzkkbtlZBL5r5FU-UZG9-d8utaG554hgIQTTBXwBuypszl8W2MbepvoEGYja1_d9g/exec":
-        st.error("ERRO: URL do Apps Script não configurada corretamente. Verifique se o endereço está no GAS_API_URL.")
-        return False
-
+    
     try:
         # NOTE: requests com 'files' não funcionam bem no Streamlit Cloud.
         # Estamos assumindo que o ambiente do Streamlit Cloud suporta esta chamada.
@@ -645,42 +665,65 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["📖 Gerar Roteiro", "🎨 Personagens", "🎚️ Overlay & Efeitos", "🎥 Fábrica Vídeo (Editor)", "📊 Histórico"]
 )
 
-# --------- TAB 1: ROTEIRO (Mantida para modo manual/fallback) ----------
+# --------- TAB 1: ROTEIRO (Painel de Controle) ----------
 with tab1:
-    st.header("🚀 Gerador de Roteiro")
-    # ... (Conteúdo da Tab 1 permanece inalterado) ...
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        data_selecionada = st.date_input("📅 Data da liturgia:", value=date.today(), min_value=date(2023, 1, 1))
-    with col2:
-        st.info("Status: ✅ pronto para gerar")
+    st.header("🚀 Painel de Controle de Geração")
+    
+    col_date, col_manual, col_auto = st.columns([1, 1, 1])
 
-    if st.button("🚀 Gerar Roteiro Completo", type="primary"):
+    with col_date:
+        data_selecionada = st.date_input("📅 Data da Liturgia:", value=date.today(), min_value=date(2023, 1, 1), key="data_tab1")
         data_str = data_selecionada.strftime("%Y-%m-%d")
-        data_formatada_display = data_selecionada.strftime("%d.%m.%Y") 
 
-        with st.status("📝 Gerando roteiro...", expanded=True) as status:
-            liturgia = obter_evangelho_com_fallback(data_str)
-            if not liturgia: status.update(label="Falha ao buscar evangelho", state="error"); st.stop()
-            ref_curta = formatar_referencia_curta(liturgia.get("ref_biblica"))
-            st.session_state["meta_dados"] = {"data": data_formatada_display, "ref": ref_curta or "Evangelho do Dia"}
-            personagens_detectados = analisar_personagens_groq(liturgia["texto"], st.session_state.personagens_biblicos)
-            roteiro = gerar_roteiro_com_prompts_groq(liturgia["texto"], liturgia["referencia_liturgica"], {**st.session_state.personagens_biblicos, **personagens_detectados})
+    st.markdown("---")
 
-            if roteiro:
-                status.update(label="Roteiro gerado com sucesso!", state="complete", expanded=False)
-            else:
-                status.update(label="Erro ao gerar roteiro", state="error"); st.stop()
+    # --- Opção 1: Disparo Automático (Apps Script) ---
+    with col_auto:
+        st.subheader("Disparo Automático (GAS)")
+        st.info("O Apps Script gera Roteiro, Imagem e Áudio no Drive.")
+        if st.button("✨ Disparar Geração de Job (Cloud)", type="primary", key="btn_dispatch_gas"):
+            with st.status("Iniciando Job no Apps Script...", expanded=True):
+                gas_response = dispatch_new_job_to_gas(data_str)
+                if gas_response and gas_response.get("job_id"):
+                    st.session_state["job_id_ativo"] = gas_response["job_id"]
+                    st.success(f"Job {gas_response['job_id']} iniciado! Carregue na aba 'Fábrica Vídeo'.")
+                else:
+                    st.error("Falha ao iniciar Job no Apps Script. Verifique logs do GAS.")
+            st.rerun()
 
-        leitura_montada = montar_leitura_com_formula(liturgia["texto"], liturgia.get("ref_biblica"))
-        st.session_state["roteiro_gerado"] = roteiro
-        st.session_state["leitura_montada"] = leitura_montada
-        st.session_state["job_id_ativo"] = None # Reseta o Job ID ao gerar manual
-        st.rerun()
+    # --- Opção 2: Geração Manual (Fallback) ---
+    with col_manual:
+        st.subheader("Geração Manual (Fallback)")
+        st.info("O Streamlit gera apenas o roteiro (Groq).")
+        if st.button("📝 Gerar Roteiro Apenas (Local)", key="btn_generate_local"):
+            data_formatada_display = data_selecionada.strftime("%d.%m.%Y") 
 
+            with st.status("📝 Gerando roteiro no Groq...", expanded=True) as status:
+                liturgia = obter_evangelho_com_fallback(data_str)
+                if not liturgia: status.update(label="Falha ao buscar evangelho", state="error"); st.stop()
+                ref_curta = formatar_referencia_curta(liturgia.get("ref_biblica"))
+                st.session_state["meta_dados"] = {"data": data_formatada_display, "ref": ref_curta or "Evangelho do Dia"}
+                personagens_detectados = analisar_personagens_groq(liturgia["texto"], st.session_state.personagens_biblicos)
+                roteiro = gerar_roteiro_com_prompts_groq(liturgia["texto"], liturgia["referencia_liturgica"], {**st.session_state.personagens_biblicos, **personagens_detectados})
+
+                if roteiro:
+                    status.update(label="Roteiro gerado com sucesso!", state="complete", expanded=False)
+                else:
+                    status.update(label="Erro ao gerar roteiro", state="error"); st.stop()
+
+            leitura_montada = montar_leitura_com_formula(liturgia["texto"], liturgia.get("ref_biblica"))
+            st.session_state["roteiro_gerado"] = roteiro
+            st.session_state["leitura_montada"] = leitura_montada
+            st.session_state["job_id_ativo"] = None # Reseta o Job ID ao gerar manual
+            st.rerun()
+
+    # Exibição do Roteiro (se houver)
     if st.session_state.get("roteiro_gerado"):
-        roteiro = st.session_state["roteiro_gerado"]
         st.markdown("---")
+        st.subheader("Roteiro Gerado (Conteúdo Principal)")
+        roteiro = st.session_state["roteiro_gerado"]
+        
+        # ... (Exibição detalhada do roteiro) ...
         col_esq, col_dir = st.columns(2)
         with col_esq:
             st.markdown("### 🎣 HOOK"); st.markdown(roteiro.get("hook", "")); st.code(roteiro.get("prompt_hook", ""), language="text")
@@ -690,9 +733,14 @@ with tab1:
             st.markdown("### 🌟 APLICAÇÃO"); st.markdown(roteiro.get("aplicação", "")); st.code(roteiro.get("prompt_aplicacao", ""), language="text")
         st.markdown("### 🙏 ORAÇÃO"); st.markdown(roteiro.get("oração", "")); st.code(roteiro.get("prompt_oração", ""), language="text")
         st.markdown("### 🖼️ THUMBNAIL"); st.code(roteiro.get("prompt_geral", ""), language="text")
-        st.success("Roteiro gerado! Vá para 'Overlay & Efeitos' para ajustar o visual.")
+        
+        if st.session_state.get("job_id_ativo"):
+            st.success(f"Roteiro carregado do Job Cloud: **{st.session_state['job_id_ativo']}**. Vá para 'Fábrica Vídeo' para carregar a mídia.")
+        else:
+            st.success("Roteiro gerado localmente. Vá para 'Fábrica Vídeo' para gerar a mídia manualmente.")
 
-# --------- TAB 2 & 3 (inalteradas) ...
+
+# --------- TAB 2, 3 (inalteradas) ...
 
 # --------- TAB 4: FÁBRICA DE VÍDEO ----------
 with tab4:
@@ -700,7 +748,11 @@ with tab4:
     
     # === NOVO BLOCO: MONTAGEM REMOTA ===
     st.subheader("🌐 Modo 1: Montagem Automática (Google Drive)")
-    job_id_input = st.text_input("Insira o JOB ID (Nome da Pasta do Drive):", key="job_id_input", help="O ID da pasta criada pelo seu script no Apps Script.")
+    
+    # Pré-preenche se o Job foi disparado na Tab 1
+    default_job_id = st.session_state.get("job_id_ativo") if st.session_state.get("job_id_ativo") and not st.session_state.get("roteiro_gerado") else ""
+    
+    job_id_input = st.text_input("Insira o JOB ID (Nome da Pasta do Drive):", value=default_job_id, key="job_id_input", help="O ID da pasta criada pelo seu script no Apps Script.")
     
     if st.button("📥 Carregar Job ID do Drive", type="primary"):
         if job_id_input:
@@ -740,7 +792,8 @@ with tab4:
         st.warning("⚠️ Gere o roteiro na Aba 1 ou Carregue um Job ID acima.")
         st.stop()
     
-    # ... [O resto da TAB 4 (Visualização de Cenas, Geração em Lote) permanece inalterado] ...
+    # ... (O resto da TAB 4 permanece inalterado) ...
+    # Lógica de visualização, geração manual (fallback) e renderização...
 
     roteiro = st.session_state["roteiro_gerado"]
     blocos_config = [
@@ -1055,4 +1108,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v20.4 - URL do GAS Configurada")
+st.caption("Studio Jhonata v21.0 - Disparo de Job no GAS")
