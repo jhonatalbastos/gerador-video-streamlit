@@ -1,4 +1,4 @@
-# app.py — Studio Jhonata (COMPLETO v19.0)
+# app.py — Studio Jhonata (COMPLETO v19.1 - Google TTS)
 # Features: Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos
 import os
 import re
@@ -17,6 +17,15 @@ import base64
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
+
+# Import para Google Cloud TTS (tentativa de importação)
+try:
+    from google.cloud import texttospeech
+    from google.oauth2 import service_account
+except ImportError:
+    texttospeech = None
+    service_account = None
+# Fim import TTS
 
 # Force ffmpeg path for imageio if needed (Streamlit Cloud)
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
@@ -406,7 +415,8 @@ def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
 # FUNÇÕES DE ÁUDIO & VÍDEO
 # =========================
 
-def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
+def _gerar_audio_gtts_impl(texto: str) -> Optional[BytesIO]:
+    """Gera áudio usando gTTS (implantação padrão)"""
     if not texto or not texto.strip():
         return None
     mp3_fp = BytesIO()
@@ -418,6 +428,60 @@ def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
         return mp3_fp
     except Exception as e:
         raise RuntimeError(f"Erro gTTS: {e}")
+
+def gerar_audio_google_tts(texto: str) -> Optional[BytesIO]:
+    """Gera áudio usando Google Cloud Text-to-Speech (necessita credenciais)"""
+    if not texttospeech or not service_account:
+        raise RuntimeError("Biblioteca google-cloud-texttospeech não instalada ou dependência faltante.")
+
+    # 1. Tentar configurar as credenciais a partir do segredo do Streamlit
+    credentials = None
+    try:
+        credentials_info = st.secrets.get("GOOGLE_CREDENTIALS_JSON")
+        if credentials_info:
+            # Assumir que o segredo contém o JSON da conta de serviço
+            if isinstance(credentials_info, str):
+                credentials_info = json.loads(credentials_info)
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+        
+        # Cliente
+        client = texttospeech.TextToSpeechClient(credentials=credentials)
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao inicializar Google TTS Client. Verifique 'GOOGLE_CREDENTIALS_JSON' em Secrets: {e}")
+        raise RuntimeError(f"Erro de credenciais/inicialização do Google TTS: {e}")
+
+    # 2. Configurar a requisição
+    synthesis_input = texttospeech.SynthesisInput(text=texto)
+    
+    # Voz neural de alta qualidade em Português do Brasil
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="pt-BR", 
+        name="pt-BR-Wavenet-B" # Voz Wavenet (Neural)
+    )
+    
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3 
+    )
+    
+    # 3. Chamar a API
+    response = client.synthesize_speech(
+        input=synthesis_input, voice=voice, audio_config=audio_config
+    )
+    
+    audio_fp = BytesIO(response.audio_content)
+    audio_fp.seek(0)
+    return audio_fp
+
+def despachar_geracao_audio(texto: str, motor: str) -> Optional[BytesIO]:
+    """Despacha a geração de áudio para o motor escolhido."""
+    if not texto or not texto.strip():
+        return None
+        
+    if motor == "Google Cloud TTS (Premium)":
+        return gerar_audio_google_tts(texto)
+    else: # "gTTS (Padrão)"
+        return _gerar_audio_gtts_impl(texto)
 
 # =========================
 # FUNÇÕES DE IMAGEM
@@ -588,10 +652,22 @@ motor_escolhido = st.sidebar.selectbox("🎨 Motor de Imagem", ["Pollinations Fl
 resolucao_escolhida = st.sidebar.selectbox("📏 Resolução do Vídeo", ["9:16 (Vertical/Stories)", "16:9 (Horizontal/YouTube)", "1:1 (Quadrado/Feed)"], index=0)
 
 st.sidebar.markdown("---")
+
+# --- NOVO: Motor TTS ---
+st.sidebar.markdown("### 🗣️ Motor TTS")
+tts_motor_options = ["Google Cloud TTS (Premium)", "gTTS (Padrão)"]
+if not texttospeech:
+    # Remove a opção premium se a biblioteca não estiver disponível
+    tts_motor_options = ["gTTS (Padrão)"]
+    st.sidebar.warning("⚠️ Instale 'google-cloud-texttospeech' e configure 'GOOGLE_CREDENTIALS_JSON' em Secrets para usar a opção Premium.")
+tts_motor_escolhido = st.sidebar.selectbox("Motor de Voz", tts_motor_options, index=0)
+# FIM NOVO
+
+st.sidebar.markdown("---")
 st.sidebar.markdown("### 🅰️ Upload de Fonte (Global)")
 uploaded_font_file = st.sidebar.file_uploader("Arquivo .ttf (para opção 'Upload Personalizada')", type=["ttf"])
 
-st.sidebar.info(f"Modo: {motor_escolhido}\nFormato: {resolucao_escolhida}")
+st.sidebar.info(f"Modo: {motor_escolhido}\nFormato: {resolucao_escolhida}\nTTS: {tts_motor_escolhido}")
 
 if "personagens_biblicos" not in st.session_state:
     st.session_state.personagens_biblicos = inicializar_personagens()
@@ -807,7 +883,7 @@ with tab4:
         {"id": "thumbnail", "label": "🖼️ THUMBNAIL", "prompt_key": "prompt_geral", "text_key": None}
     ]
 
-    st.info(f"⚙️ Config: **{motor_escolhido}** | Resolução: **{resolucao_escolhida}**")
+    st.info(f"⚙️ Config: **{motor_escolhido}** | Resolução: **{resolucao_escolhida}** | TTS: **{tts_motor_escolhido}**")
 
     # Botões de Geração em Lote (Topo da Fábrica)
     col_batch_1, col_batch_2 = st.columns(2)
@@ -823,7 +899,8 @@ with tab4:
                     if txt:
                         st.write(f"Gerando áudio: {b['label']}...")
                         try:
-                            audio = gerar_audio_gtts(txt)
+                            # Chama o dispatcher com o motor TTS escolhido
+                            audio = despachar_geracao_audio(txt, tts_motor_escolhido)
                             st.session_state["generated_audios_blocks"][bid] = audio
                             count += 1
                         except Exception as e:
@@ -865,7 +942,8 @@ with tab4:
                     if st.button(f"🔊 Gerar Áudio ({block_id})", key=f"btn_audio_{block_id}"):
                         if txt_content:
                             try:
-                                audio = gerar_audio_gtts(txt_content)
+                                # Chama o dispatcher com o motor TTS escolhido
+                                audio = despachar_geracao_audio(txt_content, tts_motor_escolhido)
                                 st.session_state["generated_audios_blocks"][block_id] = audio
                                 st.rerun()
                             except Exception as e:
@@ -1025,7 +1103,7 @@ with tab4:
 
                     filter_complex = ",".join(vf_filters)
                     
-                    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path, "-vf", filter_complex, "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip_path]
+                    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path, "-vf", filter_complex, "-c:v", "libx64", "-t", f"{dur}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip_path]
                     run_cmd(cmd)
                     clip_files.append(clip_path)
                 
@@ -1082,4 +1160,4 @@ with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v19.0 - Música Padrão")
+st.caption("Studio Jhonata v19.1 - Música Padrão + Google TTS")
