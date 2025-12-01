@@ -20,14 +20,15 @@ import streamlit as st
 # --- API Imports ---
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-# CORREÇÃO: Corrigido o erro de digitação 'googleapialient' para 'googleapiclient'
 from googleapiclient.errors import HttpError 
-# Importa a biblioteca OpenAI (assumindo que o pacote 'openai' está disponível no ambiente Streamlit)
 try:
     from openai import OpenAI
 except ImportError:
-    # Fallback para evitar erro de importação, mas a funcionalidade não funcionará
     OpenAI = None 
+import streamlit.components.v1 as components # Importa o módulo de componentes
+
+# --- CONFIGURAÇÃO DE URL DO FRONTEND (AI STUDIO) ---
+FRONTEND_AI_STUDIO_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhHJejuPBx1Ud6B10Ag_xfnJVzGpE83n7gHdUHnk4yAgrpuidw/exec"
 
 # Force ffmpeg path for imageio if needed (Streamlit Cloud)
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
@@ -575,9 +576,18 @@ if "overlay_settings" not in st.session_state:
     st.session_state["overlay_settings"] = load_config()
 
 # Abas Simplificadas
-tab1, tab2, tab3 = st.tabs(
-    ["📥 Receber Job (Drive)", "🎚️ Overlay & Ajustes", "🎥 Renderizar Vídeo"]
+tab_frontend, tab1, tab2, tab3 = st.tabs(
+    ["💻 Frontend AI Studio", "📥 Receber Job (Drive)", "🎚️ Overlay & Ajustes", "🎥 Renderizar Vídeo"]
 )
+
+# --------- NOVA ABA: FRONTEND AI STUDIO ----------
+with tab_frontend:
+    st.header("💻 Interface de Criação (AI Studio)")
+    st.markdown(f"Acesse a ferramenta de roteiro, geração de voz e imagem do seu frontend aqui:")
+    
+    # Adiciona o iFrame para carregar o outro site
+    components.iframe(FRONTEND_AI_STUDIO_URL, height=800, scrolling=True)
+
 
 # --------- TAB 1: RECEBER JOB ----------
 with tab1:
@@ -1000,6 +1010,7 @@ with tab3:
                     # Aplica zoompan com FPS forçado para suavizar o movimento
                     if sets["effect_type"] != "Estático (Sem movimento)":
                         # Injeta zoom_expr_content e garante o FPS e Size para saída suave
+                        # Usar aspas simples no f-string é crucial aqui.
                         zoom_pan_params = f"z='{zoom_expr_content}':d={frames}:s={s_out}:fps=25" 
                         vf_filters.append(f"zoompan={zoom_pan_params}")
                     else:
