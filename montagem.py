@@ -171,9 +171,10 @@ def inicializar_personagens():
 def limpar_texto_evangelho(texto: str) -> str:
     if not texto:
         return ""
-    texto_limpo = texto.replace("\n", " ").strip()
-    texto_limpo = re.sub(r"\b(\d{1,3})(?=[A-Za-zÁ-Úá-ú])", "", texto_limpo)
-    texto_limpo = re.sub(r"\s{2,}", " ", texto_limpo)
+    texto_limpo = texto.replace("
+", " ").strip()
+    texto_limpo = re.sub(r"(d{1,3})(?=[A-Za-zÁ-Úá-ú])", "", texto_limpo)
+    texto_limpo = re.sub(r"s{2,}", " ", texto_limpo)
     return texto_limpo.strip()
 
 # =========================
@@ -193,12 +194,12 @@ def extrair_referencia_biblica(titulo: str):
     
     evangelista_encontrado = None
     for chave, valor in mapa_nomes.items():
-        if re.search(rf"\b{chave}\b", titulo_lower):
+        if re.search(rf"{chave}", titulo_lower):
             evangelista_encontrado = valor
             break
     
     if not evangelista_encontrado:
-        m_fallback = re.search(r"(?:São|S\.|Sao|San|St\.?)\s*([A-Za-zÁ-Úá-ú]+)", titulo, re.IGNORECASE)
+        m_fallback = re.search(r"(?:São|S.|Sao|San|St.?)s*([A-Za-zÁ-Úá-ú]+)", titulo, re.IGNORECASE)
         if m_fallback:
             nome_cand = m_fallback.group(1).strip()
             if len(nome_cand) > 2:
@@ -208,7 +209,7 @@ def extrair_referencia_biblica(titulo: str):
         else:
             return None
 
-    m_nums = re.search(r"(\d{1,3})\s*[,:]\s*(\d+(?:[-–]\d+)?)", titulo)
+    m_nums = re.search(r"(d{1,3})s*[,:]s*(d+(?:[-–]d+)?)", titulo)
     
     if m_nums:
         capitulo = m_nums.group(1)
@@ -337,17 +338,19 @@ PROMPT_GERAL: [prompt para thumbnail/capa]"""
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Evangelho: {referencia_liturgica}\n\n{texto_limpo[:2000]}"},
+                {"role": "user", "content": f"Evangelho: {referencia_liturgica}
+
+{texto_limpo[:2000]}"},
             ],
             temperature=0.7,
             max_tokens=1200,
         )
         texto_gerado = resp.choices[0].message.content
         partes: dict[str, Any] = {}
-        # Parse the Groq output back into the frontend Roteiro format
-        # This is a placeholder, as the frontend's roteiro is already structured.
-        # This function would be updated if this Groq generation was the primary source.
-        # For now, it's illustrative and might need refinement if used for direct generation.
+        # This part requires careful parsing if Groq output is a single string.
+        # For simplicity, and since frontend now generates structured Roteiro,
+        # this is a placeholder. If direct Groq generation is primary, this parsing
+        # logic needs to extract "HOOK:", "PROMPT_HOOK:", etc.
         st.warning("⚠️ O gerador Groq de roteiro precisa ser adaptado para o novo formato de blocos do frontend.")
         return {
             "hook": {"text": "Texto do Hook Groq", "prompt": "Prompt do Hook Groq"},
@@ -407,7 +410,8 @@ def get_resolution_params(choice: str) -> dict:
         return {"w": 1024, "h": 1024, "ratio": "1:1"}
 
 def gerar_imagem_pollinations_flux(prompt: str, width: int, height: int) -> BytesIO:
-    prompt_clean = prompt.replace("\n", " ").strip()[:800]
+    prompt_clean = prompt.replace("
+", " ").strip()[:800]
     prompt_encoded = urllib.parse.quote(prompt_clean)
     seed = random.randint(0, 999999)
     url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?model=flux&width={width}&height={height}&seed={seed}&nologo=true"
@@ -418,7 +422,8 @@ def gerar_imagem_pollinations_flux(prompt: str, width: int, height: int) -> Byte
     return bio
 
 def gerar_imagem_pollinations_turbo(prompt: str, width: int, height: int) -> BytesIO:
-    prompt_clean = prompt.replace("\n", " ").strip()[:800]
+    prompt_clean = prompt.replace("
+", " ").strip()[:800]
     prompt_encoded = urllib.parse.quote(prompt_clean)
     seed = random.randint(0, 999999)
     url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width={width}&height={height}&seed={seed}&nologo=true"
@@ -538,8 +543,8 @@ def process_job_payload_and_update_state(payload: Dict[str, Any], temp_dir: str)
     Retorna True em caso de sucesso, False em caso de falha.
     """
     try:
+        # The frontend now sends 'roteiro' with nested objects like {hook: {text: ..., prompt: ...}}
         st.session_state["roteiro_gerado"] = payload.get("roteiro", {})
-        # st.session_state["leitura_montada"] = payload.get("leitura_montada", "") # This key is now integrated into roteiro_gerado.leitura.text
         st.session_state["meta_dados"] = payload.get("meta_dados", {"data": "", "ref": ""})
 
         st.session_state["generated_images_blocks"] = {} # Stores file paths to temp files
@@ -590,7 +595,8 @@ def run_cmd(cmd: List[str]):
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-        raise RuntimeError(f"Comando falhou: {' '.join(cmd)}\nSTDERR: {stderr}")
+        raise RuntimeError(f"Comando falhou: {' '.join(cmd)}
+STDERR: {stderr}")
 
 def get_audio_duration_seconds(audio_path: str) -> Optional[float]:
     """Obtém a duração de um áudio a partir do caminho do arquivo."""
@@ -671,7 +677,7 @@ def get_text_alpha_expr(anim_type: str, duration: float) -> str:
 def sanitize_text_for_ffmpeg(text: str) -> str:
     """Limpa texto para evitar quebra do filtro drawtext (vírgulas, dois pontos, aspas)"""
     if not text: return ""
-    t = text.replace(":", "\:")
+    t = text.replace(":", ":")
     t = t.replace("'", "") 
     return t
 
@@ -691,7 +697,8 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 🅰️ Upload de Fonte (Global)")
 uploaded_font_file = st.sidebar.file_uploader("Arquivo .ttf (para opção 'Upload Personalizada')", type=["ttf"])
 
-st.sidebar.info(f"Modo: {motor_escolhido}\nFormato: {resolucao_escolhida}")
+st.sidebar.info(f"Modo: {motor_escolhido}
+Formato: {resolucao_escolhida}")
 
 if "personagens_biblicos" not in st.session_state:
     st.session_state.personagens_biblicos = inicializar_personagens()
@@ -905,8 +912,14 @@ with tab4:
     if st.button("📥 Carregar Job", type="secondary", disabled=not job_id_input):
         if job_id_input:
             with st.status(f"Buscando job '{job_id_input}' no Google Drive...", expanded=True) as status_box:
-                temp_assets_dir = tempfile.mkdtemp() # Create a temp directory for assets
-                st.write(f"Criado diretório temporário: {temp_assets_dir}")
+                # Clean up previous temp dir if exists
+                if st.session_state.get("temp_assets_dir") and os.path.exists(st.session_state["temp_assets_dir"]):
+                    _shutil.rmtree(st.session_state["temp_assets_dir"])
+                    st.write(f"Diretório temporário anterior removido: {st.session_state['temp_assets_dir']}")
+
+                temp_assets_dir = tempfile.mkdtemp() # Create a new temp directory for assets
+                st.write(f"Criado diretório temporário para assets: {temp_assets_dir}")
+                
                 payload = load_job_from_drive(job_id_input)
                 if payload:
                     st.write("Payload carregado, processando assets...")
@@ -918,9 +931,11 @@ with tab4:
                     else:
                         status_box.update(label="Erro ao processar os assets do job.", state="error")
                         _shutil.rmtree(temp_assets_dir) # Clean up on error
+                        st.session_state["temp_assets_dir"] = None
                 else:
                     status_box.update(label="Falha ao carregar o job do Drive.", state="error")
                     _shutil.rmtree(temp_assets_dir) # Clean up on error
+                    st.session_state["temp_assets_dir"] = None
         else:
             st.warning("Por favor, insira um Job ID.")
     st.markdown("---")
@@ -1201,7 +1216,8 @@ with tab4:
                 if clip_files:
                     concat_list = os.path.join(temp_dir_render, "list.txt")
                     with open(concat_list, "w") as f:
-                        for p in clip_files: f.write(f"file '{p}'\n")
+                        for p in clip_files: f.write(f"file '{p}'
+")
                     
                     temp_video = os.path.join(temp_dir_render, "temp_video.mp4")
                     run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", temp_video])
@@ -1262,9 +1278,3 @@ with tab5:
 
 st.markdown("---")
 st.caption("Studio Jhonata v20.0 - Música Padrão")
-
-# --- Cleanup temporary directory on app shutdown (or tab close) ---
-# This is a bit tricky with Streamlit's rerun model.
-# The temp_assets_dir should be cleaned when a new job is loaded or app restarts.
-# The temp_dir_render is handled in finally block of render.
-# For more robust global cleanup, consider a Streamlit "on_sidebar_close" or similar external mechanism.
