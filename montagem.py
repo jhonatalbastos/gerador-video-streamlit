@@ -27,7 +27,7 @@ except ImportError:
     OpenAI = None 
 
 # --- CONFIGURAÇÃO DE URL DO FRONTEND (AI STUDIO) ---
-FRONTEND_AI_STUDIO_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhHJejuPBx1Ud6B10Ag_xfnJVzGpE83n7gHdUHnk4yAgrpuidw/exec"
+FRONTEND_AI_STUDIO_URL = "https://ai.studio/apps/drive/1gfrdHffzH67cCcZBJWPe6JfE1ZEttn6u"
 
 # Force ffmpeg path for imageio if needed (Streamlit Cloud)
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
@@ -667,7 +667,7 @@ with tab1:
                 
         with c2:
             new_ref = st.text_input("Referência (Ex: Mateus 8, 5-11)", value=st.session_state.get("ref_display", ""), key="input_ref_display")
-            if new_ref != st.session_state.get("ref_display"):
+            if new_ref != st.session_state.get("data_display"):
                 st.session_state["ref_display"] = new_ref
                 st.session_state["meta_dados"]["ref"] = new_ref # Atualiza a fonte também
 
