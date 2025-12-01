@@ -2,7 +2,7 @@
 # Features: Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos, Carregamento via Drive
 import os
 import re
-import json
+import json # Adicionado/Garantido o import para json.loads
 import time
 import tempfile
 import traceback
@@ -125,25 +125,31 @@ _drive_service = None
 def get_drive_service():
     global _drive_service
     if _drive_service is None:
-        try: # Corrigido: `try:`
+        try:
             # st.secrets["gcp_service_account"] should contain the JSON key file
             # in a format like: {"type": "service_account", "project_id": "...", ...}
-            creds_json = st.secrets.get("gcp_service_account")
-            if not creds_json:
+            creds_json_raw = st.secrets.get("gcp_service_account")
+            if not creds_json_raw:
                 st.error("❌ Configure 'gcp_service_account' em Settings → Secrets no Streamlit Cloud.")
                 st.stop()
 
+            # CORREÇÃO CRÍTICA: Decodificar a string JSON se ela vier como string (problema comum no Streamlit Secrets)
+            if isinstance(creds_json_raw, str):
+                creds_info = json.loads(creds_json_raw)
+            else:
+                creds_info = creds_json_raw
+            
             creds = service_account.Credentials.from_service_account_info(
-                creds_json,
+                creds_info,
                 scopes=['https://www.googleapis.com/auth/drive.readonly'] # Read-only scope is sufficient
             )
             _drive_service = build('drive', 'v3', credentials=creds)
             st.success("✅ Google Drive API inicializada com sucesso!")
-        except Exception as e: # Corrigido: `except Exception as e:`
+        except Exception as e:
+            # Aqui 'e' será o erro de 'str' object has no attribute 'keys' se não for corrigido
             st.error(f"❌ Erro ao inicializar Google Drive API: {e}. Verifique as credenciais da conta de serviço e permissões.")
             st.stop()
     return _drive_service
-# Corrigido: Removido '}'
 
 # =========================
 # Inicializar banco de personagens
@@ -173,7 +179,6 @@ def limpar_texto_evangelho(texto: str) -> str:
     if not texto:
         return ""
     texto_limpo = texto.replace("\n", " ").strip()
-    # Corrigido: re.sub para remover números seguidos de letras
     texto_limpo = re.sub(r" (\d{1,3})(?=[A-Za-zÁ-Úá-ú])", "", texto_limpo) 
     texto_limpo = re.sub(r"\s{2,}", " ", texto_limpo)
     return texto_limpo.strip()
@@ -195,24 +200,21 @@ def extrair_referencia_biblica(titulo: str):
 
     evangelista_encontrado = None
     for chave, valor in mapa_nomes.items():
-        if re.search(rf"\b{chave}\b", titulo_lower): # Usar \b para evitar falsos positivos (e.g. "São")
+        if re.search(rf"\b{chave}\b", titulo_lower): 
             evangelista_encontrado = valor
             break
 
     if not evangelista_encontrado:
-        # Fallback 1: Tentar extrair pelo padrão "São [Nome]"
         m_fallback = re.search(r"(?:São|S\.|Sao|San|St\.?)s*([A-Za-zÁ-Úá-ú]+)", titulo, re.IGNORECASE)
         if m_fallback:
             nome_cand = m_fallback.group(1).strip()
             if len(nome_cand) > 2:
-                # Tenta normalizar o nome
                 evangelista_encontrado = mapa_nomes.get(nome_cand.lower(), nome_cand)
             else:
                 return None
         else:
             return None
 
-    # Ajuste para d{1,3} -> \d{1,3} e s* -> \s*
     m_nums = re.search(r"(\d{1,3})\s*[,:]\s*(\d+(?:[-–]\d+)?)", titulo) 
 
     if m_nums:
@@ -234,7 +236,7 @@ def formatar_referencia_curta(ref_biblica):
 # =========================
 def buscar_liturgia_api1(data_str: str):
     url = f"https://api-liturgia-diaria.vercel.app/?date={data_str}"
-    try: # Corrigido: `try:`
+    try:
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         dados = resp.json()
@@ -261,13 +263,12 @@ def buscar_liturgia_api1(data_str: str):
             "texto": texto_limpo,
             "ref_biblica": ref_biblica,
         }
-    except Exception: # Corrigido: `except Exception:`
+    except Exception:
         return None
-# Corrigido: Removido '}'
 
 def buscar_liturgia_api2(data_str: str):
     url = f"https://liturgia.up.railway.app/v2/{data_str}"
-    try: # Corrigido: `try:`
+    try:
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         dados = resp.json()
@@ -286,9 +287,8 @@ def buscar_liturgia_api2(data_str: str):
             "texto": texto_limpo,
             "ref_biblica": None,
         }
-    except Exception: # Corrigido: `except Exception:`
+    except Exception:
         return None
-# Corrigido: Removido '}'
 
 def obter_evangelho_com_fallback(data_str: str):
     ev = buscar_liturgia_api1(data_str)
@@ -301,7 +301,6 @@ def obter_evangelho_com_fallback(data_str: str):
         return ev
     st.error("❌ Não foi possível obter o Evangelho")
     return None
-# Corrigido: Removido '}'
 
 # =========================
 # Roteiro + Prompts
@@ -340,7 +339,7 @@ PROMPT_ORACAO: [prompt visual com personagens fixos]
 PROMPT_LEITURA: [prompt visual específico para a leitura do Evangelho, mais calmo e reverente]
 
 PROMPT_GERAL: [prompt para thumbnail/capa]"""
-    try: # Corrigido: `try:`
+    try: 
         resp = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
@@ -364,10 +363,9 @@ PROMPT_GERAL: [prompt para thumbnail/capa]"""
             "aplicacao": {"text": "Texto da Aplicação Groq", "prompt": "Prompt da Aplicação Groq"},
             "oracao": {"text": "Texto da Oração Groq", "prompt": "Prompt da Oração Groq"},
         }
-    except Exception as e: # Corrigido: `except Exception as e:`
+    except Exception as e: 
         st.error(f"❌ Erro Groq: {e}")
         return None
-# Corrigido: Removido '}'
 
 def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
     if ref_biblica:
@@ -394,15 +392,14 @@ def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
     if not texto or not texto.strip():
         return None
     mp3_fp = BytesIO()
-    try: # Corrigido: `try:`
+    try: 
         from gtts import gTTS  # type: ignore
         tts = gTTS(text=texto, lang="pt", slow=False)
         tts.write_to_fp(mp3_fp)
         mp3_fp.seek(0)
         return mp3_fp
-    except Exception as e: # Corrigido: `except Exception as e:`
+    except Exception as e: 
         raise RuntimeError(f"Erro gTTS: {e}")
-# Corrigido: Removido '}'
 
 # =========================
 # FUNÇÕES DE IMAGEM
@@ -415,7 +412,6 @@ def get_resolution_params(choice: str) -> dict:
         return {"w": 1280, "h": 720, "ratio": "16:9"}
     else: # 1:1
         return {"w": 1024, "h": 1024, "ratio": "1:1"}
-# Corrigido: Removido '}'
 
 def gerar_imagem_pollinations_flux(prompt: str, width: int, height: int) -> BytesIO:
     prompt_clean = prompt.replace("\n", " ").strip()[:800]
@@ -427,7 +423,6 @@ def gerar_imagem_pollinations_flux(prompt: str, width: int, height: int) -> Byte
     bio = BytesIO(r.content)
     bio.seek(0)
     return bio
-# Corrigido: Removido '}'
 
 def gerar_imagem_pollinations_turbo(prompt: str, width: int, height: int) -> BytesIO:
     prompt_clean = prompt.replace("\n", " ").strip()[:800]
@@ -439,7 +434,6 @@ def gerar_imagem_pollinations_turbo(prompt: str, width: int, height: int) -> Byt
     bio = BytesIO(r.content)
     bio.seek(0)
     return bio
-# Corrigido: Removido '}'
 
 def gerar_imagem_google_imagen(prompt: str, ratio: str) -> BytesIO:
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
@@ -461,7 +455,6 @@ def gerar_imagem_google_imagen(prompt: str, ratio: str) -> BytesIO:
         return bio
     else:
         raise RuntimeError("Resposta inválida do Google Imagen.")
-# Corrigido: Removido '}'
 
 def despachar_geracao_imagem(prompt: str, motor: str, res_choice: str) -> BytesIO:
     params = get_resolution_params(res_choice)
@@ -473,14 +466,13 @@ def despachar_geracao_imagem(prompt: str, motor: str, res_choice: str) -> BytesI
         return gerar_imagem_google_imagen(prompt, params["ratio"])
     else:
         return gerar_imagem_pollinations_flux(prompt, params["w"], params["h"])
-# Corrigido: Removido '}'
 
 # =========================
 # Google Drive Functions
 # =========================
 def find_file_in_drive_folder(service, file_name: str, folder_name: str) -> Optional[str]:
     """Busca um arquivo específico dentro de uma pasta no Google Drive."""
-    try: # Corrigido: `try:`
+    try: 
         # 1. Encontrar o ID da pasta "Monetiza_Studio_Jobs"
         query_folder = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         folders = service.files().list(q=query_folder, fields="files(id)").execute().get('files', [])
@@ -502,28 +494,26 @@ def find_file_in_drive_folder(service, file_name: str, folder_name: str) -> Opti
         else:
             st.warning(f"⚠️ Arquivo '{file_name}' não encontrado na pasta '{folder_name}'.")
             return None
-    except HttpError as error: # Corrigido: `except HttpError as error:`
+    except HttpError as error: 
         st.error(f"❌ Erro ao buscar arquivo no Google Drive: {error}")
         return None
-    except Exception as e: # Corrigido: `except Exception as e:`
+    except Exception as e: 
         st.error(f"❌ Erro inesperado ao buscar arquivo no Google Drive: {e}")
         return None
-# Corrigido: Removido '}'
 
 def download_file_content(service, file_id: str) -> Optional[str]:
     """Baixa o conteúdo de um arquivo do Google Drive."""
-    try: # Corrigido: `try:`
+    try: 
         request = service.files().get_media(fileId=file_id)
         content = request.execute().decode('utf-8')
         st.info(f"✅ Conteúdo do arquivo '{file_id}' baixado com sucesso.")
         return content
-    except HttpError as error: # Corrigido: `except HttpError as error:`
+    except HttpError as error: 
         st.error(f"❌ Erro ao baixar conteúdo do arquivo {file_id}: {error}")
         return None
-    except Exception as e: # Corrigido: `except Exception as e:`
+    except Exception as e: 
         st.error(f"❌ Erro inesperado ao baixar conteúdo: {e}")
         return None
-# Corrigido: Removido '}'
 
 def load_job_from_drive(job_id: str) -> Optional[Dict[str, Any]]:
     """Carrega um job payload completo do Google Drive usando o Job ID."""
@@ -537,26 +527,24 @@ def load_job_from_drive(job_id: str) -> Optional[Dict[str, Any]]:
     if file_id:
         json_content = download_file_content(service, file_id)
         if json_content:
-            try: # Corrigido: `try:`
+            try: 
                 payload = json.loads(json_content)
                 st.success(f"✅ Job '{job_id}' carregado do Google Drive!")
                 return payload
-            except json.JSONDecodeError as e: # Corrigido: `except json.JSONDecodeError as e:`
+            except json.JSONDecodeError as e: 
                 st.error(f"❌ Erro ao decodificar JSON do job: {e}")
                 return None
-            # Corrigido: Removido '}'
         else:
             st.error(f"❌ Conteúdo JSON do job '{job_id}' está vazio.")
             return None
     return None
-# Corrigido: Removido '}'
 
 def process_job_payload_and_update_state(payload: Dict[str, Any], temp_dir: str):
     """
     Processa o payload do job, decodifica assets e atualiza o Streamlit session state.
     Retorna True em caso de sucesso, False em caso de falha.
     """
-    try: # Corrigido: `try:`
+    try: 
         # The frontend now sends 'roteiro' with nested objects like {hook: {text: ..., prompt: ...}}
         st.session_state["roteiro_gerado"] = payload.get("roteiro", {})
         st.session_state["meta_dados"] = payload.get("meta_dados", {"data": "", "ref": ""})
@@ -593,10 +581,9 @@ def process_job_payload_and_update_state(payload: Dict[str, Any], temp_dir: str)
 
         st.success("✅ Assets decodificados e estado atualizado!")
         return True
-    except Exception as e: # Corrigido: `except Exception as e:`
+    except Exception as e: 
         st.error(f"❌ Erro ao processar payload do job: {e}")
         return False
-# Corrigido: Removido '}'
 
 
 # =========================
@@ -606,12 +593,11 @@ def shutil_which(bin_name: str) -> Optional[str]:
     return _shutil.which(bin_name)
 
 def run_cmd(cmd: List[str]):
-    try: # Corrigido: `try:`
+    try: 
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e: # Corrigido: `except subprocess.CalledProcessError as e:`
+    except subprocess.CalledProcessError as e: 
         stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
         raise RuntimeError(f"Comando falhou: {' '.join(cmd)}\nSTDERR: {stderr}")
-# Corrigido: Removido '}'
 
 def get_audio_duration_seconds(audio_path: str) -> Optional[float]:
     """Obtém a duração de um áudio a partir do caminho do arquivo."""
@@ -621,16 +607,15 @@ def get_audio_duration_seconds(audio_path: str) -> Optional[float]:
         return 5.0
 
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path]
-    try: # Corrigido: `try:`
+    try: 
         p = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out = p.stdout.decode().strip()
         return float(out) if out else None
-    except Exception: # Corrigido: `except Exception:`
+    except Exception: 
         st.error(f"Erro ao obter duração do áudio com ffprobe para {os.path.basename(audio_path)}.")
         return 5.0 # Fallback in case of ffprobe error
-    finally: # Corrigido: `finally:`
-        pass # No need to delete temp file here, handled by rmtree later
-# Corrigido: Removido '}'
+    finally: 
+        pass 
 
 
 def resolve_font_path(font_choice: str, uploaded_font: Optional[BytesIO]) -> Optional[str]:
@@ -647,7 +632,6 @@ def resolve_font_path(font_choice: str, uploaded_font: Optional[BytesIO]) -> Opt
     for font in candidates:
         if os.path.exists(font): return font
     return None
-# Corrigido: Removido '}'
 
 def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upload: Optional[BytesIO]) -> BytesIO:
     img = Image.new("RGB", (width, height), "black")
@@ -660,16 +644,16 @@ def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upl
         color = item.get("color", "white")
         font_style = item.get("font_style", "Padrão (Sans)")
         font_path = resolve_font_path(font_style, global_upload)
-        try: # Corrigido: `try:`
+        try: 
             if font_path and os.path.exists(font_path):
                 font = ImageFont.truetype(font_path, size)
             else:
                 font = ImageFont.load_default()
-        except: # Corrigido: `except:`
+        except: 
              font = ImageFont.load_default()
-        try: # Corrigido: `try:`
+        try: 
             length = draw.textlength(text, font=font)
-        except: # Corrigido: `except:`
+        except: 
              length = len(text) * size * 0.5
         x = (width - length) / 2
         draw.text((x, y), text, fill=color, font=font)
@@ -677,7 +661,6 @@ def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upl
     img.save(bio, format="PNG")
     bio.seek(0)
     return bio
-# Corrigido: Removido '}'
 
 def get_text_alpha_expr(anim_type: str, duration: float) -> str:
     """Retorna expressão de alpha para o drawtext baseado na animação escolhida"""
@@ -691,7 +674,6 @@ def get_text_alpha_expr(anim_type: str, duration: float) -> str:
     else:
         # Estático
         return "alpha=1"
-# Corrigido: Removido '}'
 
 def sanitize_text_for_ffmpeg(text: str) -> str:
     """Limpa texto para evitar quebra do filtro drawtext (vírgulas, dois pontos, aspas)"""
@@ -699,7 +681,6 @@ def sanitize_text_for_ffmpeg(text: str) -> str:
     t = text.replace(":", "\:")
     t = t.replace("'", "")
     return t
-# Corrigido: Removido '}'
 
 # =========================
 # Interface principal
@@ -724,21 +705,21 @@ if "personagens_biblicos" not in st.session_state:
 
 # session state
 if "roteiro_gerado" not in st.session_state:
-    st.session_state["roteiro_gerado"] = None # Corrigido: usar None
+    st.session_state["roteiro_gerado"] = None 
 if "generated_images_blocks" not in st.session_state:
-    st.session_state["generated_images_blocks"] = {} # Stores file paths
+    st.session_state["generated_images_blocks"] = {} 
 if "generated_audios_blocks" not in st.session_state:
-    st.session_state["generated_audios_blocks"] = {} # Stores file paths
-if "generated_srt_content" not in st.session_state: # Stores raw SRT string
+    st.session_state["generated_audios_blocks"] = {} 
+if "generated_srt_content" not in st.session_state: 
     st.session_state["generated_srt_content"] = ""
 if "video_final_bytes" not in st.session_state:
-    st.session_state["video_final_bytes"] = None # Corrigido: usar None
+    st.session_state["video_final_bytes"] = None 
 if "meta_dados" not in st.session_state:
     st.session_state["meta_dados"] = {"data": "", "ref": ""}
 if "job_loaded_from_drive" not in st.session_state:
     st.session_state["job_loaded_from_drive"] = False
 if "temp_assets_dir" not in st.session_state:
-    st.session_state["temp_assets_dir"] = None # Corrigido: usar None
+    st.session_state["temp_assets_dir"] = None 
 
 # Carregar Settings persistentes
 if "overlay_settings" not in st.session_state:
@@ -775,35 +756,25 @@ with tab1:
             }
 
             st.write("🤖 Analisando personagens com IA...")
-            # This Groq generation needs to be adapted to the frontend's Roteiro structure
-            # For now, this is a placeholder. The primary path is loading from Drive.
-            # personagens_detectados = analisar_personagens_groq(liturgia["texto"], st.session_state.personagens_biblicos)
             roteiro_generated_raw = gerar_roteiro_com_prompts_groq(liturgia["texto"], liturgia["referencia_liturgica"], st.session_state.personagens_biblicos)
 
             if roteiro_generated_raw:
-                # Assuming the Groq output is adapted to match frontend's Roteiro structure, e.g.:
-                # {"hook": {"text": "...", "prompt": "..."}, "leitura": {"text": "...", "prompt": "..."}, ...}
                 st.session_state["roteiro_gerado"] = roteiro_generated_raw
                 status.update(label="Roteiro gerado com sucesso!", state="complete", expanded=False)
             else:
                 status.update(label="Erro ao gerar roteiro", state="error")
                 st.stop()
 
-        # The 'leitura_montada' is now part of the 'roteiro_gerado.leitura.text'
-        # st.session_state["leitura_montada"] = montar_leitura_com_formula(liturgia["texto"], liturgia.get("ref_biblica"))
         st.rerun()
 
     if st.session_state.get("roteiro_gerado"):
         roteiro_data = st.session_state["roteiro_gerado"]
         st.markdown("---")
-        # Ensure correct keys are used as per frontend's Roteiro interface (hook.text, leitura.text etc.)
         st.markdown("### 🎣 HOOK"); st.markdown(roteiro_data.get("hook", {}).get("text", "")); st.code(roteiro_data.get("hook", {}).get("prompt", ""), language="text")
         st.markdown("### 📖 LEITURA"); st.markdown(roteiro_data.get("leitura", {}).get("text", "")[:300] + "..."); st.code(roteiro_data.get("leitura", {}).get("prompt", ""), language="text")
         st.markdown("### 💭 REFLEXÃO"); st.markdown(roteiro_data.get("reflexao", {}).get("text", "")); st.code(roteiro_data.get("reflexao", {}).get("prompt", ""), language="text")
         st.markdown("### 🌟 APLICAÇÃO"); st.markdown(roteiro_data.get("aplicacao", {}).get("text", "")); st.code(roteiro_data.get("aplicacao", {}).get("prompt", ""), language="text")
         st.markdown("### 🙏 ORAÇÃO"); st.markdown(roteiro_data.get("oracao", {}).get("text", "")); st.code(roteiro_data.get("oracao", {}).get("prompt", ""), language="text")
-        # The frontend payload does not explicitly include 'prompt_geral' anymore in Roteiro
-        # st.markdown("### 🖼️ THUMBNAIL"); st.code(roteiro_data.get("prompt_geral", ""), language="text")
         st.success("Roteiro gerado! Vá para 'Overlay & Efeitos' para ajustar o visual.")
 
 # --------- TAB 2: PERSONAGENS ----------
@@ -905,17 +876,17 @@ with tab3:
         text_scale = preview_scale_factor
 
         meta = st.session_state.get("meta_dados", {})
-        txt_l1 = "EVANGELHO" # Corrigido: 'const' removido
-        txt_l2 = meta.get("data", "29.11.2025") # Corrigido: 'const' removido
-        txt_l3 = meta.get("ref", "Lucas, Cap. 1, 26-38") # Corrigido: 'const' removido
+        txt_l1 = "EVANGELHO" 
+        txt_l2 = meta.get("data", "29.11.2025")
+        txt_l3 = meta.get("ref", "Lucas, Cap. 1, 26-38")
 
-        preview_texts = [ # Corrigido: 'const' removido
+        preview_texts = [ 
             {"text": txt_l1, "size": int(ov_sets["line1_size"] * text_scale), "y": int(ov_sets["line1_y"] * text_scale), "font_style": ov_sets["line1_font"], "color": "white"},
             {"text": txt_l2, "size": int(ov_sets["line2_size"] * text_scale), "y": int(ov_sets["line2_y"] * text_scale), "font_style": ov_sets["line2_font"], "color": "white"},
             {"text": txt_l3, "size": int(ov_sets["line3_size"] * text_scale), "y": int(ov_sets["line3_y"] * text_scale), "font_style": ov_sets["line3_font"], "color": "white"},
         ]
 
-        prev_img = criar_preview_overlay(preview_w, preview_h, preview_texts, uploaded_font_file) # Corrigido: 'const' removido
+        prev_img = criar_preview_overlay(preview_w, preview_h, preview_texts, uploaded_font_file) 
         st.image(prev_img, caption=f"Preview Overlay em {resolucao_escolhida}", use_column_width=False)
 
 
@@ -934,7 +905,7 @@ with tab4:
                     _shutil.rmtree(st.session_state["temp_assets_dir"])
                     st.write(f"Diretório temporário anterior removido: {st.session_state['temp_assets_dir']}")
 
-                temp_assets_dir = tempfile.mkdtemp() # Create a new temp directory for assets
+                temp_assets_dir = tempfile.mkdtemp() 
                 st.write(f"Criado diretório temporário para assets: {temp_assets_dir}")
 
                 payload = load_job_from_drive(job_id_input)
@@ -942,197 +913,176 @@ with tab4:
                     st.write("Payload carregado, processando assets...")
                     if process_job_payload_and_update_state(payload, temp_assets_dir):
                         st.session_state["job_loaded_from_drive"] = True
-                        st.session_state["temp_assets_dir"] = temp_assets_dir # Store temp dir for cleanup
+                        st.session_state["temp_assets_dir"] = temp_assets_dir 
                         status_box.update(label=f"Job '{job_id_input}' carregado e pronto para renderizar!", state="complete")
-                        st.rerun() # Rerun to reflect updated state
+                        st.rerun() 
                     else:
                         status_box.update(label="Erro ao processar os assets do job.", state="error")
-                        _shutil.rmtree(temp_assets_dir) # Clean up on error
+                        _shutil.rmtree(temp_assets_dir) 
                         st.session_state["temp_assets_dir"] = None
                 else:
                     status_box.update(label="Falha ao carregar o job do Drive.", state="error")
-                    _shutil.rmtree(temp_assets_dir) # Clean up on error
+                    _shutil.rmtree(temp_assets_dir) 
                     st.session_state["temp_assets_dir"] = None
         else:
             st.warning("Por favor, insira um Job ID.")
     st.markdown("---")
 
-    is_job_loaded = st.session_state.get("job_loaded_from_drive", False) # Corrigido: 'false' para 'False'
+    is_job_loaded = st.session_state.get("job_loaded_from_drive", False) 
 
-    if not st.session_state.get("roteiro_gerado"): # Corrigido: `if !...` para `if not ...:`
+    if not st.session_state.get("roteiro_gerado"): 
         st.warning("⚠️ Gere o roteiro na Aba 1 OU carregue um Job do Drive.")
         st.stop()
-    # Corrigido: Removido '}'
 
-    roteiro = st.session_state["roteiro_gerado"] # Corrigido: 'const' removido
+    roteiro = st.session_state["roteiro_gerado"] 
 
-    blocos_config = [ # Corrigido: 'const' removido
+    blocos_config = [ 
         {"id": "hook", "label": "🎣 HOOK", "text_path": "hook", "prompt_path": "hook"},
         {"id": "leitura", "label": "📖 LEITURA", "text_path": "leitura", "prompt_path": "leitura"},
         {"id": "reflexao", "label": "💭 REFLEXÃO", "text_path": "reflexao", "prompt_path": "reflexao"},
         {"id": "aplicacao", "label": "🌟 APLICAÇÃO", "text_path": "aplicacao", "prompt_path": "aplicacao"},
         {"id": "oracao", "label": "🙏 ORAÇÃO", "text_path": "oracao", "prompt_path": "oracao"},
-        # "thumbnail" is not part of video sequence, handled separately if needed
     ]
 
     st.info(f"⚙️ Config: **{motor_escolhido}** | Resolução: **{resolucao_escolhida}**")
 
     # Botões de Geração em Lote (Topo da Fábrica)
-    # These buttons should be disabled if a job is loaded from Drive
     col_batch_1, col_batch_2 = st.columns(2)
 
-    # Extract aspect ratio for image generation
-    # Corrigido: Funções IIFE (Immediately Invoked Function Expression)
     def get_aspect_ratio():
         if "9:16" in resolucao_escolhida:
             return "9:16"
         if "16:9" in resolucao_escolhida:
             return "16:9"
         return "1:1"
-    aspectRatioForImageGen = get_aspect_ratio() # Corrigido: 'const' removido
+    aspectRatioForImageGen = get_aspect_ratio() 
 
     with col_batch_1:
-        if st.button("🔊 Gerar Todos os Áudios", use_container_width=True, disabled=is_job_loaded): # Corrigido: 'true' para 'True'
-            with st.status("Gerando áudios em lote...", expanded=True) as status: # Corrigido: 'true' para 'True'
-                total = len(blocos_config) # Corrigido: 'const' removido
-                count = 0 # Corrigido: 'let' e 'const' removidos
-                for b in blocos_config: # Corrigido: `for (const b of ...)` para `for b in ...:`
-                    bid = b["id"] # Corrigido: 'const' removido
-                    txt = roteiro.get(b["text_path"], {}).get("text", "") # Corrigido: 'const' removido
+        if st.button("🔊 Gerar Todos os Áudios", use_container_width=True, disabled=is_job_loaded): 
+            with st.status("Gerando áudios em lote...", expanded=True) as status: 
+                total = len(blocos_config) 
+                count = 0 
+                for b in blocos_config: 
+                    bid = b["id"] 
+                    txt = roteiro.get(b["text_path"], {}).get("text", "") 
                     if txt:
                         st.write(f"Gerando áudio: {b['label']}...")
                         try:
-                            audio_bio = gerar_audio_gtts(txt) # Corrigido: 'const' removido
+                            audio_bio = gerar_audio_gtts(txt) 
                             if audio_bio:
-                                audio_path = os.path.join(tempfile.gettempdir(), f"{bid}.mp3") # Corrigido: 'const' removido
+                                audio_path = os.path.join(tempfile.gettempdir(), f"{bid}.mp3") 
                                 with open(audio_path, "wb") as f:
                                     f.write(audio_bio.getvalue())
                                 st.session_state["generated_audios_blocks"][bid] = audio_path
                                 count += 1
-                        except Exception as e: # Corrigido: `catch (e)` para `except Exception as e:`
+                        except Exception as e: 
                             st.error(f"Erro em {bid}: {e}")
-                # Corrigido: Removido '}'
                 status.update(label=f"Concluído! {count}/{total} áudios gerados.", state="complete")
                 st.rerun()
     with col_batch_2:
-        if st.button("✨ Gerar Todas as Imagens", use_container_width=True, disabled=is_job_loaded): # Corrigido: 'true' para 'True'
-            with st.status("Gerando imagens em lote...", expanded=True) as status: # Corrigido: 'true' para 'True'
-                total = len(blocos_config) # Corrigido: 'const' removido
-                count = 0 # Corrigido: 'let' e 'const' removidos
-                for i, b in enumerate(blocos_config): # Corrigido: `for (const i, b of enumerate(...))` para `for i, b in enumerate(...):`
-                    bid = b["id"] # Corrigido: 'const' removido
-                    prompt = roteiro.get(b["prompt_path"], {}).get("prompt", "") # Corrigido: 'const' removido
+        if st.button("✨ Gerar Todas as Imagens", use_container_width=True, disabled=is_job_loaded): 
+            with st.status("Gerando imagens em lote...", expanded=True) as status: 
+                total = len(blocos_config) 
+                count = 0 
+                for i, b in enumerate(blocos_config): 
+                    bid = b["id"] 
+                    prompt = roteiro.get(b["prompt_path"], {}).get("prompt", "") 
                     if prompt:
                         st.write(f"Gerando imagem ({i+1}/{total}): {b['label']}...")
                         try:
-                            img_bio = despachar_geracao_imagem(prompt, motor_escolhido, resolucao_escolhida) # Corrigido: 'const' removido
+                            img_bio = despachar_geracao_imagem(prompt, motor_escolhido, resolucao_escolhida) 
                             if img_bio:
-                                img_path = os.path.join(tempfile.gettempdir(), f"{bid}.png") # Corrigido: 'const' removido
+                                img_path = os.path.join(tempfile.gettempdir(), f"{bid}.png") 
                                 with open(img_path, "wb") as f:
                                     f.write(img_bio.getvalue())
                                 st.session_state["generated_images_blocks"][bid] = img_path
                                 count += 1
-                        except Exception as e: # Corrigido: `catch (e)` para `except Exception as e:`
+                        except Exception as e: 
                             st.error(f"Erro em {bid}: {e}")
-                # Corrigido: Removido '}'
                 status.update(label=f"Concluído! {count}/{total} imagens geradas.", state="complete")
                 st.rerun()
 
     st.divider()
 
-    for bloco in blocos_config: # Corrigido: `for (const bloco of ...)` para `for bloco in ...:`
-        block_id = bloco["id"] # Corrigido: 'const' removido
-        with st.container(border=True): # Corrigido: 'true' para 'True'
+    for bloco in blocos_config: 
+        block_id = bloco["id"] 
+        with st.container(border=True): 
             st.subheader(bloco["label"])
-            col_text, col_media = st.columns([1, 1.2]) # Corrigido: 'const' removido
+            col_text, col_media = st.columns([1, 1.2]) 
             with col_text:
-                # Text is now from roteiro.get(b["text_path"], {}).get("text", "")
-                txt_content = roteiro.get(bloco["text_path"], {}).get("text", "") # Corrigido: 'const' removido
+                txt_content = roteiro.get(bloco["text_path"], {}).get("text", "") 
                 st.caption("📜 Texto para Narração:")
-                st.markdown(f"_{txt_content.substring(0, 250)}..._" if txt_content else "_Sem texto_")
+                st.markdown(f"_{txt_content[:250]}..._" if txt_content else "_Sem texto_")
 
-                # Audio generation button disabled if loaded from drive
                 if st.button(f"🔊 Gerar Áudio ({block_id})", key=f"btn_audio_{block_id}", disabled=is_job_loaded):
                     if txt_content:
                         try:
-                            audio_bio = gerar_audio_gtts(txt_content) # Corrigido: 'const' removido
+                            audio_bio = gerar_audio_gtts(txt_content) 
                             if audio_bio:
-                                audio_path = os.path.join(tempfile.gettempdir(), f"{bid}.mp3") # Corrigido: 'const' removido
+                                audio_path = os.path.join(tempfile.gettempdir(), f"{block_id}.mp3") 
                                 with open(audio_path, "wb") as f:
                                     f.write(audio_bio.getvalue())
-                                st.session_state["generated_audios_blocks"][bid] = audio_path
+                                st.session_state["generated_audios_blocks"][block_id] = audio_path
                                 st.rerun()
-                        except Exception as e: # Corrigido: `catch (e)` para `except Exception as e:`
+                        except Exception as e: 
                             st.error(f"Erro áudio: {e}")
-                    # Corrigido: Removido '}'
 
-                # Display audio if available (either generated or loaded from Drive)
-                audio_path_display = st.session_state["generated_audios_blocks"].get(block_id) # Corrigido: 'const' removido
+                audio_path_display = st.session_state["generated_audios_blocks"].get(block_id) 
                 if audio_path_display and os.path.exists(audio_path_display):
                     st.audio(audio_path_display, format="audio/mp3")
 
-                # Prompt is now from roteiro.get(b["prompt_path"], {}).get("prompt", "")
-                prompt_content = roteiro.get(bloco["prompt_path"], {}).get("prompt", "") # Corrigido: 'const' removido
+                prompt_content = roteiro.get(bloco["prompt_path"], {}).get("prompt", "") 
                 st.caption("📋 Prompt Visual:")
                 st.code(prompt_content, language="text")
-            # Corrigido: Removido '}'
 
             with col_media:
                 st.caption("🖼️ Imagem da Cena:")
-                img_path_display = st.session_state["generated_images_blocks"].get(block_id) # Corrigido: 'const' removido
+                img_path_display = st.session_state["generated_images_blocks"].get(block_id) 
                 if img_path_display and os.path.exists(img_path_display):
-                    try: # Corrigido: `try:`
-                        st.image(img_path_display, use_column_width=True) # Corrigido: 'true' para 'True'
-                    except Exception: # Corrigido: `catch (Exception)` para `except Exception:`
+                    try: 
+                        st.image(img_path_display, use_column_width=True) 
+                    except Exception: 
                         st.error("Erro ao exibir imagem.")
-                    # Corrigido: Removido '}'
                 else:
                     st.info("Nenhuma imagem definida.")
-                # Corrigido: Removido '}'
 
-                c_gen, c_up = st.columns([1.5, 2]) # Corrigido: 'const' removido
+                c_gen, c_up = st.columns([1.5, 2]) 
                 with c_gen:
-                    # Image generation button disabled if loaded from drive
                     if st.button(f"✨ Gerar ({resolucao_escolhida.split()[0]})", key=f"btn_gen_{block_id}", disabled=is_job_loaded):
                         if prompt_content:
-                            with st.spinner(f"Criando no formato {resolucao_escolhida}...") as spinner_box: # Corrigido: Nomeando o spinner
+                            with st.spinner(f"Criando no formato {resolucao_escolhida}...") as spinner_box: 
                                 try:
-                                    img_bio = despachar_geracao_imagem(prompt_content, motor_escolhido, resolucao_escolhida) # Corrigido: 'const' removido
+                                    img_bio = despachar_geracao_imagem(prompt_content, motor_escolhido, resolucao_escolhida) 
                                     if img_bio:
-                                        img_path = os.path.join(tempfile.gettempdir(), f"{bid}.png") # Corrigido: 'const' removido
+                                        img_path = os.path.join(tempfile.gettempdir(), f"{block_id}.png") 
                                         with open(img_path, "wb") as f:
                                             f.write(img_bio.getvalue())
-                                        st.session_state["generated_images_blocks"][bid] = img_path
+                                        st.session_state["generated_images_blocks"][block_id] = img_path
                                         st.success("Gerada!")
                                         st.rerun()
-                                except Exception as e: # Corrigido: `catch (e)` para `except Exception as e:`
+                                except Exception as e: 
                                     st.error(f"Erro: {e}")
                         else:
                             st.warning("Sem prompt.")
-                    # Corrigido: Removido '}'
                 with c_up:
-                    uploaded_file = st.file_uploader("Ou envie a sua:", type=["png", "jpg", "jpeg"], key=f"upload_{block_id}", disabled=is_job_loaded) # Corrigido: 'const' removido
+                    uploaded_file = st.file_uploader("Ou envie a sua:", type=["png", "jpg", "jpeg"], key=f"upload_{block_id}", disabled=is_job_loaded) 
                     if uploaded_file is not None:
-                        bytes_data = uploaded_file.read() # Corrigido: 'const' removido
-                        img_path = os.path.join(tempfile.gettempdir(), f"{block_id}_uploaded.png") # Corrigido: 'const' removido
+                        bytes_data = uploaded_file.read() 
+                        img_path = os.path.join(tempfile.gettempdir(), f"{block_id}_uploaded.png") 
                         with open(img_path, "wb") as f:
                             f.write(bytes_data)
                         st.session_state["generated_images_blocks"][block_id] = img_path
                         st.success("Enviada!")
-                    # Corrigido: Removido '}'
-            # Corrigido: Removido '}'
-        # Corrigido: Removido '}'
-    # Corrigido: Removido '}'
+
     st.divider()
     st.header("🎬 Finalização")
-    usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay Personalizado)", value=True) # Corrigido: 'const' e 'true' para 'True'
+    usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay Personalizado)", value=True) 
 
     st.subheader("🎵 Música de Fundo (Opcional)")
 
-    # Check if saved music exists
-    saved_music_exists = os.path.exists(SAVED_MUSIC_FILE) # Corrigido: 'const' removido
+    saved_music_exists = os.path.exists(SAVED_MUSIC_FILE) 
 
-    col_mus_1, col_mus_2 = st.columns(2) # Corrigido: 'const' removido
+    col_mus_1, col_mus_2 = st.columns(2) 
 
     with col_mus_1:
         if saved_music_exists:
@@ -1141,57 +1091,51 @@ with tab4:
             if st.button("❌ Remover Música Padrão"):
                 if delete_music_file():
                     st.rerun()
-            # Corrigido: Removido '}'
         else:
             st.info("Nenhuma música padrão salva.")
-        # Corrigido: Removido '}'
     with col_mus_2:
-        music_upload = st.file_uploader("Upload Música (MP3)", type=["mp3"]) # Corrigido: 'const' removido
+        music_upload = st.file_uploader("Upload Música (MP3)", type=["mp3"]) 
         if music_upload:
             st.audio(music_upload)
             if st.button("💾 Salvar como Música Padrão"):
                 if save_music_file(music_upload.getvalue()):
                     st.success("Música padrão salva!")
                     st.rerun()
-            # Corrigido: Removido '}'
-        # Corrigido: Removido '}'
-    music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, load_config().get("music_vol", 0.15)) # Corrigido: 'const' removido
+    music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, load_config().get("music_vol", 0.15)) 
 
-    # Display SRT content if loaded from Drive or generated manually
     if st.session_state.get("generated_srt_content"):
         st.subheader("📄 Legendas (SRT)")
         st.code(st.session_state["generated_srt_content"], language="srt")
         if st.download_button("⬇️ Baixar SRT", st.session_state["generated_srt_content"], "legendas.srt", "text/plain"):
             pass
-        # Corrigido: Removido '}'
     if st.button("Renderizar Vídeo Completo (Unir tudo)", type="primary"):
-        with st.status("Renderizando vídeo com efeitos...", expanded=True) as status: # Corrigido: 'true' para 'True'
-            temp_dir_render = None # Corrigido: 'let' e 'null'
+        with st.status("Renderizando vídeo com efeitos...", expanded=True) as status: 
+            temp_dir_render = None 
             try:
                 if not shutil_which("ffmpeg"):
                     status.update(label="FFmpeg não encontrado!", state="error")
                     st.stop()
 
-                temp_dir_render = tempfile.mkdtemp() # Separate temp dir for rendering output
-                clip_files = [] # Corrigido: 'const' removido
+                temp_dir_render = tempfile.mkdtemp() 
+                clip_files = [] 
 
-                font_path = resolve_font_path(st.session_state["overlay_settings"]["line1_font"], uploaded_font_file) # Corrigido: 'const' removido
+                font_path = resolve_font_path(st.session_state["overlay_settings"]["line1_font"], uploaded_font_file) 
                 if usar_overlay and not font_path:
                     st.warning("⚠️ Fonte não encontrada. O overlay pode falhar.")
 
-                meta = st.session_state.get("meta_dados", {}) # Corrigido: 'const' removido
-                txt_dt = meta.get("data", "") # Corrigido: 'const' removido
-                txt_ref = meta.get("ref", "") # Corrigido: 'const' removido
+                meta = st.session_state.get("meta_dados", {}) 
+                txt_dt = meta.get("data", "") 
+                txt_ref = meta.get("ref", "") 
 
-                map_titulos = {"hook": "EVANGELHO", "leitura": "EVANGELHO", "reflexao": "REFLEXÃO", "aplicacao": "APLICAÇÃO", "oracao": "ORAÇÃO"} # Corrigido: 'const' removido
+                map_titulos = {"hook": "EVANGELHO", "leitura": "EVANGELHO", "reflexao": "REFLEXÃO", "aplicacao": "APLICAÇÃO", "oracao": "ORAÇÃO"} 
 
-                res_params = get_resolution_params(resolucao_escolhida) # Corrigido: 'const' removido
-                s_out = f"{res_params['w']}x{res_params['h']}" # Corrigido: 'const' removido
+                res_params = get_resolution_params(resolucao_escolhida) 
+                s_out = f"{res_params['w']}x{res_params['h']}" 
 
-                sets = st.session_state["overlay_settings"] # Corrigido: 'const' removido
-                speed_val = sets["effect_speed"] * 0.0005 # Corrigido: 'const' removido
+                sets = st.session_state["overlay_settings"] 
+                speed_val = sets["effect_speed"] * 0.0005 
 
-                zoom_expr = None # Corrigido: 'let'
+                zoom_expr = None 
 
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
                     zoom_expr = f"z='min(zoom+{speed_val},1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
@@ -1204,69 +1148,67 @@ with tab4:
                 else:
                     zoom_expr = "z=1:x=0:y=0"
 
-                for b in blocos_config: # Corrigido: `for (const b of ...)`
-                    bid = b["id"] # Corrigido: 'const' removido
-                    img_path = st.session_state["generated_images_blocks"].get(bid) # Corrigido: 'const' removido
-                    audio_path = st.session_state["generated_audios_blocks"].get(bid) # Corrigido: 'const' removido
+                for b in blocos_config: 
+                    bid = b["id"] 
+                    img_path = st.session_state["generated_images_blocks"].get(bid) 
+                    audio_path = st.session_state["generated_audios_blocks"].get(bid) 
 
                     if not img_path or not audio_path or not os.path.exists(img_path) or not os.path.exists(audio_path):
                         st.warning(f"⚠️ Ignorando bloco '{bid}' na renderização devido a imagem ou áudio ausente/inválido.")
                         continue
 
                     st.write(f"Processando clipe: {bid}...")
-                    clip_path = os.path.join(temp_dir_render, f"{bid}_clip.mp4") # Corrigido: 'const' removido
+                    clip_path = os.path.join(temp_dir_render, f"{bid}_clip.mp4") 
 
-                    dur = get_audio_duration_seconds(audio_path) or 5.0 # Corrigido: 'const' removido
-                    frames = int(dur * 25) # Corrigido: 'const' removido
+                    dur = get_audio_duration_seconds(audio_path) or 5.0 
+                    frames = int(dur * 25) 
 
-                    vf_filters = [] # Corrigido: 'const' removido
+                    vf_filters = [] 
                     if sets["effect_type"] != "Estático (Sem movimento)":
                         vf_filters.append(f"zoompan={zoom_expr}:d={frames}:s={s_out}")
                     else:
                         vf_filters.append(f"scale={s_out}")
 
                     if sets["trans_type"] == "Fade (Escurecer)":
-                        td = sets["trans_dur"] # Corrigido: 'const' removido
+                        td = sets["trans_dur"] 
                         vf_filters.append(f"fade=t=in:st=0:d={td},fade=t=out:st={dur-td}:d={td}")
 
                     if usar_overlay:
-                        titulo_atual = map_titulos.get(bid, "EVANGELHO") # Corrigido: 'const' removido
-                        f1_path = resolve_font_path(sets["line1_font"], uploaded_font_file) # Corrigido: 'const' removido
-                        f2_path = resolve_font_path(sets["line2_font"], uploaded_font_file) # Corrigido: 'const' removido
-                        f3_path = resolve_font_path(sets["line3_font"], uploaded_font_file) # Corrigido: 'const' removido
+                        titulo_atual = map_titulos.get(bid, "EVANGELHO") 
+                        f1_path = resolve_font_path(sets["line1_font"], uploaded_font_file) 
+                        f2_path = resolve_font_path(sets["line2_font"], uploaded_font_file) 
+                        f3_path = resolve_font_path(sets["line3_font"], uploaded_font_file) 
 
-                        alp1 = get_text_alpha_expr(sets.get("line1_anim", "Estático"), dur) # Corrigido: 'const' removido
-                        alp2 = get_text_alpha_expr(sets.get("line2_anim", "Estático"), dur) # Corrigido: 'const' removido
-                        alp3 = get_text_alpha_expr(sets.get("line3_anim", "Estático"), dur) # Corrigido: 'const' removido
+                        alp1 = get_text_alpha_expr(sets.get("line1_anim", "Estático"), dur) 
+                        alp2 = get_text_alpha_expr(sets.get("line2_anim", "Estático"), dur) 
+                        alp3 = get_text_alpha_expr(sets.get("line3_anim", "Estático"), dur) 
 
-                        clean_t1 = sanitize_text_for_ffmpeg(titulo_atual) # Corrigido: 'const' removido
-                        clean_t2 = sanitize_text_for_ffmpeg(txt_dt) # Corrigido: 'const' removido
-                        clean_t3 = sanitize_text_for_ffmpeg(txt_ref) # Corrigido: 'const' removido
+                        clean_t1 = sanitize_text_for_ffmpeg(titulo_atual) 
+                        clean_t2 = sanitize_text_for_ffmpeg(txt_dt) 
+                        clean_t3 = sanitize_text_for_ffmpeg(txt_ref) 
 
                         if f1_path: vf_filters.append(f"drawtext=fontfile='{f1_path}':text='{clean_t1}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp1}")
                         if f2_path: vf_filters.append(f"drawtext=fontfile='{f2_path}':text='{clean_t2}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp2}")
                         if f3_path: vf_filters.append(f"drawtext=fontfile='{f3_path}':text='{clean_t3}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp3}")
-                    # Corrigido: Removido '}'
 
-                    filter_complex = ",".join(vf_filters) # Corrigido: 'const' removido
+                    filter_complex = ",".join(vf_filters) 
 
                     cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path, "-vf", filter_complex, "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip_path]
                     run_cmd(cmd)
                     clip_files.append(clip_path)
-                # Corrigido: Removido '}'
 
                 if clip_files:
-                    concat_list = os.path.join(temp_dir_render, "list.txt") # Corrigido: 'const' removido
+                    concat_list = os.path.join(temp_dir_render, "list.txt") 
                     with open(concat_list, "w") as f:
-                        for p in clip_files: f.write(f"file '{p}'\n") # Corrigido: `for (const p of ...)`
+                        for p in clip_files: f.write(f"file '{p}'\n") 
 
-                    temp_video = os.path.join(temp_dir_render, "temp_video.mp4") # Corrigido: 'const' removido
+                    temp_video = os.path.join(temp_dir_render, "temp_video.mp4") 
                     run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", temp_video])
 
-                    final_path = os.path.join(temp_dir_render, "final.mp4") # Corrigido: 'const' removido
+                    final_path = os.path.join(temp_dir_render, "final.mp4") 
 
                     # Lógica de Música: 1. Uploaded, 2. Saved Default, 3. None
-                    music_source_path = None # Corrigido: 'let' e 'null'
+                    music_source_path = None 
 
                     if music_upload:
                         music_source_path = os.path.join(temp_dir_render, "bg.mp3")
@@ -1281,49 +1223,40 @@ with tab4:
                             "-stream_loop", "-1", "-i", music_source_path,
                             "-filter_complex", f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]",
                             "-map", "0:v", "-map", "[a]",
-                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", # ensure re-encode for consistent output
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", 
                             final_path
                         ]
                         run_cmd(cmd_mix)
                     else:
                         os.rename(temp_video, final_path)
-                    # Corrigido: Removido '}'
 
                     with open(final_path, "rb") as f:
                         st.session_state["video_final_bytes"] = BytesIO(f.read())
                     status.update(label="Vídeo Renderizado com Sucesso!", state="complete")
                 else:
                     status.update(label="Nenhum clipe válido gerado.", state="error")
-                # Corrigido: Removido '}'
-            except Exception as e: # Corrigido: `catch (Exception as e)`
+            except Exception as e: 
                 status.update(label="Erro na renderização", state="error")
                 st.error(f"Detalhes: {e}")
                 st.error(traceback.format_exc())
-            finally: # Corrigido: `finally:`
+            finally: 
                 # Clean up all temporary directories
                 if st.session_state.get("temp_assets_dir") and os.path.exists(st.session_state["temp_assets_dir"]):
                     _shutil.rmtree(st.session_state["temp_assets_dir"])
-                    del st.session_state["temp_assets_dir"] # Clear the state
+                    del st.session_state["temp_assets_dir"] 
                     st.info("📦 Arquivos temporários de assets do job removidos.")
-                # Corrigido: Removido '}'
                 if temp_dir_render and os.path.exists(temp_dir_render):
                     _shutil.rmtree(temp_dir_render)
                     st.info("📦 Arquivos temporários de renderização removidos.")
-            # Corrigido: Removido '}'
-        # Corrigido: Removido '}'
 
     if st.session_state.get("video_final_bytes"):
         st.success("Vídeo pronto!")
         st.video(st.session_state["video_final_bytes"])
         st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
-    # Corrigido: Removido '}'
 
 # --------- TAB 5: HISTÓRICO ----------
-with tab5: # Corrigido: Removido '{'
+with tab5: 
     st.info("Histórico em desenvolvimento.")
-# Corrigido: Removido '}'
 
 st.markdown("---")
 st.caption("Studio Jhonata v20.0 - Música Padrão")
-
-# Corrigido: Removido '}'
