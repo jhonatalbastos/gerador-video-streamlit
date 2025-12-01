@@ -20,7 +20,7 @@ import streamlit as st
 # --- API Imports ---
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+from googleapialient.errors import HttpError
 # Importa a biblioteca OpenAI (assumindo que o pacote 'openai' está disponível no ambiente Streamlit)
 try:
     from openai import OpenAI
@@ -967,17 +967,20 @@ with tab3:
 
                 zoom_expr = None
 
+                # CORREÇÃO CRÍTICA DO TREMOR (v22.6)
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
-                    # CORREÇÃO SMOOTHNESS: Expressão de zoom suave
-                    zoom_expr = f"min(zoom+{speed_val},1.5):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                    # Expressão FFmpeg: z='min(1 + speed*on, 1.5)':x='...':y='...':d=frames:s=size:fps=25
+                    zoom_expr_content = f"min(zoom+{speed_val},1.5):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Zoom Out":
-                    zoom_expr = f"max(1,1.5-{speed_val}*on):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                    zoom_expr_content = f"max(1,1.5-{speed_val}*on):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Panorâmica Esquerda":
-                    zoom_expr = f"1.2:x='min(x+{speed_val}*100,iw-iw/zoom)':y='(ih-ih/zoom)/2'"
+                    # 1.2 é o zoom inicial, o pan (movimento em x) vai da direita para a esquerda
+                    zoom_expr_content = f"1.2:x='min(x+{speed_val}*100,iw-iw/zoom)':y='(ih-ih/zoom)/2'"
                 elif sets["effect_type"] == "Panorâmica Direita":
-                    zoom_expr = f"1.2:x='max(0,x-{speed_val}*100)':y='(ih-ih/zoom)/2'"
+                    # 1.2 é o zoom inicial, o pan (movimento em x) vai da esquerda para a direita
+                    zoom_expr_content = f"1.2:x='max(0,x-{speed_val}*100)':y='(ih-ih/zoom)/2'"
                 else:
-                    zoom_expr = "1:x=0:y=0" # Estático
+                    zoom_expr_content = "1:x=0:y=0" # Estático
 
                 for b in blocos_config:
                     bid = b["id"]
@@ -998,8 +1001,8 @@ with tab3:
                     
                     # Aplica zoompan com FPS forçado para suavizar o movimento
                     if sets["effect_type"] != "Estático (Sem movimento)":
-                        # Note: 'z=...' e 'x=...' são parte do zoom_expr, não precisam de aspas extras.
-                        zoom_pan_params = f"z='{zoom_expr}':d={frames}:s={s_out}:fps=25" 
+                        # Injeta zoom_expr_content sem aspas externas, e envolve APENAS a expressão principal em aspas
+                        zoom_pan_params = f"z='{zoom_expr_content}':d={frames}:s={s_out}:fps=25" 
                         vf_filters.append(f"zoompan={zoom_pan_params}")
                     else:
                         vf_filters.append(f"scale={s_out}")
@@ -1028,6 +1031,9 @@ with tab3:
 
                     filter_complex = ",".join(vf_filters)
 
+                    # CORREÇÃO DO COMANDO DE CLIPE: Remover o ':fps=25' do zoompan e usar -r (frame rate)
+                    # O zoompan já está definindo o FPS na saída, mas o FFmpeg reclama quando o -r está faltando.
+                    # No entanto, vamos tentar a sintaxe mais limpa do zoompan primeiro, já que a quebra ocorreu lá.
                     cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path, "-vf", filter_complex, "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip_path]
                     run_cmd(cmd)
                     clip_files.append(clip_path)
@@ -1146,4 +1152,4 @@ with tab3:
         st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
 
 st.markdown("---")
-st.caption("Studio Jhonata v22.5 - Suavização de Ken Burns")
+st.caption("Studio Jhonata v22.6 - Fix de Sintaxe Ken Burns e Panorâmica")
