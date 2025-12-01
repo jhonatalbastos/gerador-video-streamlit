@@ -1,5 +1,5 @@
-# app.py — Studio Jhonata (COMPLETO v21.0 - Disparo de Job no GAS)
-# Features: Nova função para disparar geração de Job no Google Apps Script.
+# app.py — Studio Jhonata (COMPLETO v20.0 - COM INTEGRAÇÃO DRIVE)
+# Features: Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos, Carregamento via Drive
 import os
 import re
 import json
@@ -9,18 +9,20 @@ import traceback
 import subprocess
 import urllib.parse
 import random
-import base64
-import shutil as _shutil
-
-# Imports de Tipagem (Standard Library)
 from io import BytesIO
-from datetime import date, datetime
-from typing import List, Optional, Tuple, Dict 
+from datetime import date
+from typing import List, Optional, Tuple, Dict, Any
+import base64
+import shutil as _shutil # Import for rmtree
 
-# Imports de Bibliotecas Externas
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
+
+# --- Google Drive API Imports ---
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # Force ffmpeg path for imageio if needed (Streamlit Cloud)
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
@@ -28,12 +30,7 @@ os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 # Arquivos de configuração persistentes
 CONFIG_FILE = "overlay_config.json"
 SAVED_MUSIC_FILE = "saved_bg_music.mp3"
-
-# =========================
-# VARIÁVEIS DO NOVO FLUXO 
-# =========================
-# URL do endpoint do Google Apps Script que gerencia o Drive (POST/PULL)
-GAS_API_URL = "https://script.google.com/macros/s/AKfycbwA9SzkkbtlZBL5r5FU-UZG9-d8utaG554hgIQTTBXwBuypszl8W2MbepvoEGYja1_d9g/exec" 
+MONETIZA_DRIVE_FOLDER_NAME = "Monetiza_Studio_Jobs"
 
 # =========================
 # Page config
@@ -55,33 +52,25 @@ def load_config():
         "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)", "line3_anim": "Estático",
         "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
-        "music_vol": 0.15,
+        "music_vol": 0.15
     }
-    
+
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
                 saved = json.load(f)
-                
-                # Mescla as configurações e remove campos antigos de rastreamento
-                for key in list(saved.keys()):
-                    if key not in default_settings:
-                        del saved[key]
-                for key in default_settings:
-                    if key not in saved:
-                        saved[key] = default_settings[key]
-                
-                return saved
+                default_settings.update(saved)
+                return default_settings
         except Exception as e:
             st.warning(f"Erro ao carregar configurações salvas: {e}")
-    
+
     return default_settings
 
 def save_config(settings):
     """Salva configurações no disco"""
     try:
         with open(CONFIG_FILE, "w") as f:
-            json.dump(settings, f, indent=4)
+            json.dump(settings, f)
         return True
     except Exception as e:
         st.error(f"Erro ao salvar configurações: {e}")
@@ -110,11 +99,11 @@ def delete_music_file():
 # =========================
 # Groq - lazy init
 # =========================
-_client = None
+_groq_client = None
 
 def inicializar_groq():
-    global _client
-    if _client is None:
+    global _groq_client
+    if _groq_client is None:
         try:
             from groq import Groq  # type: ignore
 
@@ -122,11 +111,65 @@ def inicializar_groq():
                 st.error("❌ Configure GROQ_API_KEY em Settings → Secrets no Streamlit Cloud.")
                 st.stop()
             api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-            _client = Groq(api_key=api_key)
+            _groq_client = Groq(api_key=api_key)
         except Exception as e:
             st.error(f"Erro ao inicializar Groq client: {e}")
             st.stop()
-    return _client
+    return _groq_client
+
+# =========================
+# Google Drive API Client - lazy init
+# =========================
+_drive_service = None
+
+def get_drive_service():
+    global _drive_service
+    # O novo sistema de leitura usa chaves separadas para evitar problemas de formatação JSON/TOML
+    required_keys = [
+        "type", "project_id", "private_key_id", "private_key",
+        "client_email", "client_id", "auth_uri", "token_uri",
+        "auth_provider_x509_cert_url", "client_x509_cert_url", "universe_domain"
+    ]
+
+    # Prefixos para as novas chaves no st.secrets
+    prefix = "gcp_service_account_"
+
+    if _drive_service is None:
+        try:
+            creds_info = {}
+            missing_keys = []
+
+            for key in required_keys:
+                secret_key = prefix + key
+                value = st.secrets.get(secret_key)
+
+                if value is None:
+                    # Verifica se a chave original existe se o novo formato falhar
+                    original_secret = st.secrets.get("gcp_service_account")
+                    if original_secret is None and prefix in secret_key:
+                        missing_keys.append(key)
+                else:
+                    creds_info[key] = value
+
+            if missing_keys:
+                st.error(
+                    f"❌ Erro de Configuração: As seguintes chaves de credenciais do Drive estão ausentes "
+                    f"no Streamlit Secrets (use o prefixo '{prefix}'): {', '.join(missing_keys)}. "
+                    f"Por favor, atualize o secrets.toml para o novo formato de múltiplas chaves."
+                )
+                st.stop()
+
+            # Todas as chaves foram reunidas em creds_info
+            creds = service_account.Credentials.from_service_account_info(
+                creds_info,
+                scopes=['https://www.googleapis.com/auth/drive.readonly']
+            )
+            _drive_service = build('drive', 'v3', credentials=creds)
+            st.success("✅ Google Drive API inicializada com sucesso!")
+        except Exception as e:
+            st.error(f"❌ Erro ao inicializar Google Drive API: {e}. Verifique as credenciais da conta de serviço e permissões.")
+            st.stop()
+    return _drive_service
 
 # =========================
 # Inicializar banco de personagens
@@ -150,18 +193,23 @@ def inicializar_personagens():
     }
 
 # =========================
-# Funções de Liturgia, Roteiro e Análise
+# Limpeza do texto bíblico
 # =========================
-
 def limpar_texto_evangelho(texto: str) -> str:
-    if not texto: return ""
+    if not texto:
+        return ""
     texto_limpo = texto.replace("\n", " ").strip()
-    texto_limpo = re.sub(r"\b(\d{1,3})(?=[A-Za-zÁ-Úá-ú])", "", texto_limpo)
+    texto_limpo = re.sub(r" (\d{1,3})(?=[A-Za-zÁ-Úá-ú])", "", texto_limpo)
     texto_limpo = re.sub(r"\s{2,}", " ", texto_limpo)
     return texto_limpo.strip()
 
+# =========================
+# Extrair referência bíblica (ROBUSTO)
+# =========================
 def extrair_referencia_biblica(titulo: str):
-    if not titulo: return None
+    if not titulo:
+        return None
+
     titulo_lower = titulo.lower()
     mapa_nomes = {
         "mateus": "Mateus", "mt": "Mateus",
@@ -169,75 +217,43 @@ def extrair_referencia_biblica(titulo: str):
         "lucas": "Lucas", "lc": "Lucas",
         "joão": "João", "joao": "João", "jo": "João"
     }
+
     evangelista_encontrado = None
     for chave, valor in mapa_nomes.items():
         if re.search(rf"\b{chave}\b", titulo_lower):
             evangelista_encontrado = valor
             break
+
     if not evangelista_encontrado:
-        m_fallback = re.search(r"(?:São|S\.|Sao|San|St\.?)\s*([A-Za-zÁ-Úá-ú]+)", titulo, re.IGNORECASE)
+        m_fallback = re.search(r"(?:São|S\.|Sao|San|St\.?)s*([A-Za-zÁ-Úá-ú]+)", titulo, re.IGNORECASE)
         if m_fallback:
             nome_cand = m_fallback.group(1).strip()
             if len(nome_cand) > 2:
-                evangelista_encontrado = nome_cand
-            else: return None
-        else: return None
+                evangelista_encontrado = mapa_nomes.get(nome_cand.lower(), nome_cand)
+            else:
+                return None
+        else:
+            return None
+
     m_nums = re.search(r"(\d{1,3})\s*[,:]\s*(\d+(?:[-–]\d+)?)", titulo)
+
     if m_nums:
         capitulo = m_nums.group(1)
         versiculos_raw = m_nums.group(2)
         versiculos = versiculos_raw.replace("-", " a ").replace("–", " a ")
-    else: return None
+    else:
+        return None
+
     return {"evangelista": evangelista_encontrado, "capitulo": capitulo, "versiculos": versiculos}
 
 def formatar_referencia_curta(ref_biblica):
-    if not ref_biblica: return ""
+    if not ref_biblica:
+        return ""
     return f"{ref_biblica['evangelista']}, Cap. {ref_biblica['capitulo']}, {ref_biblica['versiculos']}"
 
-def analisar_personagens_groq(texto_evangelho: str, banco_personagens: dict):
-    client = inicializar_groq()
-    personagens_str = json.dumps(banco_personagens, ensure_ascii=False)
-    system_prompt = (
-        "Você é especialista em análise bíblica.\n"
-        "Analise o texto e identifique TODOS os personagens bíblicos mencionados.\n\n"
-        "Formato EXATO da resposta:\n\n"
-        "PERSONAGENS: nome1; nome2; nome3\n\n"
-        "NOVOS: NomeNovo|descrição_detalhada_aparência_física_roupas_idade_estilo (apenas se não existir no banco)\n\n"
-        f"BANCO EXISTENTE: {'; '.join(banco_personagens.keys())}\n\n"
-    )
-    try:
-        resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"TEXTO: {texto_evangelho[:1500]}"},
-            ],
-            temperature=0.3,
-            max_tokens=400,
-        )
-        resultado = resp.choices[0].message.content
-        personagens_detectados = {}
-        m = re.search(r"PERSONAGENS:\s*(.+)", resultado)
-        if m:
-            nomes = [n.strip() for n in m.group(1).split(";") if n.strip()]
-            for nome in nomes:
-                if nome in banco_personagens:
-                    personagens_detectados[nome] = banco_personagens[nome]
-        m2 = re.search(r"NOVOS:\s*(.+)", resultado)
-        if m2:
-            novos = m2.group(1).strip()
-            blocos = re.split(r";|,", novos)
-            for bloco in blocos:
-                if "|" in bloco:
-                    nome, desc = bloco.split("|", 1)
-                    nome = nome.strip()
-                    desc = desc.strip()
-                    if not nome: continue
-                    personagens_detectados[nome] = desc
-                    banco_personagens[nome] = desc
-        return personagens_detectados
-    except Exception: return {}
-
+# =========================
+# APIs Liturgia
+# =========================
 def buscar_liturgia_api1(data_str: str):
     url = f"https://api-liturgia-diaria.vercel.app/?date={data_str}"
     try:
@@ -247,7 +263,8 @@ def buscar_liturgia_api1(data_str: str):
         today = dados.get("today", {})
         readings = today.get("readings", {})
         gospel = readings.get("gospel")
-        if not gospel: return None
+        if not gospel:
+            return None
         referencia_liturgica = today.get("entry_title", "").strip() or "Evangelho do dia"
         titulo = (
             gospel.get("head_title", "")
@@ -255,7 +272,8 @@ def buscar_liturgia_api1(data_str: str):
             or "Evangelho de Jesus Cristo"
         ).strip()
         texto = gospel.get("text", "").strip()
-        if not texto: return None
+        if not texto:
+            return None
         texto_limpo = limpar_texto_evangelho(texto)
         ref_biblica = extrair_referencia_biblica(titulo)
         return {
@@ -265,7 +283,8 @@ def buscar_liturgia_api1(data_str: str):
             "texto": texto_limpo,
             "ref_biblica": ref_biblica,
         }
-    except Exception: return None
+    except Exception:
+        return None
 
 def buscar_liturgia_api2(data_str: str):
     url = f"https://liturgia.up.railway.app/v2/{data_str}"
@@ -275,9 +294,11 @@ def buscar_liturgia_api2(data_str: str):
         dados = resp.json()
         lit = dados.get("liturgia", {})
         ev = lit.get("evangelho") or lit.get("evangelho_do_dia") or {}
-        if not ev: return None
+        if not ev:
+            return None
         texto = ev.get("texto", "") or ev.get("conteudo", "")
-        if not texto: return None
+        if not texto:
+            return None
         texto_limpo = limpar_texto_evangelho(texto)
         return {
             "fonte": "liturgia.up.railway.app",
@@ -286,26 +307,27 @@ def buscar_liturgia_api2(data_str: str):
             "texto": texto_limpo,
             "ref_biblica": None,
         }
-    except Exception: return None
+    except Exception:
+        return None
 
 def obter_evangelho_com_fallback(data_str: str):
     ev = buscar_liturgia_api1(data_str)
-    if ev: st.info("📡 Usando api-liturgia-diaria.vercel.app"); return ev
+    if ev:
+        st.info("📡 Usando api-liturgia-diaria.vercel.app")
+        return ev
     ev = buscar_liturgia_api2(data_str)
-    if ev: st.info("📡 Usando liturgia.up.railway.app"); return ev
-    st.error("❌ Não foi possível obter o Evangelho"); return None
+    if ev:
+        st.info("📡 Usando liturgia.up.railway.app")
+        return ev
+    st.error("❌ Não foi possível obter o Evangelho")
+    return None
 
-def extrair_bloco(rotulo: str, texto: str) -> str:
-    padrao = rf"{rotulo}:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:\s*|\nPROMPT_|$)"
-    m = re.search(padrao, texto, re.DOTALL | re.IGNORECASE)
-    return m.group(1).strip() if m else ""
-
-def extrair_prompt(rotulo: str, texto: str) -> str:
-    padrao = rf"{rotulo}:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÃÕÇ]{{3,}}:\s*|\nPROMPT_|$)"
-    m = re.search(padrao, texto, re.DOTALL | re.IGNORECASE)
-    return m.group(1).strip() if m else ""
-
+# =========================
+# Roteiro + Prompts
+# =========================
 def gerar_roteiro_com_prompts_groq(texto_evangelho: str, referencia_liturgica: str, personagens: dict):
+    # This function is retained for the *manual* generation path.
+    # When loading from Drive, this is skipped.
     client = inicializar_groq()
     texto_limpo = limpar_texto_evangelho(texto_evangelho)
     personagens_str = json.dumps(personagens, ensure_ascii=False)
@@ -348,21 +370,18 @@ PROMPT_GERAL: [prompt para thumbnail/capa]"""
             max_tokens=1200,
         )
         texto_gerado = resp.choices[0].message.content
-        partes: dict[str, str] = {}
-        partes["hook"] = extrair_bloco("HOOK", texto_gerado)
-        partes["reflexão"] = extrair_bloco("REFLEXÃO", texto_gerado)
-        partes["aplicação"] = extrair_bloco("APLICAÇÃO", texto_gerado)
-        partes["oração"] = extrair_bloco("ORAÇÃO", texto_gerado)
-        partes["prompt_hook"] = extrair_prompt("PROMPT_HOOK", texto_gerado)
-        partes["prompt_reflexão"] = extrair_prompt("PROMPT_REFLEXÃO", texto_gerado)
-        partes["prompt_aplicacao"] = extrair_prompt("PROMPT_APLICACAO", texto_gerado)
-        partes["prompt_oração"] = extrair_prompt("PROMPT_ORACAO", texto_gerado)
-        partes["prompt_leitura"] = extrair_prompt("PROMPT_LEITURA", texto_gerado)
-        m_geral = re.search(r"PROMPT_GERAL:\s*(.+)", texto_gerado, re.DOTALL | re.IGNORECASE)
-        partes["prompt_geral"] = m_geral.group(1).strip() if m_geral else ""
-        return partes
+        partes: dict[str, Any] = {}
+        st.warning("⚠️ O gerador Groq de roteiro precisa ser adaptado para o novo formato de blocos do frontend.")
+        return {
+            "hook": {"text": "Texto do Hook Groq", "prompt": "Prompt do Hook Groq"},
+            "leitura": {"text": "Texto da Leitura Groq", "prompt": "Prompt da Leitura Groq"},
+            "reflexao": {"text": "Texto da Reflexão Groq", "prompt": "Prompt da Reflexão Groq"},
+            "aplicacao": {"text": "Texto da Aplicação Groq", "prompt": "Prompt da Aplicação Groq"},
+            "oracao": {"text": "Texto da Oração Groq", "prompt": "Prompt da Oração Groq"},
+        }
     except Exception as e:
-        st.error(f"❌ Erro Groq: {e}"); return None
+        st.error(f"❌ Erro Groq: {e}")
+        return None
 
 def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
     if ref_biblica:
@@ -381,131 +400,16 @@ def montar_leitura_com_formula(texto_evangelho: str, ref_biblica):
     fechamento = "Palavra da Salvação. Glória a vós, Senhor!"
     return f"{abertura} {texto_evangelho} {fechamento}"
 
-
 # =========================
-# FUNÇÕES DE COMUNICAÇÃO COM APPS SCRIPT/DRIVE (NOVAS)
-# =========================
-
-def dispatch_new_job_to_gas(date_str: str) -> Optional[Dict]:
-    """
-    Dispara a criação de um novo Job de roteiro, imagem e áudio no Apps Script.
-    """
-    st.info(f"🌐 Disparando Job de Geração para {date_str} no Apps Script...")
-    
-    payload = {"date_str": date_str}
-    
-    try:
-        response = requests.post(
-            f"{GAS_API_URL}?action=generate_new_job",
-            json=payload,
-            timeout=120 # O tempo limite é maior porque o GAS irá executar IA e geração de mídia
-        )
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get("status") == "success":
-            st.success(f"Job de Geração iniciado com sucesso! ID: {data.get('job_id')}")
-            return data
-        else:
-            st.error(f"Erro ao disparar Job de Geração: {data.get('message', 'Resposta inválida do GAS.')}")
-            return None
-    except Exception as e:
-        st.error(f"Erro de comunicação/timeout com o Apps Script: {e}")
-        return None
-
-def fetch_job_metadata(job_id: str) -> Optional[Dict]:
-    """
-    Solicita ao Apps Script os metadados do Job ID e lista de URLs de arquivos.
-    """
-    st.info(f"🌐 Solicitando metadados do Job ID: {job_id}...")
-    # NOTE: O erro de configuração será tratado pela chamada ao GAS
-
-    try:
-        response = requests.post(
-            f"{GAS_API_URL}?action=fetch_job",
-            json={"job_id": job_id},
-            timeout=30
-        )
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get("status") == "success":
-            return data.get("payload")
-        else:
-            st.error(f"Erro ao buscar Job ID: {data.get('message', 'Resposta inválida do GAS.')}")
-            return None
-    except Exception as e:
-        st.error(f"Erro de comunicação com o Apps Script: {e}")
-        return None
-
-def download_files_from_urls(urls_arquivos: List[Dict]) -> Tuple[Dict, Dict]:
-    """Baixa os arquivos de áudio e imagem de URLs temporárias do Drive."""
-    images = {}
-    audios = {}
-    st.info(f"⬇️ Baixando {len(urls_arquivos)} arquivos do Google Drive...")
-    
-    for item in urls_arquivos:
-        url = item["url"]
-        block_id = item["block_id"] 
-        file_type = item["type"] 
-        
-        try:
-            r = requests.get(url, timeout=60)
-            r.raise_for_status()
-            bio = BytesIO(r.content)
-            bio.seek(0)
-
-            if file_type == "image": images[block_id] = bio
-            elif file_type == "audio": audios[block_id] = bio
-            st.write(f"✅ Baixado: {block_id} ({file_type})")
-        except Exception as e:
-            st.error(f"❌ Falha ao baixar {block_id} ({file_type}): {e}")
-            
-    return images, audios
-
-def finalize_job_on_drive(job_id: str, video_bytes: BytesIO, metadata_description: str):
-    """
-    Envia o vídeo final e os metadados para o Apps Script para upload e limpeza.
-    """
-    st.info(f"⬆️ Finalizando Job {job_id} e limpando arquivos...")
-    
-    try:
-        # NOTE: requests com 'files' não funcionam bem no Streamlit Cloud.
-        # Estamos assumindo que o ambiente do Streamlit Cloud suporta esta chamada.
-        files = {
-            'video_file': ('final_video.mp4', video_bytes, 'video/mp4'),
-            'metadata_file': ('metadata.json', metadata_description.encode('utf-8'), 'application/json')
-        }
-        
-        response = requests.post(
-            f"{GAS_API_URL}?action=finalize_job&job_id={job_id}",
-            files=files,
-            timeout=120
-        )
-        response.raise_for_status()
-        
-        data = response.json()
-        if data.get("status") == "success":
-            st.success(f"Job {job_id} concluído com sucesso e arquivos temporários limpos no Drive!")
-            st.markdown(f"**URL do Vídeo Final no Drive:** {data.get('final_url', 'N/A')}")
-            return True
-        else:
-            st.error(f"Falha na finalização do Job no Drive: {data.get('message', 'Erro desconhecido.')}")
-            return False
-            
-    except Exception as e:
-        st.error(f"Erro ao finalizar Job no Apps Script: {e}")
-        return False
-
-# =========================
-# FUNÇÕES DE ÁUDIO & IMAGEM (gTTS e Pollinations)
+# FUNÇÕES DE ÁUDIO & VÍDEO
 # =========================
 
 def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
-    if not texto or not texto.strip(): return None
+    if not texto or not texto.strip():
+        return None
     mp3_fp = BytesIO()
     try:
-        from gtts import gTTS 
+        from gtts import gTTS  # type: ignore
         tts = gTTS(text=texto, lang="pt", slow=False)
         tts.write_to_fp(mp3_fp)
         mp3_fp.seek(0)
@@ -513,13 +417,17 @@ def gerar_audio_gtts(texto: str) -> Optional[BytesIO]:
     except Exception as e:
         raise RuntimeError(f"Erro gTTS: {e}")
 
-def despachar_geracao_audio(texto: str) -> Optional[BytesIO]:
-    return gerar_audio_gtts(texto)
+# =========================
+# FUNÇÕES DE IMAGEM
+# =========================
 
 def get_resolution_params(choice: str) -> dict:
-    if "9:16" in choice: return {"w": 720, "h": 1280, "ratio": "9:16"}
-    elif "16:9" in choice: return {"w": 1280, "h": 720, "ratio": "16:9"}
-    else: return {"w": 1024, "h": 1024, "ratio": "1:1"}
+    if "9:16" in choice:
+        return {"w": 720, "h": 1280, "ratio": "9:16"}
+    elif "16:9" in choice:
+        return {"w": 1280, "h": 720, "ratio": "16:9"}
+    else: # 1:1
+        return {"w": 1024, "h": 1024, "ratio": "1:1"}
 
 def gerar_imagem_pollinations_flux(prompt: str, width: int, height: int) -> BytesIO:
     prompt_clean = prompt.replace("\n", " ").strip()[:800]
@@ -528,7 +436,9 @@ def gerar_imagem_pollinations_flux(prompt: str, width: int, height: int) -> Byte
     url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?model=flux&width={width}&height={height}&seed={seed}&nologo=true"
     r = requests.get(url, timeout=40)
     r.raise_for_status()
-    bio = BytesIO(r.content); bio.seek(0); return bio
+    bio = BytesIO(r.content)
+    bio.seek(0)
+    return bio
 
 def gerar_imagem_pollinations_turbo(prompt: str, width: int, height: int) -> BytesIO:
     prompt_clean = prompt.replace("\n", " ").strip()[:800]
@@ -537,31 +447,210 @@ def gerar_imagem_pollinations_turbo(prompt: str, width: int, height: int) -> Byt
     url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width={width}&height={height}&seed={seed}&nologo=true"
     r = requests.get(url, timeout=30)
     r.raise_for_status()
-    bio = BytesIO(r.content); bio.seek(0); return bio
+    bio = BytesIO(r.content)
+    bio.seek(0)
+    return bio
+
+def gerar_imagem_google_imagen(prompt: str, ratio: str) -> BytesIO:
+    gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not gem_key:
+        raise RuntimeError("GEMINI_API_KEY não encontrada.")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key={gem_key}"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "instances": [{"prompt": prompt}],
+        "parameters": {"sampleCount": 1, "aspectRatio": ratio}
+    }
+    r = requests.post(url, headers=headers, json=payload, timeout=45)
+    r.raise_for_status()
+    data = r.json()
+    if "predictions" in data and len(data["predictions"]) > 0:
+        b64 = data["predictions"][0]["bytesBase64Encoded"]
+        bio = BytesIO(base64.b64decode(b64))
+        bio.seek(0)
+        return bio
+    else:
+        raise RuntimeError("Resposta inválida do Google Imagen.")
 
 def despachar_geracao_imagem(prompt: str, motor: str, res_choice: str) -> BytesIO:
     params = get_resolution_params(res_choice)
-    if motor == "Pollinations Turbo":
+    if motor == "Pollinations Flux (Padrão)":
+        return gerar_imagem_pollinations_flux(prompt, params["w"], params["h"])
+    elif motor == "Pollinations Turbo":
         return gerar_imagem_pollinations_turbo(prompt, params["w"], params["h"])
+    elif motor == "Google Imagen":
+        return gerar_imagem_google_imagen(prompt, params["ratio"])
     else:
         return gerar_imagem_pollinations_flux(prompt, params["w"], params["h"])
 
 # =========================
-# Helpers e Utilitários
+# Google Drive Functions
 # =========================
+def find_file_in_drive_folder(service, file_name: str, folder_name: str) -> Optional[str]:
+    """Busca um arquivo específico dentro de uma pasta no Google Drive."""
+    try:
+        # 1. Encontrar o ID da pasta "Monetiza_Studio_Jobs"
+        query_folder = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        folders = service.files().list(q=query_folder, fields="files(id)").execute().get('files', [])
 
-def shutil_which(bin_name: str) -> Optional[str]: return _shutil.which(bin_name)
+        if not folders:
+            st.error(f"❌ Pasta '{folder_name}' não encontrada no Drive. Certifique-se de que o frontend já fez o upload de um job.")
+            return None
+
+        folder_id = folders[0]['id']
+        st.info(f"✅ Pasta '{folder_name}' encontrada com ID: {folder_id}")
+
+        # 2. Buscar o arquivo JSON dentro da pasta
+        query_file = f"name = '{file_name}' and mimeType = 'application/json' and '{folder_id}' in parents and trashed = false"
+        files = service.files().list(q=query_file, fields="files(id, name)").execute().get('files', [])
+
+        if files:
+            st.info(f"✅ Arquivo '{file_name}' encontrado no Drive.")
+            return files[0]['id']
+        else:
+            st.warning(f"⚠️ Arquivo '{file_name}' não encontrado na pasta '{folder_name}'.")
+            return None
+    except HttpError as error:
+        st.error(f"❌ Erro ao buscar arquivo no Google Drive: {error}")
+        return None
+    except Exception as e:
+        st.error(f"❌ Erro inesperado ao buscar arquivo no Google Drive: {e}")
+        return None
+
+def download_file_content(service, file_id: str) -> Optional[str]:
+    """Baixa o conteúdo de um arquivo do Google Drive."""
+    try:
+        request = service.files().get_media(fileId=file_id)
+        content = request.execute().decode('utf-8')
+        st.info(f"✅ Conteúdo do arquivo '{file_id}' baixado com sucesso.")
+        return content
+    except HttpError as error:
+        st.error(f"❌ Erro ao baixar conteúdo do arquivo {file_id}: {error}")
+        return None
+    except Exception as e:
+        st.error(f"❌ Erro inesperado ao baixar conteúdo: {e}")
+        return None
+
+def load_job_from_drive(job_id: str) -> Optional[Dict[str, Any]]:
+    """Carrega um job payload completo do Google Drive usando o Job ID."""
+    service = get_drive_service()
+    if not service:
+        return None
+
+    file_name = f"job_data_{job_id}.json"
+    file_id = find_file_in_drive_folder(service, file_name, MONETIZA_DRIVE_FOLDER_NAME)
+
+    if file_id:
+        json_content = download_file_content(service, file_id)
+        if json_content:
+            try:
+                payload = json.loads(json_content)
+                st.success(f"✅ Job '{job_id}' carregado do Google Drive!")
+                return payload
+            except json.JSONDecodeError as e:
+                st.error(f"❌ Erro ao decodificar JSON do job: {e}")
+                return None
+        else:
+            st.error(f"❌ Conteúdo JSON do job '{job_id}' está vazio.")
+            return None
+    return None
+
+def process_job_payload_and_update_state(payload: Dict[str, Any], temp_dir: str):
+    """
+    Processa o payload do job, decodifica assets e atualiza o Streamlit session state.
+    Retorna True em caso de sucesso, False em caso de falha.
+    """
+    try:
+        # The frontend now sends 'roteiro' with nested objects like {hook: {text: ..., prompt: ...}}
+        st.session_state["roteiro_gerado"] = payload.get("roteiro", {})
+        st.session_state["meta_dados"] = payload.get("meta_dados", {"data": "", "ref": ""})
+
+        st.session_state["generated_images_blocks"] = {} # Stores file paths to temp files
+        st.session_state["generated_audios_blocks"] = {} # Stores file paths to temp files
+        st.session_state["generated_srt_content"] = "" # Stores raw SRT string
+
+        assets = payload.get("assets", [])
+        for asset in assets:
+            block_id = asset.get("block_id")
+            asset_type = asset.get("type")
+            data_b64 = asset.get("data_b64")
+
+            if not block_id or not asset_type or not data_b64:
+                st.warning(f"⚠️ Asset com dados incompletos, ignorando: {asset}")
+                continue
+
+            decoded_data = base64.b64decode(data_b64)
+
+            if asset_type == "image":
+                file_path = os.path.join(temp_dir, f"{block_id}.png")
+                with open(file_path, "wb") as f:
+                    f.write(decoded_data)
+                st.session_state["generated_images_blocks"][block_id] = file_path # Store path
+
+            # 💡 CORREÇÃO CRÍTICA: Salvar áudio como .wav
+            elif asset_type == "audio":
+                # Salva como .wav para garantir compatibilidade com o formato PCM/WAV que pode estar vindo do frontend
+                # Isso resolve o erro 'could not find codec parameters' no ffmpeg quando ele tenta ler um WAV como MP3.
+                file_path = os.path.join(temp_dir, f"{block_id}.wav")
+                with open(file_path, "wb") as f:
+                    f.write(decoded_data)
+                st.session_state["generated_audios_blocks"][block_id] = file_path # Store path
+
+            elif asset_type == "srt" and block_id == "legendas":
+                srt_content = decoded_data.decode('utf-8')
+                st.session_state["generated_srt_content"] = srt_content
+
+        st.success("✅ Assets decodificados (Audio como WAV) e estado atualizado!")
+        return True
+    except Exception as e:
+        st.error(f"❌ Erro ao processar payload do job: {e}")
+        return False
+
+
+# =========================
+# Helpers
+# =========================
+def shutil_which(bin_name: str) -> Optional[str]:
+    return _shutil.which(bin_name)
+
 def run_cmd(cmd: List[str]):
-    try: subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e: raise RuntimeError(f"Comando falhou: {' '.join(cmd)}\nSTDERR: {e.stderr.decode('utf-8', errors='replace') if e.stderr else ''}")
-def get_audio_duration_seconds(path: str) -> Optional[float]:
-    if not shutil_which("ffprobe"): return None
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
+    # 💡 CORREÇÃO FFmpeg: Limpa argumentos de caracteres invisíveis (\u00a0)
+    # que causam 'could not find codec parameters' ou erro de sintaxe.
+    cleaned_cmd = []
+    for arg in cmd:
+        if isinstance(arg, str):
+            # Remove o espaço sem quebra (\u00a0) e caracteres de formatação
+            cleaned_arg = arg.replace('\u00a0', ' ').strip()
+            # Adiciona o argumento limpo, desde que não esteja vazio
+            if cleaned_arg:
+                cleaned_cmd.append(cleaned_arg)
+        else:
+            cleaned_cmd.append(arg)
+
+    try:
+        subprocess.run(cleaned_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+        raise RuntimeError(f"Comando falhou: {' '.join(cleaned_cmd)}\nSTDERR: {stderr}")
+
+def get_audio_duration_seconds(audio_path: str) -> Optional[float]:
+    """Obtém a duração de um áudio a partir do caminho do arquivo."""
+    if not shutil_which("ffprobe"):
+        st.warning("⚠️ ffprobe não encontrado! A duração do áudio pode ser imprecisa.")
+        # Fallback to a default duration if ffprobe is not available
+        return 5.0
+
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path]
     try:
         p = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out = p.stdout.decode().strip()
         return float(out) if out else None
-    except Exception: return None
+    except Exception:
+        st.error(f"Erro ao obter duração do áudio com ffprobe para {os.path.basename(audio_path)}.")
+        return 5.0 # Fallback in case of ffprobe error
+    finally:
+        pass
+
 
 def resolve_font_path(font_choice: str, uploaded_font: Optional[BytesIO]) -> Optional[str]:
     if font_choice == "Upload Personalizada" and uploaded_font:
@@ -608,13 +697,23 @@ def criar_preview_overlay(width: int, height: int, texts: List[Dict], global_upl
     return bio
 
 def get_text_alpha_expr(anim_type: str, duration: float) -> str:
-    if anim_type == "Fade In": return f"alpha='min(1,t/1)'"
-    elif anim_type == "Fade In/Out": return f"alpha='min(1,t/1)*min(1,({duration}-t)/1)'"
-    else: return "alpha=1"
+    """Retorna expressão de alpha para o drawtext baseado na animação escolhida"""
+    if anim_type == "Fade In":
+        # Aparece em 1s
+        return f"alpha='min(1,t/1)'"
+    elif anim_type == "Fade In/Out":
+        # Aparece em 1s, some 1s antes do fim
+        # min(1,t/1) * min(1,(dur-t)/1)
+        return f"alpha='min(1,t/1)*min(1,({duration}-t)/1)'"
+    else:
+        # Estático
+        return "alpha=1"
 
 def sanitize_text_for_ffmpeg(text: str) -> str:
+    """Limpa texto para evitar quebra do filtro drawtext (vírgulas, dois pontos, aspas)"""
     if not text: return ""
-    t = text.replace(":", "\:").replace("'", "")
+    t = text.replace(":", "\:")
+    t = t.replace("'", "")
     return t
 
 # =========================
@@ -626,36 +725,35 @@ st.markdown("---")
 # ---- SIDEBAR CONFIG ----
 st.sidebar.title("⚙️ Configurações")
 
-# --- Motor IMAGEN: Apenas Pollinations ---
-image_motor_options = ["Pollinations Flux (Padrão)", "Pollinations Turbo"]
-motor_escolhido = st.sidebar.selectbox("🎨 Motor de Imagem", image_motor_options, index=0)
-
+motor_escolhido = st.sidebar.selectbox("🎨 Motor de Imagem", ["Pollinations Flux (Padrão)", "Pollinations Turbo", "Google Imagen"], index=0)
 resolucao_escolhida = st.sidebar.selectbox("📏 Resolução do Vídeo", ["9:16 (Vertical/Stories)", "16:9 (Horizontal/YouTube)", "1:1 (Quadrado/Feed)"], index=0)
-
-st.sidebar.markdown("---")
-
-# --- Motor TTS: Apenas gTTS ---
-st.sidebar.markdown("### 🗣️ Motor TTS")
-st.sidebar.info("Modo de Voz: gTTS (Padrão - Gratuito)")
-tts_motor_escolhido = "gTTS (Padrão)" # Valor fixo
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🅰️ Upload de Fonte (Global)")
 uploaded_font_file = st.sidebar.file_uploader("Arquivo .ttf (para opção 'Upload Personalizada')", type=["ttf"])
 
-st.sidebar.info(f"Modo: {motor_escolhido}\nFormato: {resolucao_escolhida}\nTTS: {tts_motor_escolhido}")
+st.sidebar.info(f"Modo: {motor_escolhido}\nFormato: {resolucao_escolhida}")
 
 if "personagens_biblicos" not in st.session_state:
     st.session_state.personagens_biblicos = inicializar_personagens()
 
 # session state
-if "roteiro_gerado" not in st.session_state: st.session_state["roteiro_gerado"] = None
-if "leitura_montada" not in st.session_state: st.session_state["leitura_montada"] = ""
-if "generated_images_blocks" not in st.session_state: st.session_state["generated_images_blocks"] = {}
-if "generated_audios_blocks" not in st.session_state: st.session_state["generated_audios_blocks"] = {}
-if "video_final_bytes" not in st.session_state: st.session_state["video_final_bytes"] = None
-if "meta_dados" not in st.session_state: st.session_state["meta_dados"] = {"data": "", "ref": ""}
-if "job_id_ativo" not in st.session_state: st.session_state["job_id_ativo"] = None # Novo estado
+if "roteiro_gerado" not in st.session_state:
+    st.session_state["roteiro_gerado"] = None
+if "generated_images_blocks" not in st.session_state:
+    st.session_state["generated_images_blocks"] = {}
+if "generated_audios_blocks" not in st.session_state:
+    st.session_state["generated_audios_blocks"] = {}
+if "generated_srt_content" not in st.session_state:
+    st.session_state["generated_srt_content"] = ""
+if "video_final_bytes" not in st.session_state:
+    st.session_state["video_final_bytes"] = None
+if "meta_dados" not in st.session_state:
+    st.session_state["meta_dados"] = {"data": "", "ref": ""}
+if "job_loaded_from_drive" not in st.session_state:
+    st.session_state["job_loaded_from_drive"] = False
+if "temp_assets_dir" not in st.session_state:
+    st.session_state["temp_assets_dir"] = None
 
 # Carregar Settings persistentes
 if "overlay_settings" not in st.session_state:
@@ -665,186 +763,276 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["📖 Gerar Roteiro", "🎨 Personagens", "🎚️ Overlay & Efeitos", "🎥 Fábrica Vídeo (Editor)", "📊 Histórico"]
 )
 
-# --------- TAB 1: ROTEIRO (Painel de Controle) ----------
+# --------- TAB 1: ROTEIRO ----------
 with tab1:
-    st.header("🚀 Painel de Controle de Geração")
-    
-    col_date, col_manual, col_auto = st.columns([1, 1, 1])
+    st.header("🚀 Gerador de Roteiro")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        data_selecionada = st.date_input("📅 Data da liturgia:", value=date.today(), min_value=date(2023, 1, 1))
+    with col2:
+        st.info("Status: ✅ pronto para gerar")
 
-    with col_date:
-        data_selecionada = st.date_input("📅 Data da Liturgia:", value=date.today(), min_value=date(2023, 1, 1), key="data_tab1")
+    if st.button("🚀 Gerar Roteiro Completo", type="primary", disabled=st.session_state["job_loaded_from_drive"]):
         data_str = data_selecionada.strftime("%Y-%m-%d")
+        data_formatada_display = data_selecionada.strftime("%d.%m.%Y")
 
-    st.markdown("---")
+        with st.status("📝 Gerando roteiro...", expanded=True) as status:
+            st.write("🔍 Buscando Evangelho...")
+            liturgia = obter_evangelho_com_fallback(data_str)
+            if not liturgia:
+                status.update(label="Falha ao buscar evangelho", state="error")
+                st.stop()
 
-    # --- Opção 1: Disparo Automático (Apps Script) ---
-    with col_auto:
-        st.subheader("Disparo Automático (GAS)")
-        st.info("O Apps Script gera Roteiro, Imagem e Áudio no Drive.")
-        if st.button("✨ Disparar Geração de Job (Cloud)", type="primary", key="btn_dispatch_gas"):
-            with st.status("Iniciando Job no Apps Script...", expanded=True):
-                gas_response = dispatch_new_job_to_gas(data_str)
-                if gas_response and gas_response.get("job_id"):
-                    st.session_state["job_id_ativo"] = gas_response["job_id"]
-                    st.success(f"Job {gas_response['job_id']} iniciado! Carregue na aba 'Fábrica Vídeo'.")
-                else:
-                    st.error("Falha ao iniciar Job no Apps Script. Verifique logs do GAS.")
-            st.rerun()
+            ref_curta = formatar_referencia_curta(liturgia.get("ref_biblica"))
+            st.session_state["meta_dados"] = {
+                "data": data_formatada_display,
+                "ref": ref_curta or "Evangelho do Dia"
+            }
 
-    # --- Opção 2: Geração Manual (Fallback) ---
-    with col_manual:
-        st.subheader("Geração Manual (Fallback)")
-        st.info("O Streamlit gera apenas o roteiro (Groq).")
-        if st.button("📝 Gerar Roteiro Apenas (Local)", key="btn_generate_local"):
-            data_formatada_display = data_selecionada.strftime("%d.%m.%Y") 
+            st.write("🤖 Analisando personagens com IA...")
+            roteiro_generated_raw = gerar_roteiro_com_prompts_groq(liturgia["texto"], liturgia["referencia_liturgica"], st.session_state.personagens_biblicos)
 
-            with st.status("📝 Gerando roteiro no Groq...", expanded=True) as status:
-                liturgia = obter_evangelho_com_fallback(data_str)
-                if not liturgia: status.update(label="Falha ao buscar evangelho", state="error"); st.stop()
-                ref_curta = formatar_referencia_curta(liturgia.get("ref_biblica"))
-                st.session_state["meta_dados"] = {"data": data_formatada_display, "ref": ref_curta or "Evangelho do Dia"}
-                personagens_detectados = analisar_personagens_groq(liturgia["texto"], st.session_state.personagens_biblicos)
-                roteiro = gerar_roteiro_com_prompts_groq(liturgia["texto"], liturgia["referencia_liturgica"], {**st.session_state.personagens_biblicos, **personagens_detectados})
+            if roteiro_generated_raw:
+                st.session_state["roteiro_gerado"] = roteiro_generated_raw
+                status.update(label="Roteiro gerado com sucesso!", state="complete", expanded=False)
+            else:
+                status.update(label="Erro ao gerar roteiro", state="error")
+                st.stop()
 
-                if roteiro:
-                    status.update(label="Roteiro gerado com sucesso!", state="complete", expanded=False)
-                else:
-                    status.update(label="Erro ao gerar roteiro", state="error"); st.stop()
+        st.rerun()
 
-            leitura_montada = montar_leitura_com_formula(liturgia["texto"], liturgia.get("ref_biblica"))
-            st.session_state["roteiro_gerado"] = roteiro
-            st.session_state["leitura_montada"] = leitura_montada
-            st.session_state["job_id_ativo"] = None # Reseta o Job ID ao gerar manual
-            st.rerun()
-
-    # Exibição do Roteiro (se houver)
     if st.session_state.get("roteiro_gerado"):
+        roteiro_data = st.session_state["roteiro_gerado"]
         st.markdown("---")
-        st.subheader("Roteiro Gerado (Conteúdo Principal)")
-        roteiro = st.session_state["roteiro_gerado"]
-        
-        # ... (Exibição detalhada do roteiro) ...
-        col_esq, col_dir = st.columns(2)
-        with col_esq:
-            st.markdown("### 🎣 HOOK"); st.markdown(roteiro.get("hook", "")); st.code(roteiro.get("prompt_hook", ""), language="text")
-            st.markdown("### 📖 LEITURA"); st.markdown(st.session_state.get("leitura_montada", "")[:300] + "..."); st.code(roteiro.get("prompt_leitura", ""), language="text")
-        with col_dir:
-            st.markdown("### 💭 REFLEXÃO"); st.markdown(roteiro.get("reflexão", "")); st.code(roteiro.get("prompt_reflexão", ""), language="text")
-            st.markdown("### 🌟 APLICAÇÃO"); st.markdown(roteiro.get("aplicação", "")); st.code(roteiro.get("prompt_aplicacao", ""), language="text")
-        st.markdown("### 🙏 ORAÇÃO"); st.markdown(roteiro.get("oração", "")); st.code(roteiro.get("prompt_oração", ""), language="text")
-        st.markdown("### 🖼️ THUMBNAIL"); st.code(roteiro.get("prompt_geral", ""), language="text")
-        
-        if st.session_state.get("job_id_ativo"):
-            st.success(f"Roteiro carregado do Job Cloud: **{st.session_state['job_id_ativo']}**. Vá para 'Fábrica Vídeo' para carregar a mídia.")
-        else:
-            st.success("Roteiro gerado localmente. Vá para 'Fábrica Vídeo' para gerar a mídia manualmente.")
+        st.markdown("### 🎣 HOOK"); st.markdown(roteiro_data.get("hook", {}).get("text", "")); st.code(roteiro_data.get("hook", {}).get("prompt", ""), language="text")
+        st.markdown("### 📖 LEITURA"); st.markdown(roteiro_data.get("leitura", {}).get("text", "")[:300] + "..."); st.code(roteiro_data.get("leitura", {}).get("prompt", ""), language="text")
+        st.markdown("### 💭 REFLEXÃO"); st.markdown(roteiro_data.get("reflexao", {}).get("text", "")); st.code(roteiro_data.get("reflexao", {}).get("prompt", ""), language="text")
+        st.markdown("### 🌟 APLICAÇÃO"); st.markdown(roteiro_data.get("aplicacao", {}).get("text", "")); st.code(roteiro_data.get("aplicacao", {}).get("prompt", ""), language="text")
+        st.markdown("### 🙏 ORAÇÃO"); st.markdown(roteiro_data.get("oracao", {}).get("text", "")); st.code(roteiro_data.get("oracao", {}).get("prompt", ""), language="text")
+        st.success("Roteiro gerado! Vá para 'Overlay & Efeitos' para ajustar o visual.")
 
+# --------- TAB 2: PERSONAGENS ----------
+with tab2:
+    st.header("🎨 Banco de Personagens")
+    banco = st.session_state.personagens_biblicos.copy()
+    col1, col2 = st.columns(2)
+    with col1:
+        for i, (nome, desc) in enumerate(banco.items()):
+            with st.expander(f"✏️ {nome}"):
+                novo_nome = st.text_input(f"Nome", value=nome, key=f"n_{i}")
+                nova_desc = st.text_area(f"Desc", value=desc, key=f"d_{i}")
+                if st.button("Salvar", key=f"s_{i}"):
+                    if novo_nome != nome: del st.session_state.personagens_biblicos[nome]
+                    st.session_state.personagens_biblicos[novo_nome] = nova_desc
+                    st.rerun()
+                if st.button("Apagar", key=f"a_{i}"):
+                    del st.session_state.personagens_biblicos[nome]
+                    st.rerun()
+    with col2:
+        st.markdown("### ➕ Novo")
+        nn = st.text_input("Nome", key="new_n")
+        nd = st.text_area("Descrição", key="new_d")
+        if st.button("Adicionar") and nn and nd:
+            st.session_state.personagens_biblicos[nn] = nd
+            st.rerun()
 
-# --------- TAB 2, 3 (inalteradas) ...
+# --------- TAB 3: OVERLAY & EFEITOS ----------
+with tab3:
+    st.header("🎚️ Editor de Overlay & Efeitos")
+
+    col_settings, col_preview = st.columns([1, 1])
+    ov_sets = st.session_state["overlay_settings"]
+    font_options = ["Padrão (Sans)", "Serif", "Monospace", "Upload Personalizada"]
+    anim_options = ["Estático", "Fade In", "Fade In/Out"]
+
+    with col_settings:
+        with st.expander("✨ Efeitos Visuais (Movimento)", expanded=True):
+            effect_opts = ["Zoom In (Ken Burns)", "Zoom Out", "Panorâmica Esquerda", "Panorâmica Direita", "Estático (Sem movimento)"]
+            curr_eff = ov_sets.get("effect_type", effect_opts[0])
+            if curr_eff not in effect_opts: curr_eff = effect_opts[0]
+            ov_sets["effect_type"] = st.selectbox("Tipo de Movimento", effect_opts, index=effect_opts.index(curr_eff))
+            ov_sets["effect_speed"] = st.slider("Intensidade do Movimento", 1, 10, ov_sets.get("effect_speed", 3), help="1 = Muito Lento, 10 = Rápido")
+
+        with st.expander("🎬 Transições de Cena", expanded=True):
+            trans_opts = ["Fade (Escurecer)", "Corte Seco (Nenhuma)"]
+            curr_trans = ov_sets.get("trans_type", trans_opts[0])
+            if curr_trans not in trans_opts: curr_trans = trans_opts[0]
+            ov_sets["trans_type"] = st.selectbox("Tipo de Transição", trans_opts, index=trans_opts.index(curr_trans))
+            ov_sets["trans_dur"] = st.slider("Duração da Transição (s)", 0.1, 2.0, ov_sets.get("trans_dur", 0.5), 0.1)
+
+        with st.expander("📝 Texto Overlay (Cabeçalho)", expanded=True):
+            st.markdown("**Linha 1: Título**")
+            curr_f1 = ov_sets.get("line1_font", font_options[0])
+            if curr_f1 not in font_options: curr_f1 = font_options[0]
+            ov_sets["line1_font"] = st.selectbox("Fonte L1", font_options, index=font_options.index(curr_f1), key="f1")
+            ov_sets["line1_size"] = st.slider("Tamanho L1", 10, 150, ov_sets.get("line1_size", 40), key="s1")
+            ov_sets["line1_y"] = st.slider("Posição Y L1", 0, 800, ov_sets.get("line1_y", 40), key="y1")
+
+            curr_a1 = ov_sets.get("line1_anim", anim_options[0])
+            if curr_a1 not in anim_options: curr_a1 = anim_options[0]
+            ov_sets["line1_anim"] = st.selectbox("Animação L1", anim_options, index=anim_options.index(curr_a1), key="a1")
+
+            st.markdown("---")
+            st.markdown("**Linha 2: Data**")
+            curr_f2 = ov_sets.get("line2_font", font_options[0])
+            if curr_f2 not in font_options: curr_f2 = font_options[0]
+            ov_sets["line2_font"] = st.selectbox("Fonte L2", font_options, index=font_options.index(curr_f2), key="f2")
+            ov_sets["line2_size"] = st.slider("Tamanho L2", 10, 150, ov_sets.get("line2_size", 28), key="s2")
+            ov_sets["line2_y"] = st.slider("Posição Y L2", 0, 800, ov_sets.get("line2_y", 90), key="y2")
+
+            curr_a2 = ov_sets.get("line2_anim", anim_options[0])
+            if curr_a2 not in anim_options: curr_a2 = anim_options[0]
+            ov_sets["line2_anim"] = st.selectbox("Animação L2", anim_options, index=anim_options.index(curr_a2), key="a2")
+
+            st.markdown("---")
+            st.markdown("**Linha 3: Referência**")
+            curr_f3 = ov_sets.get("line3_font", font_options[0])
+            if curr_f3 not in font_options: curr_f3 = font_options[0]
+            ov_sets["line3_font"] = st.selectbox("Fonte L3", font_options, index=font_options.index(curr_f3), key="f3")
+            ov_sets["line3_size"] = st.slider("Tamanho L3", 10, 150, ov_sets.get("line3_size", 24), key="s3")
+            ov_sets["line3_y"] = st.slider("Posição Y L3", 0, 800, ov_sets.get("line3_y", 130), key="y3")
+
+            curr_a3 = ov_sets.get("line3_anim", anim_options[0])
+            if curr_a3 not in anim_options: curr_a3 = anim_options[0]
+            ov_sets["line3_anim"] = st.selectbox("Animação L3", anim_options, index=anim_options.index(curr_a3), key="a3")
+
+        st.session_state["overlay_settings"] = ov_sets
+        if st.button("💾 Salvar Configurações (Persistente)"):
+            if save_config(ov_sets):
+                st.success("Configuração salva no disco com sucesso!")
+
+    with col_preview:
+        st.subheader("Pré-visualização (Overlay)")
+        res_params = get_resolution_params(resolucao_escolhida)
+        preview_scale_factor = 0.4
+        preview_w = int(res_params["w"] * preview_scale_factor)
+        preview_h = int(res_params["h"] * preview_scale_factor)
+        text_scale = preview_scale_factor
+
+        meta = st.session_state.get("meta_dados", {})
+        txt_l1 = "EVANGELHO"
+        txt_l2 = meta.get("data", "29.11.2025")
+        txt_l3 = meta.get("ref", "Lucas, Cap. 1, 26-38")
+
+        preview_texts = [
+            {"text": txt_l1, "size": int(ov_sets["line1_size"] * text_scale), "y": int(ov_sets["line1_y"] * text_scale), "font_style": ov_sets["line1_font"], "color": "white"},
+            {"text": txt_l2, "size": int(ov_sets["line2_size"] * text_scale), "y": int(ov_sets["line2_y"] * text_scale), "font_style": ov_sets["line2_font"], "color": "white"},
+            {"text": txt_l3, "size": int(ov_sets["line3_size"] * text_scale), "y": int(ov_sets["line3_y"] * text_scale), "font_style": ov_sets["line3_font"], "color": "white"},
+        ]
+
+        prev_img = criar_preview_overlay(preview_w, preview_h, preview_texts, uploaded_font_file)
+        st.image(prev_img, caption=f"Preview Overlay em {resolucao_escolhida}", use_column_width=False)
+
 
 # --------- TAB 4: FÁBRICA DE VÍDEO ----------
 with tab4:
     st.header("🎥 Editor de Cenas")
-    
-    # === NOVO BLOCO: MONTAGEM REMOTA ===
-    st.subheader("🌐 Modo 1: Montagem Automática (Google Drive)")
-    
-    # Pré-preenche se o Job foi disparado na Tab 1
-    default_job_id = st.session_state.get("job_id_ativo") if st.session_state.get("job_id_ativo") and not st.session_state.get("roteiro_gerado") else ""
-    
-    job_id_input = st.text_input("Insira o JOB ID (Nome da Pasta do Drive):", value=default_job_id, key="job_id_input", help="O ID da pasta criada pelo seu script no Apps Script.")
-    
-    if st.button("📥 Carregar Job ID do Drive", type="primary"):
-        if job_id_input:
-            with st.status(f"Carregando Job {job_id_input}...", expanded=True) as status:
-                st.session_state["job_id_ativo"] = job_id_input # Ativa o Job ID
-                
-                # 1. Busca metadados (inclui o roteiro)
-                job_data = fetch_job_metadata(job_id_input)
-                if job_data:
-                    # Carrega o roteiro
-                    st.session_state["roteiro_gerado"] = job_data.get("roteiro")
-                    st.session_state["leitura_montada"] = job_data.get("leitura_montada", "")
-                    st.session_state["meta_dados"] = job_data.get("meta_dados", {})
 
-                    # 2. Baixa arquivos
-                    urls_arquivos = job_data.get("urls_arquivos", [])
-                    if len(urls_arquivos) == 0:
-                        st.warning("Nenhum arquivo de imagem/áudio encontrado no Job ID. Verifique o GAS.")
-                    
-                    images, audios = download_files_from_urls(urls_arquivos)
-                    st.session_state["generated_images_blocks"] = images
-                    st.session_state["generated_audios_blocks"] = audios
-                    
-                    status.update(label=f"Job {job_id_input} carregado com sucesso!", state="complete")
-                    st.rerun()
+    # --- Carregamento de Job via Drive ---
+    st.subheader("⬇️ Carregar Job do Google Drive")
+    job_id_input = st.text_input("Cole o Job ID do Frontend aqui:", key="drive_job_id_input")
+    if st.button("📥 Carregar Job", type="secondary", disabled=not job_id_input):
+        if job_id_input:
+            with st.status(f"Buscando job '{job_id_input}' no Google Drive...", expanded=True) as status_box:
+                # Clean up previous temp dir if exists
+                if st.session_state.get("temp_assets_dir") and os.path.exists(st.session_state["temp_assets_dir"]):
+                    _shutil.rmtree(st.session_state["temp_assets_dir"])
+                    st.write(f"Diretório temporário anterior removido: {st.session_state['temp_assets_dir']}")
+
+                temp_assets_dir = tempfile.mkdtemp()
+                st.write(f"Criado diretório temporário para assets: {temp_assets_dir}")
+
+                payload = load_job_from_drive(job_id_input)
+                if payload:
+                    st.write("Payload carregado, processando assets...")
+                    if process_job_payload_and_update_state(payload, temp_assets_dir):
+                        st.session_state["job_loaded_from_drive"] = True
+                        st.session_state["temp_assets_dir"] = temp_assets_dir
+                        status_box.update(label=f"Job '{job_id_input}' carregado e pronto para renderizar!", state="complete")
+                        st.rerun()
+                    else:
+                        status_box.update(label="Erro ao processar os assets do job.", state="error")
+                        _shutil.rmtree(temp_assets_dir)
+                        st.session_state["temp_assets_dir"] = None
                 else:
-                    st.session_state["job_id_ativo"] = None # Falha ao carregar
-                    status.update(label=f"Falha ao carregar Job {job_id_input}.", state="error")
+                    status_box.update(label="Falha ao carregar o job do Drive.", state="error")
+                    _shutil.rmtree(temp_assets_dir)
+                    st.session_state["temp_assets_dir"] = None
         else:
             st.warning("Por favor, insira um Job ID.")
-
     st.markdown("---")
-    st.subheader("⚙️ Modo 2: Edição Manual (Fallback)")
-    # === FIM DO NOVO BLOCO ===
-    
+
+    is_job_loaded = st.session_state.get("job_loaded_from_drive", False)
+
     if not st.session_state.get("roteiro_gerado"):
-        st.warning("⚠️ Gere o roteiro na Aba 1 ou Carregue um Job ID acima.")
+        st.warning("⚠️ Gere o roteiro na Aba 1 OU carregue um Job do Drive.")
         st.stop()
-    
-    # ... (O resto da TAB 4 permanece inalterado) ...
-    # Lógica de visualização, geração manual (fallback) e renderização...
 
     roteiro = st.session_state["roteiro_gerado"]
+
     blocos_config = [
-        {"id": "hook", "label": "🎣 HOOK", "prompt_key": "prompt_hook", "text_key": "hook"},
-        {"id": "leitura", "label": "📖 LEITURA", "prompt_key": "prompt_leitura", "text_key": "leitura_montada"}, 
-        {"id": "reflexão", "label": "💭 REFLEXÃO", "prompt_key": "prompt_reflexão", "text_key": "reflexão"},
-        {"id": "aplicação", "label": "🌟 APLICAÇÃO", "prompt_key": "prompt_aplicacao", "text_key": "aplicação"},
-        {"id": "oração", "label": "🙏 ORAÇÃO", "prompt_key": "prompt_oração", "text_key": "oração"},
-        {"id": "thumbnail", "label": "🖼️ THUMBNAIL", "prompt_key": "prompt_geral", "text_key": None}
+        {"id": "hook", "label": "🎣 HOOK", "text_path": "hook", "prompt_path": "hook"},
+        {"id": "leitura", "label": "📖 LEITURA", "text_path": "leitura", "prompt_path": "leitura"},
+        {"id": "reflexao", "label": "💭 REFLEXÃO", "text_path": "reflexao", "prompt_path": "reflexao"},
+        {"id": "aplicacao", "label": "🌟 APLICAÇÃO", "text_path": "aplicacao", "prompt_path": "aplicacao"},
+        {"id": "oracao", "label": "🙏 ORAÇÃO", "text_path": "oracao", "prompt_path": "oracao"},
     ]
 
-    st.info(f"⚙️ Config: **{motor_escolhido}** | Resolução: **{resolucao_escolhida}** | TTS: **{tts_motor_escolhido}**")
+    st.info(f"⚙️ Config: **{motor_escolhido}** | Resolução: **{resolucao_escolhida}**")
 
-    # Botões de Geração em Lote (Áudio/Imagem)
+    # Botões de Geração em Lote (Topo da Fábrica)
     col_batch_1, col_batch_2 = st.columns(2)
+
+    def get_aspect_ratio():
+        if "9:16" in resolucao_escolhida:
+            return "9:16"
+        if "16:9" in resolucao_escolhida:
+            return "16:9"
+        return "1:1"
+    aspectRatioForImageGen = get_aspect_ratio()
+
     with col_batch_1:
-        if st.button("🔊 Gerar Todos os Áudios", use_container_width=True):
+        if st.button("🔊 Gerar Todos os Áudios", use_container_width=True, disabled=is_job_loaded):
             with st.status("Gerando áudios em lote...", expanded=True) as status:
-                total = len([b for b in blocos_config if b["text_key"]])
+                total = len(blocos_config)
                 count = 0
                 for b in blocos_config:
-                    if not b["text_key"]: continue
                     bid = b["id"]
-                    txt = roteiro.get(b["text_key"]) if bid != "leitura" else st.session_state.get("leitura_montada", "")
+                    txt = roteiro.get(b["text_path"], {}).get("text", "")
                     if txt:
                         st.write(f"Gerando áudio: {b['label']}...")
                         try:
-                            audio = despachar_geracao_audio(txt)
-                            st.session_state["generated_audios_blocks"][bid] = audio
-                            count += 1
+                            audio_bio = gerar_audio_gtts(txt)
+                            if audio_bio:
+                                audio_path = os.path.join(tempfile.gettempdir(), f"{bid}.mp3")
+                                with open(audio_path, "wb") as f:
+                                    f.write(audio_bio.getvalue())
+                                st.session_state["generated_audios_blocks"][bid] = audio_path
+                                count += 1
                         except Exception as e:
                             st.error(f"Erro em {bid}: {e}")
                 status.update(label=f"Concluído! {count}/{total} áudios gerados.", state="complete")
                 st.rerun()
-
     with col_batch_2:
-        if st.button("✨ Gerar Todas as Imagens", use_container_width=True):
+        if st.button("✨ Gerar Todas as Imagens", use_container_width=True, disabled=is_job_loaded):
             with st.status("Gerando imagens em lote...", expanded=True) as status:
                 total = len(blocos_config)
                 count = 0
                 for i, b in enumerate(blocos_config):
                     bid = b["id"]
-                    prompt = roteiro.get(b["prompt_key"], "")
+                    prompt = roteiro.get(b["prompt_path"], {}).get("prompt", "")
                     if prompt:
                         st.write(f"Gerando imagem ({i+1}/{total}): {b['label']}...")
                         try:
-                            img = despachar_geracao_imagem(prompt, motor_escolhido, resolucao_escolhida)
-                            st.session_state["generated_images_blocks"][bid] = img
-                            count += 1
+                            img_bio = despachar_geracao_imagem(prompt, motor_escolhido, resolucao_escolhida)
+                            if img_bio:
+                                img_path = os.path.join(tempfile.gettempdir(), f"{bid}.png")
+                                with open(img_path, "wb") as f:
+                                    f.write(img_bio.getvalue())
+                                st.session_state["generated_images_blocks"][bid] = img_path
+                                count += 1
                         except Exception as e:
-                            st.error(f"Erro: {e}")
+                            st.error(f"Erro em {bid}: {e}")
                 status.update(label=f"Concluído! {count}/{total} imagens geradas.", state="complete")
                 st.rerun()
 
@@ -856,68 +1044,80 @@ with tab4:
             st.subheader(bloco["label"])
             col_text, col_media = st.columns([1, 1.2])
             with col_text:
-                if bloco["text_key"]:
-                    txt_content = roteiro.get(bloco["text_key"]) if block_id != "leitura" else st.session_state.get("leitura_montada", "")
-                    st.caption("📜 Texto para Narração:")
-                    st.markdown(f"_{txt_content[:250]}..._" if txt_content else "_Sem texto_")
-                    if st.button(f"🔊 Gerar Áudio ({block_id})", key=f"btn_audio_{block_id}"):
-                        if txt_content:
-                            try:
-                                # Chama o dispatcher (agora só gTTS)
-                                audio = despachar_geracao_audio(txt_content)
-                                st.session_state["generated_audios_blocks"][block_id] = audio
+                txt_content = roteiro.get(bloco["text_path"], {}).get("text", "")
+                st.caption("📜 Texto para Narração:")
+                st.markdown(f"_{txt_content[:250]}..._" if txt_content else "_Sem texto_")
+
+                if st.button(f"🔊 Gerar Áudio ({block_id})", key=f"btn_audio_{block_id}", disabled=is_job_loaded):
+                    if txt_content:
+                        try:
+                            audio_bio = gerar_audio_gtts(txt_content)
+                            if audio_bio:
+                                audio_path = os.path.join(tempfile.gettempdir(), f"{block_id}.mp3")
+                                with open(audio_path, "wb") as f:
+                                    f.write(audio_bio.getvalue())
+                                st.session_state["generated_audios_blocks"][block_id] = audio_path
                                 st.rerun()
-                            except Exception as e:
-                                st.error(f"Erro áudio: {e}")
-                    if block_id in st.session_state["generated_audios_blocks"]:
-                        st.audio(st.session_state["generated_audios_blocks"][block_id], format="audio/mp3")
-                prompt_content = roteiro.get(bloco["prompt_key"], "")
+                        except Exception as e:
+                            st.error(f"Erro áudio: {e}")
+
+                audio_path_display = st.session_state["generated_audios_blocks"].get(block_id)
+                if audio_path_display and os.path.exists(audio_path_display):
+                    st.audio(audio_path_display, format="audio/mp3")
+
+                prompt_content = roteiro.get(bloco["prompt_path"], {}).get("prompt", "")
                 st.caption("📋 Prompt Visual:")
                 st.code(prompt_content, language="text")
+
             with col_media:
                 st.caption("🖼️ Imagem da Cena:")
-                current_img = st.session_state["generated_images_blocks"].get(block_id)
-                if current_img:
+                img_path_display = st.session_state["generated_images_blocks"].get(block_id)
+                if img_path_display and os.path.exists(img_path_display):
                     try:
-                        current_img.seek(0)
-                        st.image(current_img, use_column_width=True)
+                        st.image(img_path_display, use_column_width=True)
                     except Exception:
                         st.error("Erro ao exibir imagem.")
                 else:
                     st.info("Nenhuma imagem definida.")
+
                 c_gen, c_up = st.columns([1.5, 2])
                 with c_gen:
-                    if st.button(f"✨ Gerar ({resolucao_escolhida.split()[0]})", key=f"btn_gen_{block_id}"):
+                    if st.button(f"✨ Gerar ({resolucao_escolhida.split()[0]})", key=f"btn_gen_{block_id}", disabled=is_job_loaded):
                         if prompt_content:
-                            with st.spinner(f"Criando no formato {resolucao_escolhida}..."):
+                            with st.spinner(f"Criando no formato {resolucao_escolhida}...") as spinner_box:
                                 try:
-                                    # Chama o despachante (agora só Pollinations)
-                                    img = despachar_geracao_imagem(prompt_content, motor_escolhido, resolucao_escolhida)
-                                    st.session_state["generated_images_blocks"][block_id] = img
-                                    st.success("Gerada!")
-                                    st.rerun()
+                                    img_bio = despachar_geracao_imagem(prompt_content, motor_escolhido, resolucao_escolhida)
+                                    if img_bio:
+                                        img_path = os.path.join(tempfile.gettempdir(), f"{block_id}.png")
+                                        with open(img_path, "wb") as f:
+                                            f.write(img_bio.getvalue())
+                                        st.session_state["generated_images_blocks"][block_id] = img_path
+                                        st.success("Gerada!")
+                                        st.rerun()
                                 except Exception as e:
                                     st.error(f"Erro: {e}")
                         else:
                             st.warning("Sem prompt.")
                 with c_up:
-                    uploaded_file = st.file_uploader("Ou envie a sua:", type=["png", "jpg", "jpeg"], key=f"upload_{block_id}")
+                    uploaded_file = st.file_uploader("Ou envie a sua:", type=["png", "jpg", "jpeg"], key=f"upload_{block_id}", disabled=is_job_loaded)
                     if uploaded_file is not None:
                         bytes_data = uploaded_file.read()
-                        st.session_state["generated_images_blocks"][block_id] = BytesIO(bytes_data)
+                        img_path = os.path.join(tempfile.gettempdir(), f"{block_id}_uploaded.png")
+                        with open(img_path, "wb") as f:
+                            f.write(bytes_data)
+                        st.session_state["generated_images_blocks"][block_id] = img_path
                         st.success("Enviada!")
 
     st.divider()
     st.header("🎬 Finalização")
     usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay Personalizado)", value=True)
-    
+
     st.subheader("🎵 Música de Fundo (Opcional)")
-    
-    # Check if saved music exists
+
     saved_music_exists = os.path.exists(SAVED_MUSIC_FILE)
-    
+
     col_mus_1, col_mus_2 = st.columns(2)
-    
+
     with col_mus_1:
         if saved_music_exists:
             st.success("💾 Música Padrão Ativa")
@@ -927,7 +1127,6 @@ with tab4:
                     st.rerun()
         else:
             st.info("Nenhuma música padrão salva.")
-
     with col_mus_2:
         music_upload = st.file_uploader("Upload Música (MP3)", type=["mp3"])
         if music_upload:
@@ -936,36 +1135,42 @@ with tab4:
                 if save_music_file(music_upload.getvalue()):
                     st.success("Música padrão salva!")
                     st.rerun()
-
     music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, load_config().get("music_vol", 0.15))
 
+    if st.session_state.get("generated_srt_content"):
+        st.subheader("📄 Legendas (SRT)")
+        st.code(st.session_state["generated_srt_content"], language="srt")
+        if st.download_button("⬇️ Baixar SRT", st.session_state["generated_srt_content"], "legendas.srt", "text/plain"):
+            pass
     if st.button("Renderizar Vídeo Completo (Unir tudo)", type="primary"):
         with st.status("Renderizando vídeo com efeitos...", expanded=True) as status:
+            temp_dir_render = None
             try:
-                blocos_relevantes = [b for b in blocos_config if b["id"] != "thumbnail"]
                 if not shutil_which("ffmpeg"):
                     status.update(label="FFmpeg não encontrado!", state="error")
                     st.stop()
-                
-                font_path = resolve_font_path(font_choice, uploaded_font_file)
+
+                temp_dir_render = tempfile.mkdtemp()
+                clip_files = []
+
+                font_path = resolve_font_path(st.session_state["overlay_settings"]["line1_font"], uploaded_font_file)
                 if usar_overlay and not font_path:
                     st.warning("⚠️ Fonte não encontrada. O overlay pode falhar.")
-                
-                temp_dir = tempfile.mkdtemp()
-                clip_files = []
-                
+
                 meta = st.session_state.get("meta_dados", {})
                 txt_dt = meta.get("data", "")
                 txt_ref = meta.get("ref", "")
-                
-                map_titulos = {"hook": "EVANGELHO", "leitura": "EVANGELHO", "reflexão": "REFLEXÃO", "aplicação": "APLICAÇÃO", "oração": "ORAÇÃO"}
-                
+
+                map_titulos = {"hook": "EVANGELHO", "leitura": "EVANGELHO", "reflexao": "REFLEXÃO", "aplicacao": "APLICAÇÃO", "oracao": "ORAÇÃO"}
+
                 res_params = get_resolution_params(resolucao_escolhida)
                 s_out = f"{res_params['w']}x{res_params['h']}"
-                
+
                 sets = st.session_state["overlay_settings"]
-                speed_val = sets["effect_speed"] * 0.0005 
-                
+                speed_val = sets["effect_speed"] * 0.0005
+
+                zoom_expr = None
+
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
                     zoom_expr = f"z='min(zoom+{speed_val},1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Zoom Out":
@@ -974,24 +1179,21 @@ with tab4:
                     zoom_expr = f"z=1.2:x='min(x+{speed_val}*100,iw-iw/zoom)':y='(ih-ih/zoom)/2'"
                 elif sets["effect_type"] == "Panorâmica Direita":
                     zoom_expr = f"z=1.2:x='max(0,x-{speed_val}*100)':y='(ih-ih/zoom)/2'"
-                else: 
-                    zoom_expr = "z=1:x=0:y=0" 
+                else:
+                    zoom_expr = "z=1:x=0:y=0"
 
-                for b in blocos_relevantes:
+                for b in blocos_config:
                     bid = b["id"]
-                    img_bio = st.session_state["generated_images_blocks"].get(bid)
-                    audio_bio = st.session_state["generated_audios_blocks"].get(bid)
-                    if not img_bio or not audio_bio: continue
-                        
+                    img_path = st.session_state["generated_images_blocks"].get(bid)
+                    audio_path = st.session_state["generated_audios_blocks"].get(bid)
+
+                    if not img_path or not audio_path or not os.path.exists(img_path) or not os.path.exists(audio_path):
+                        st.warning(f"⚠️ Ignorando bloco '{bid}' na renderização devido a imagem ou áudio ausente/inválido.")
+                        continue
+
                     st.write(f"Processando clipe: {bid}...")
-                    img_path = os.path.join(temp_dir, f"{bid}.png")
-                    audio_path = os.path.join(temp_dir, f"{bid}.mp3")
-                    clip_path = os.path.join(temp_dir, f"{bid}.mp4")
-                    
-                    img_bio.seek(0); audio_bio.seek(0)
-                    with open(img_path, "wb") as f: f.write(img_bio.read())
-                    with open(audio_path, "wb") as f: f.write(audio_bio.read())
-                    
+                    clip_path = os.path.join(temp_dir_render, f"{bid}_clip.mp4")
+
                     dur = get_audio_duration_seconds(audio_path) or 5.0
                     frames = int(dur * 25)
 
@@ -1010,7 +1212,7 @@ with tab4:
                         f1_path = resolve_font_path(sets["line1_font"], uploaded_font_file)
                         f2_path = resolve_font_path(sets["line2_font"], uploaded_font_file)
                         f3_path = resolve_font_path(sets["line3_font"], uploaded_font_file)
-                        
+
                         alp1 = get_text_alpha_expr(sets.get("line1_anim", "Estático"), dur)
                         alp2 = get_text_alpha_expr(sets.get("line2_anim", "Estático"), dur)
                         alp3 = get_text_alpha_expr(sets.get("line3_anim", "Estático"), dur)
@@ -1024,30 +1226,34 @@ with tab4:
                         if f3_path: vf_filters.append(f"drawtext=fontfile='{f3_path}':text='{clean_t3}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}:shadowcolor=black:shadowx=2:shadowy=2:{alp3}")
 
                     filter_complex = ",".join(vf_filters)
+
+                    # Importante: Como o arquivo de áudio pode estar sendo salvo como .wav na função de processamento,
+                    # o FFmpeg precisa saber lidar com ele. Como o FFmpeg detecta automaticamente, não precisamos forçar -f wav.
+                    # Mas precisamos garantir que o audio_path esteja correto (extensão certa).
                     
                     cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path, "-vf", filter_complex, "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip_path]
                     run_cmd(cmd)
                     clip_files.append(clip_path)
-                
+
                 if clip_files:
-                    concat_list = os.path.join(temp_dir, "list.txt")
+                    concat_list = os.path.join(temp_dir_render, "list.txt")
                     with open(concat_list, "w") as f:
                         for p in clip_files: f.write(f"file '{p}'\n")
-                    
-                    temp_video = os.path.join(temp_dir, "temp_video.mp4")
+
+                    temp_video = os.path.join(temp_dir_render, "temp_video.mp4")
                     run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", temp_video])
-                    
-                    final_path = os.path.join(temp_dir, "final.mp4")
-                    
+
+                    final_path = os.path.join(temp_dir_render, "final.mp4")
+
                     # Lógica de Música: 1. Uploaded, 2. Saved Default, 3. None
                     music_source_path = None
-                    
+
                     if music_upload:
-                        music_source_path = os.path.join(temp_dir, "bg.mp3")
+                        music_source_path = os.path.join(temp_dir_render, "bg.mp3")
                         with open(music_source_path, "wb") as f: f.write(music_upload.getvalue())
                     elif saved_music_exists:
                         music_source_path = SAVED_MUSIC_FILE
-                        
+
                     if music_source_path:
                         cmd_mix = [
                             "ffmpeg", "-y",
@@ -1055,7 +1261,7 @@ with tab4:
                             "-stream_loop", "-1", "-i", music_source_path,
                             "-filter_complex", f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]",
                             "-map", "0:v", "-map", "[a]",
-                            "-c:v", "copy", "-c:a", "aac", "-shortest",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", 
                             final_path
                         ]
                         run_cmd(cmd_mix)
@@ -1071,41 +1277,24 @@ with tab4:
                 status.update(label="Erro na renderização", state="error")
                 st.error(f"Detalhes: {e}")
                 st.error(traceback.format_exc())
+            finally:
+                # Clean up all temporary directories
+                if st.session_state.get("temp_assets_dir") and os.path.exists(st.session_state["temp_assets_dir"]):
+                    _shutil.rmtree(st.session_state["temp_assets_dir"])
+                    del st.session_state["temp_assets_dir"] 
+                    st.info("📦 Arquivos temporários de assets do job removidos.")
+                if temp_dir_render and os.path.exists(temp_dir_render):
+                    _shutil.rmtree(temp_dir_render)
+                    st.info("📦 Arquivos temporários de renderização removidos.")
 
     if st.session_state.get("video_final_bytes"):
         st.success("Vídeo pronto!")
         st.video(st.session_state["video_final_bytes"])
-            
-    # --- NOVO FLUXO DE FINALIZAÇÃO (PÓS-RENDERIZAÇÃO) ---
-    if st.session_state.get("video_final_bytes") and st.session_state.get("job_id_ativo"):
-        job_id = st.session_state["job_id_ativo"]
-        
-        st.header("Upload e Finalização Automática")
-        
-        # Gera o JSON de metadados para redes sociais
-        roteiro = st.session_state["roteiro_gerado"]
-        meta_data_json = json.dumps({
-            "job_id": job_id,
-            "titulo_sugerido": "Evangelho do Dia",
-            "descricao_completa": roteiro.get("hook", "") + "\n\n" + roteiro.get("reflexão", "") + "\n\n" + roteiro.get("aplicação", "") + "\n\n" + roteiro.get("oração", "")
-        }, indent=4)
-        
-        st.code(meta_data_json, language="json", caption="Metadados Gerados (Descrição para Redes)")
-        
-        if st.button(f"🚀 Upload Finalizar & Limpar Drive ({job_id})", type="primary"):
-            video_bytes = st.session_state["video_final_bytes"]
-            
-            if finalize_job_on_drive(job_id, video_bytes, meta_data_json):
-                st.session_state["job_id_ativo"] = None
-                st.session_state["video_final_bytes"] = None
-                st.rerun()
-
-    if st.session_state.get("video_final_bytes") and not st.session_state.get("job_id_ativo"):
-        # Permite download para jobs manuais
         st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
+
 # --------- TAB 5: HISTÓRICO ----------
 with tab5:
     st.info("Histórico em desenvolvimento.")
 
 st.markdown("---")
-st.caption("Studio Jhonata v21.0 - Disparo de Job no GAS")
+st.caption("Studio Jhonata v20.0 - Música Padrão")
