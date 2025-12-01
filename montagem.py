@@ -25,7 +25,6 @@ try:
     from openai import OpenAI
 except ImportError:
     OpenAI = None 
-import streamlit.components.v1 as components # Importa o módulo de componentes
 
 # --- CONFIGURAÇÃO DE URL DO FRONTEND (AI STUDIO) ---
 FRONTEND_AI_STUDIO_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhHJejuPBx1Ud6B10Ag_xfnJVzGpE83n7gHdUHnk4yAgrpuidw/exec"
@@ -575,23 +574,19 @@ if "temp_assets_dir" not in st.session_state:
 if "overlay_settings" not in st.session_state:
     st.session_state["overlay_settings"] = load_config()
 
-# Abas Simplificadas
-tab_frontend, tab1, tab2, tab3 = st.tabs(
-    ["💻 Frontend AI Studio", "📥 Receber Job (Drive)", "🎚️ Overlay & Ajustes", "🎥 Renderizar Vídeo"]
+# Abas Simplificadas (Removendo a aba iFrame)
+tab1, tab2, tab3 = st.tabs(
+    ["📥 Receber Job (Drive)", "🎚️ Overlay & Ajustes", "🎥 Renderizar Vídeo"]
 )
-
-# --------- NOVA ABA: FRONTEND AI STUDIO ----------
-with tab_frontend:
-    st.header("💻 Interface de Criação (AI Studio)")
-    st.markdown(f"Acesse a ferramenta de roteiro, geração de voz e imagem do seu frontend aqui:")
-    
-    # Adiciona o iFrame para carregar o outro site
-    components.iframe(FRONTEND_AI_STUDIO_URL, height=800, scrolling=True)
-
 
 # --------- TAB 1: RECEBER JOB ----------
 with tab1:
     st.header("📥 Central de Recepção de Jobs")
+    
+    # NOVO: Adiciona o link direto para o Frontend do AI Studio
+    st.markdown(f"""
+        **Crie seu Job:** [Clique aqui para ir para o Frontend AI Studio]({FRONTEND_AI_STUDIO_URL})
+    """)
     
     col_list, col_input = st.columns([1.5, 1])
     
@@ -980,6 +975,7 @@ with tab3:
 
                 # Expressões de movimento Ken Burns e Panorâmica
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
+                    # Expressão FFmpeg: z='min(1 + speed*on, 1.5)':x='...':y='...':d=frames:s=size:fps=25
                     zoom_expr_content = f"min(zoom+{speed_val},1.5):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Zoom Out":
                     zoom_expr_content = f"max(1,1.5-{speed_val}*on):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
@@ -1010,8 +1006,8 @@ with tab3:
                     # Aplica zoompan com FPS forçado para suavizar o movimento
                     if sets["effect_type"] != "Estático (Sem movimento)":
                         # Injeta zoom_expr_content e garante o FPS e Size para saída suave
-                        # Usar aspas simples no f-string é crucial aqui.
-                        zoom_pan_params = f"z='{zoom_expr_content}':d={frames}:s={s_out}:fps=25" 
+                        # Usando a sintaxe limpa do zoom_expr_content, sem aspas extras na injeção.
+                        zoom_pan_params = f"z={zoom_expr_content},d={frames},s={s_out},fps=25" 
                         vf_filters.append(f"zoompan={zoom_pan_params}")
                     else:
                         vf_filters.append(f"scale={s_out}")
@@ -1158,4 +1154,4 @@ with tab3:
         st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
 
 st.markdown("---")
-st.caption("Studio Jhonata v22.6 - Fix de Sintaxe Ken Burns e Panorâmica")
+st.caption("Studio Jhonata v22.7 - Suavização de Ken Burns")
