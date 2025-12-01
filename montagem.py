@@ -1024,8 +1024,8 @@ with tab3:
                     # Aplica zoompan com FPS forçado para suavizar o movimento
                     if sets["effect_type"] != "Estático (Sem movimento)":
                         # Injeta zoom_expr_content e garante o FPS e Size para saída suave
-                        # Usando a sintaxe limpa do zoom_expr_content, sem aspas extras na injeção.
-                        zoom_pan_params = f"{zoom_expr_content},d={frames},s={s_out},fps=25" 
+                        # OBS: A correção de aspas foi aplicada no v22.7.
+                        zoom_pan_params = f"z='{zoom_expr_content}':d={frames}:s={s_out}:fps=25" 
                         vf_filters.append(f"zoompan={zoom_pan_params}")
                     else:
                         vf_filters.append(f"scale={s_out}")
@@ -1172,4 +1172,4 @@ with tab3:
         st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
 
 st.markdown("---")
-st.caption("Studio Jhonata v22.7 - Suavização de Ken Burns")
+st.caption("Studio Jhonata v22.8 - Limpeza e Estrutura Final")
