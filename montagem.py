@@ -7,8 +7,6 @@ import time
 import tempfile
 import traceback
 import subprocess
-import urllib.parse
-import random
 from io import BytesIO
 from datetime import date
 from typing import List, Optional, Tuple, Dict, Any
@@ -724,9 +722,12 @@ with tab2:
 
         # NOVO: Configurações de Legendas
         with st.expander("📝 Ajustes de Legendas", expanded=True):
+            # Correção de Erro: O color picker só aceita cores como strings hex (#RRGGBB) ou nomes de cores (e.g., 'Yellow'). 
+            # O .get() precisa fornecer um valor inicial de cor válido.
             ov_sets["sub_size"] = st.slider("Tamanho da Fonte", 20, 100, ov_sets.get("sub_size", 50), key="sub_s")
-            ov_sets["sub_color"] = st.color_picker("Cor da Legenda", ov_sets.get("sub_color", "Yellow"), key="sub_c")
-            ov_sets["sub_outline_color"] = st.color_picker("Cor da Sombra/Borda", ov_sets.get("sub_outline_color", "Black"), key="sub_o")
+            # Corrigido para garantir que o valor inicial seja uma string válida para st.color_picker
+            ov_sets["sub_color"] = st.color_picker("Cor da Legenda", ov_sets.get("sub_color", "#FFFF00"), key="sub_c") 
+            ov_sets["sub_outline_color"] = st.color_picker("Cor da Sombra/Borda", ov_sets.get("sub_outline_color", "#000000"), key="sub_o")
             # NOVO: Posição Y da Legenda
             ov_sets["sub_y_pos"] = st.slider("Posição Vertical Y", 600, 1200, ov_sets.get("sub_y_pos", 900), help="Posição em pixels na tela (1280 é o limite inferior para 9:16)")
 
