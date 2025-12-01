@@ -918,7 +918,7 @@ with tab3:
                 if not audio_paths:
                     status_whisper.update(label="❌ Nenhum arquivo de áudio válido encontrado para transcrever.", state="error")
                     st.stop()
-                    
+                        
                 # Cria um arquivo de lista para concatenação dos WAVs
                 concat_list_audio = os.path.join(st.session_state["temp_assets_dir"], "list_audio.txt")
                 with open(concat_list_audio, "w") as f:
@@ -990,6 +990,8 @@ with tab3:
                 sets = st.session_state["overlay_settings"]
                 speed_val = sets["effect_speed"] * 0.0005
 
+                zoom_expr = None
+
                 # Expressões de movimento Ken Burns e Panorâmica
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
                     zoom_expr_content = f"min(zoom+{speed_val},1.5):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
@@ -1022,8 +1024,9 @@ with tab3:
                     # Aplica zoompan com FPS forçado para suavizar o movimento
                     if sets["effect_type"] != "Estático (Sem movimento)":
                         # Injeta zoom_expr_content e garante o FPS e Size para saída suave
-                        # Usando a sintaxe limpa do zoom_expr_content, sem aspas extras na injeção.
-                        zoom_pan_params = f"z={zoom_expr_content},d={frames},s={s_out},fps=25" 
+                        # OBS: As aspas simples internas foram removidas no v22.7, mas vamos garantir
+                        # que a sintaxe seja a mais limpa possível.
+                        zoom_pan_params = f"{zoom_expr_content},d={frames},s={s_out},fps=25" 
                         vf_filters.append(f"zoompan={zoom_pan_params}")
                     else:
                         vf_filters.append(f"scale={s_out}")
@@ -1170,4 +1173,4 @@ with tab3:
         st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
 
 st.markdown("---")
-st.caption("Studio Jhonata v22.8 - Link Direto e Limpeza de SRT")
+st.caption("Studio Jhonata v22.9 - Fix de Sintaxe de Cores e Zoom Suave")
