@@ -1,5 +1,5 @@
 # app.py — Studio Jhonata (Versão Leve: Receptor & Fábrica de Vídeo)
-# Features: Receptor de Jobs (Drive), Edição de Assets (Substituição), Overlay, Renderização FFmpeg.
+# Features: Receptor de Jobs (Drive), Listagem de Pendentes, Edição de Assets, Overlay, Renderização FFmpeg.
 import os
 import re
 import json
@@ -196,19 +196,91 @@ def find_file_in_drive_folder(service, file_name: str, folder_name: str) -> Opti
         st.error(f"❌ Erro inesperado ao buscar arquivo no Google Drive: {e}")
         return None
 
-def download_file_content(service, file_id: str) -> Optional[str]:
+def download_file_content(service, file_id: str, silent: bool = False) -> Optional[str]:
     """Baixa o conteúdo de um arquivo do Google Drive."""
     try:
         request = service.files().get_media(fileId=file_id)
         content = request.execute().decode('utf-8')
-        st.info(f"✅ Conteúdo do arquivo '{file_id}' baixado com sucesso.")
+        if not silent:
+            st.info(f"✅ Conteúdo do arquivo '{file_id}' baixado com sucesso.")
         return content
     except HttpError as error:
-        st.error(f"❌ Erro ao baixar conteúdo do arquivo {file_id}: {error}")
+        if not silent:
+            st.error(f"❌ Erro ao baixar conteúdo do arquivo {file_id}: {error}")
         return None
     except Exception as e:
-        st.error(f"❌ Erro inesperado ao baixar conteúdo: {e}")
+        if not silent:
+            st.error(f"❌ Erro inesperado ao baixar conteúdo: {e}")
         return None
+
+def list_recent_jobs(limit: int = 10) -> List[Dict]:
+    """Lista os jobs recentes na pasta do Drive, extraindo data e categoria."""
+    service = get_drive_service()
+    if not service: return []
+
+    jobs_list = []
+    
+    try:
+        # 1. Encontrar ID da pasta
+        query_folder = f"name = '{MONETIZA_DRIVE_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        folders = service.files().list(q=query_folder, fields="files(id)").execute().get('files', [])
+        
+        if not folders:
+            st.error(f"Pasta '{MONETIZA_DRIVE_FOLDER_NAME}' não encontrada.")
+            return []
+        
+        folder_id = folders[0]['id']
+
+        # 2. Listar arquivos JSON mais recentes
+        query_file = f"mimeType = 'application/json' and '{folder_id}' in parents and trashed = false"
+        # Ordenar por data de criação decrescente
+        results = service.files().list(q=query_file, orderBy="createdTime desc", pageSize=limit, fields="files(id, name, createdTime)").execute()
+        files = results.get('files', [])
+
+        if not files:
+            return []
+
+        # 3. Ler cada arquivo para extrair metadados (Data e Ref)
+        with st.spinner(f"Lendo os {len(files)} jobs mais recentes..."):
+            for f in files:
+                content = download_file_content(service, f['id'], silent=True)
+                if content:
+                    try:
+                        data_json = json.loads(content)
+                        meta = data_json.get("meta_dados", {})
+                        ref_full = meta.get("ref", "S/ Ref")
+                        data_liturgia = meta.get("data", "S/ Data")
+                        
+                        # Tenta inferir categoria simplificada
+                        categoria = "Outros"
+                        ref_lower = ref_full.lower()
+                        if "salmo" in ref_lower or "sl" in ref_lower:
+                            categoria = "Salmo"
+                        elif any(x in ref_lower for x in ["mt", "mc", "lc", "jo", "mateus", "marcos", "lucas", "joão"]):
+                            categoria = "Evangelho"
+                        elif "leitura" in ref_lower:
+                            categoria = "Leitura"
+                        
+                        # Extrai o Job ID limpo do nome do arquivo
+                        # Nome padrão: job_data_JOB-UUID.json
+                        job_id_clean = f['name'].replace("job_data_", "").replace(".json", "")
+
+                        jobs_list.append({
+                            "display": f"{data_liturgia} | {categoria} | {ref_full}",
+                            "job_id": job_id_clean,
+                            "data": data_liturgia,
+                            "categoria": categoria,
+                            "ref": ref_full,
+                            "file_id": f['id']
+                        })
+                    except:
+                        continue
+                        
+    except Exception as e:
+        st.error(f"Erro ao listar jobs: {e}")
+        return []
+        
+    return jobs_list
 
 def load_job_from_drive(job_id: str) -> Optional[Dict[str, Any]]:
     """Carrega um job payload completo do Google Drive usando o Job ID."""
@@ -452,16 +524,40 @@ tab1, tab2, tab3 = st.tabs(
 
 # --------- TAB 1: RECEBER JOB ----------
 with tab1:
-    st.header("📥 Central de Recepção")
+    st.header("📥 Central de Recepção de Jobs")
     
-    col_input, col_status = st.columns([2, 1])
+    col_list, col_input = st.columns([1.5, 1])
     
-    with col_input:
-        job_id_input = st.text_input("Cole o Job ID aqui (Gerado no AI Studio):", key="drive_job_id_input", placeholder="Ex: JOB-51f35776...")
+    with col_list:
+        st.subheader("Jobs Pendentes no Drive")
+        if st.button("🔄 Atualizar Lista de Jobs"):
+            with st.spinner("Buscando jobs recentes no Drive..."):
+                jobs = list_recent_jobs(15) # Busca os 15 mais recentes
+                st.session_state['lista_jobs'] = jobs
         
-        if st.button("Buscar e Carregar Job", type="primary", disabled=not job_id_input):
+        if 'lista_jobs' in st.session_state and st.session_state['lista_jobs']:
+            # Cria um seletor amigável
+            job_options = {job['display']: job['job_id'] for job in st.session_state['lista_jobs']}
+            selected_display = st.selectbox(
+                "Selecione um Job para carregar:", 
+                options=list(job_options.keys())
+            )
+            
+            if st.button("📂 Carregar Job Selecionado"):
+                selected_id = job_options[selected_display]
+                # Preenche o input e dispara o carregamento
+                st.session_state['drive_job_id_input'] = selected_id
+                st.rerun() # Recarrega para processar no bloco abaixo
+        else:
+            st.info("Clique em atualizar para ver os jobs disponíveis.")
+
+    with col_input:
+        st.subheader("Carregar por ID")
+        job_id_input = st.text_input("Job ID:", key="drive_job_id_input", placeholder="Ex: JOB-51f35776...")
+        
+        if st.button("Buscar e Carregar", type="primary", disabled=not job_id_input):
             if job_id_input:
-                with st.status(f"Buscando job '{job_id_input}' no Google Drive...", expanded=True) as status_box:
+                with st.status(f"Buscando job '{job_id_input}'...", expanded=True) as status_box:
                     # Clean up previous temp dir if exists
                     if st.session_state.get("temp_assets_dir") and os.path.exists(st.session_state["temp_assets_dir"]):
                         _shutil.rmtree(st.session_state["temp_assets_dir"])
@@ -488,18 +584,15 @@ with tab1:
                         _shutil.rmtree(temp_assets_dir)
                         st.session_state["temp_assets_dir"] = None
     
-    with col_status:
-        if st.session_state["job_loaded_from_drive"]:
-            st.success("JOB ATIVO")
-            st.markdown(f"**Data:** {st.session_state['meta_dados'].get('data')}")
-            st.markdown(f"**Ref:** {st.session_state['meta_dados'].get('ref')}")
-        else:
-            st.info("Nenhum job carregado.")
-
     st.divider()
-    
-    # Seção de Edição de Metadados (Data e Livro)
     if st.session_state["job_loaded_from_drive"]:
+        st.success("JOB ATIVO")
+        col_meta1, col_meta2 = st.columns(2)
+        with col_meta1:
+            st.markdown(f"**Data Original:** {st.session_state['meta_dados'].get('data')}")
+        with col_meta2:
+            st.markdown(f"**Ref Original:** {st.session_state['meta_dados'].get('ref')}")
+        
         st.subheader("📝 Editar Informações do Overlay")
         st.caption("Caso os dados vindos do Drive estejam incorretos, corrija aqui antes de renderizar.")
         
