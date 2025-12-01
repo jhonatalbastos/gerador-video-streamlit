@@ -57,7 +57,7 @@ def load_config():
         "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
-        # CORREÇÃO CRÍTICA: Valores padrão de cores devem ser HEX para st.color_picker
+        # Configurações de Legenda
         "sub_size": 50,
         "sub_color": "#FFFF00", 
         "sub_outline_color": "#000000",
@@ -884,44 +884,44 @@ with tab3:
             if st.session_state.get("temp_assets_dir"):
                 
                 # 1. Concatena os áudios individuais em um WAV mestre para o Whisper (mais estável)
-                status.update(label="Combinando áudios para o Whisper...", expanded=True)
-                
-                audio_paths = [path for path in st.session_state["generated_audios_blocks"].values() if os.path.exists(path)]
-                
-                if not audio_paths:
-                    st.error("Nenhum arquivo de áudio válido encontrado para transcrever.")
-                    st.stop()
+                with st.status("Combinando áudios para o Whisper...", expanded=True) as status_whisper: # Cria um novo bloco de status
                     
-                # Cria um arquivo de lista para concatenação dos WAVs
-                concat_list_audio = os.path.join(st.session_state["temp_assets_dir"], "list_audio.txt")
-                with open(concat_list_audio, "w") as f:
-                    for p in audio_paths:
-                        f.write(f"file '{p}'\n")
+                    audio_paths = [path for path in st.session_state["generated_audios_blocks"].values() if os.path.exists(path)]
+                    
+                    if not audio_paths:
+                        status_whisper.update(label="❌ Nenhum arquivo de áudio válido encontrado para transcrever.", state="error")
+                        st.stop()
+                        
+                    # Cria um arquivo de lista para concatenação dos WAVs
+                    concat_list_audio = os.path.join(st.session_state["temp_assets_dir"], "list_audio.txt")
+                    with open(concat_list_audio, "w") as f:
+                        for p in audio_paths:
+                            f.write(f"file '{p}'\n")
 
-                master_audio_path = os.path.join(st.session_state["temp_assets_dir"], "master_audio.wav")
-                
-                # Concatena os streams de áudio em um único arquivo WAV de referência
-                cmd_concat_audio = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_audio, "-c:a", "pcm_s16le", master_audio_path]
-                
-                try:
-                    run_cmd(cmd_concat_audio)
-                    st.write("Áudio mestre concatenado com sucesso.")
+                    master_audio_path = os.path.join(st.session_state["temp_assets_dir"], "master_audio.wav")
                     
-                    # 2. Chama a API Whisper
-                    status.update(label="Transcrevendo áudio com Whisper API (pode levar tempo)...", expanded=True)
-                    new_srt_content = gerar_legendas_whisper(master_audio_path)
+                    # Concatena os streams de áudio em um único arquivo WAV de referência
+                    cmd_concat_audio = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_audio, "-c:a", "pcm_s16le", master_audio_path]
                     
-                    if new_srt_content:
-                        st.session_state["generated_srt_content"] = new_srt_content
-                        status.update(label="✅ Legendas geradas com sucesso via Whisper!", state="complete")
-                        st.rerun()
-                    else:
-                        status.update(label="❌ Falha na transcrição do Whisper.", state="error")
+                    try:
+                        run_cmd(cmd_concat_audio)
+                        status_whisper.update(label="Áudio mestre concatenado com sucesso.", expanded=False)
+                        
+                        # 2. Chama a API Whisper
+                        status_whisper.update(label="Transcrevendo áudio com Whisper API (pode levar tempo)...", expanded=True)
+                        new_srt_content = gerar_legendas_whisper(master_audio_path)
+                        
+                        if new_srt_content:
+                            st.session_state["generated_srt_content"] = new_srt_content
+                            status_whisper.update(label="✅ Legendas geradas com sucesso via Whisper!", state="complete")
+                            st.rerun()
+                        else:
+                            status_whisper.update(label="❌ Falha na transcrição do Whisper.", state="error")
+                        
+                    except Exception as e:
+                        status_whisper.update(label="❌ Erro na Concatenação de Áudio para Whisper.", state="error")
+                        st.error(f"Detalhes: {e}")
                     
-                except Exception as e:
-                    status.update(label="❌ Erro na Concatenação de Áudio para Whisper.", state="error")
-                    st.error(f"Detalhes: {e}")
-                
             else:
                 st.warning("Carregue um Job ID primeiro para ter os áudios disponíveis.")
     with col_info:
