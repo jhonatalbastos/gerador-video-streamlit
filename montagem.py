@@ -20,7 +20,8 @@ import streamlit as st
 # --- API Imports ---
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapialient.errors import HttpError
+# CORREÇÃO: Corrigido o erro de digitação 'googleapialient' para 'googleapiclient'
+from googleapiclient.errors import HttpError 
 # Importa a biblioteca OpenAI (assumindo que o pacote 'openai' está disponível no ambiente Streamlit)
 try:
     from openai import OpenAI
@@ -1031,9 +1032,6 @@ with tab3:
 
                     filter_complex = ",".join(vf_filters)
 
-                    # CORREÇÃO DO COMANDO DE CLIPE: Remover o ':fps=25' do zoompan e usar -r (frame rate)
-                    # O zoompan já está definindo o FPS na saída, mas o FFmpeg reclama quando o -r está faltando.
-                    # No entanto, vamos tentar a sintaxe mais limpa do zoompan primeiro, já que a quebra ocorreu lá.
                     cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path, "-vf", filter_complex, "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip_path]
                     run_cmd(cmd)
                     clip_files.append(clip_path)
