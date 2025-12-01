@@ -57,10 +57,10 @@ def load_config():
         "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
-        # Configurações de Legenda
+        # CORREÇÃO CRÍTICA: Valores padrão de cores devem ser HEX para st.color_picker
         "sub_size": 50,
-        "sub_color": "Yellow",
-        "sub_outline_color": "Black",
+        "sub_color": "#FFFF00", 
+        "sub_outline_color": "#000000",
         "sub_y_pos": 900 
     }
 
@@ -68,6 +68,12 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r") as f:
                 saved = json.load(f)
+                # Garante que os valores salvos de cor sejam strings hex válidas se existirem
+                if 'sub_color' in saved and not saved['sub_color'].startswith('#'):
+                     saved['sub_color'] = default_settings['sub_color']
+                if 'sub_outline_color' in saved and not saved['sub_outline_color'].startswith('#'):
+                     saved['sub_outline_color'] = default_settings['sub_outline_color']
+
                 default_settings.update(saved)
                 return default_settings
         except Exception as e:
@@ -479,8 +485,8 @@ def get_text_alpha_expr(anim_type: str, duration: float) -> str:
 def sanitize_text_for_ffmpeg(text: str) -> str:
     """Limpa texto para evitar quebra do filtro drawtext (vírgulas, dois pontos, aspas)"""
     if not text: return ""
-    t = text.replace(":", "\:")
-    t = t.replace("'", "")
+    # CORREÇÃO: Usar dupla barra invertida (\\) para escapar o caractere no comando FFmpeg
+    t = text.replace(":", "\\:").replace("'", "")
     return t
 
 # NOVO: Função para gerar legendas com Whisper
@@ -722,10 +728,8 @@ with tab2:
 
         # NOVO: Configurações de Legendas
         with st.expander("📝 Ajustes de Legendas", expanded=True):
-            # Correção de Erro: O color picker só aceita cores como strings hex (#RRGGBB) ou nomes de cores (e.g., 'Yellow'). 
-            # O .get() precisa fornecer um valor inicial de cor válido.
             ov_sets["sub_size"] = st.slider("Tamanho da Fonte", 20, 100, ov_sets.get("sub_size", 50), key="sub_s")
-            # Corrigido para garantir que o valor inicial seja uma string válida para st.color_picker
+            # CORREÇÃO: Usando valores HEX para o color picker
             ov_sets["sub_color"] = st.color_picker("Cor da Legenda", ov_sets.get("sub_color", "#FFFF00"), key="sub_c") 
             ov_sets["sub_outline_color"] = st.color_picker("Cor da Sombra/Borda", ov_sets.get("sub_outline_color", "#000000"), key="sub_o")
             # NOVO: Posição Y da Legenda
