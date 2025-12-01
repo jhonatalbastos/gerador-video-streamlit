@@ -2,7 +2,7 @@
 # Features: Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos, Carregamento via Drive
 import os
 import re
-import json # Adicionado/Garantido o import para json.loads
+import json
 import time
 import tempfile
 import traceback
@@ -126,16 +126,17 @@ def get_drive_service():
     global _drive_service
     if _drive_service is None:
         try:
-            # st.secrets["gcp_service_account"] should contain the JSON key file
-            # in a format like: {"type": "service_account", "project_id": "...", ...}
             creds_json_raw = st.secrets.get("gcp_service_account")
             if not creds_json_raw:
                 st.error("❌ Configure 'gcp_service_account' em Settings → Secrets no Streamlit Cloud.")
                 st.stop()
 
-            # CORREÇÃO CRÍTICA: Decodificar a string JSON se ela vier como string (problema comum no Streamlit Secrets)
+            # CORREÇÃO CRÍTICA: Limpeza e Decodificação da string JSON para evitar 'Invalid control character'
             if isinstance(creds_json_raw, str):
-                creds_info = json.loads(creds_json_raw)
+                # Remove espaços sem quebra (\u00a0) e outros caracteres de controle comuns.
+                # O .strip() final remove espaços em branco extras no início/fim.
+                creds_clean = creds_json_raw.replace('\u00a0', ' ').strip()
+                creds_info = json.loads(creds_clean)
             else:
                 creds_info = creds_json_raw
             
@@ -146,7 +147,6 @@ def get_drive_service():
             _drive_service = build('drive', 'v3', credentials=creds)
             st.success("✅ Google Drive API inicializada com sucesso!")
         except Exception as e:
-            # Aqui 'e' será o erro de 'str' object has no attribute 'keys' se não for corrigido
             st.error(f"❌ Erro ao inicializar Google Drive API: {e}. Verifique as credenciais da conta de serviço e permissões.")
             st.stop()
     return _drive_service
@@ -351,10 +351,6 @@ PROMPT_GERAL: [prompt para thumbnail/capa]"""
         )
         texto_gerado = resp.choices[0].message.content
         partes: dict[str, Any] = {}
-        # This part requires careful parsing if Groq output is a single string.
-        # For simplicity, and since frontend now generates structured Roteiro,
-        # this is a placeholder. If direct Groq generation is primary, this parsing
-        # logic needs to extract "HOOK:", "PROMPT_HOOK:", etc.
         st.warning("⚠️ O gerador Groq de roteiro precisa ser adaptado para o novo formato de blocos do frontend.")
         return {
             "hook": {"text": "Texto do Hook Groq", "prompt": "Prompt do Hook Groq"},
@@ -439,7 +435,7 @@ def gerar_imagem_google_imagen(prompt: str, ratio: str) -> BytesIO:
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not gem_key:
         raise RuntimeError("GEMINI_API_KEY não encontrada.")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key={gem_key}" # Corrected model version
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key={gem_key}" 
     headers = {"Content-Type": "application/json"}
     payload = {
         "instances": [{"prompt": prompt}],
