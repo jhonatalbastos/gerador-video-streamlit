@@ -124,25 +124,52 @@ _drive_service = None
 
 def get_drive_service():
     global _drive_service
+    # O novo sistema de leitura usa chaves separadas para evitar problemas de formatação JSON/TOML
+    required_keys = [
+        "type", "project_id", "private_key_id", "private_key", 
+        "client_email", "client_id", "auth_uri", "token_uri", 
+        "auth_provider_x509_cert_url", "client_x509_cert_url", "universe_domain"
+    ]
+    
+    # Prefixos para as novas chaves no st.secrets
+    prefix = "gcp_service_account_"
+
     if _drive_service is None:
         try:
-            creds_json_raw = st.secrets.get("gcp_service_account")
-            if not creds_json_raw:
-                st.error("❌ Configure 'gcp_service_account' em Settings → Secrets no Streamlit Cloud.")
-                st.stop()
-
-            # CORREÇÃO FINAL: Limpeza segura para evitar 'Invalid control character' e 'No key could be detected'.
-            if isinstance(creds_json_raw, str):
-                # 1. Remove o caractere de espaço sem quebra (\u00a0) e substitui por espaço normal.
-                # 2. O .strip() remove espaços/quebras de linha no início/fim.
-                creds_clean = creds_json_raw.replace('\u00a0', ' ').strip()
-                creds_info = json.loads(creds_clean)
-            else:
-                creds_info = creds_json_raw
+            creds_info = {}
+            missing_keys = []
             
+            for key in required_keys:
+                secret_key = prefix + key
+                value = st.secrets.get(secret_key)
+                
+                if value is None:
+                    # Se qualquer chave crucial estiver faltando, use a chave original como fallback
+                    # Mas o problema de 'Invalid control character' indica que o fallback falha
+                    # Deixamos o erro acontecer, mas verificamos a chave principal se necessário.
+                    if key == "type": # Apenas verifica se a chave original existe se o novo formato falhar
+                        original_secret = st.secrets.get("gcp_service_account")
+                        if original_secret is None:
+                            missing_keys.append(key)
+                        # NOTA: O tratamento do original_secret para JSONDecodeError foi removido daqui
+                        # pois estamos forçando o uso do novo formato de chaves simples.
+                    else:
+                        missing_keys.append(key)
+                else:
+                    creds_info[key] = value
+
+            if missing_keys:
+                st.error(
+                    f"❌ Erro de Configuração: As seguintes chaves de credenciais do Drive estão ausentes "
+                    f"no Streamlit Secrets (use o prefixo '{prefix}'): {', '.join(missing_keys)}. "
+                    f"Por favor, atualize o secrets.toml para o novo formato de múltiplas chaves."
+                )
+                st.stop()
+                
+            # Todas as chaves foram reunidas em creds_info
             creds = service_account.Credentials.from_service_account_info(
                 creds_info,
-                scopes=['https://www.googleapis.com/auth/drive.readonly'] # Read-only scope is sufficient
+                scopes=['https://www.googleapis.com/auth/drive.readonly'] 
             )
             _drive_service = build('drive', 'v3', credentials=creds)
             st.success("✅ Google Drive API inicializada com sucesso!")
