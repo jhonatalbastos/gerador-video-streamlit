@@ -144,16 +144,9 @@ def get_drive_service():
                 value = st.secrets.get(secret_key)
                 
                 if value is None:
-                    # Se qualquer chave crucial estiver faltando, use a chave original como fallback
-                    # Mas o problema de 'Invalid control character' indica que o fallback falha
-                    # Deixamos o erro acontecer, mas verificamos a chave principal se necessário.
-                    if key == "type": # Apenas verifica se a chave original existe se o novo formato falhar
-                        original_secret = st.secrets.get("gcp_service_account")
-                        if original_secret is None:
-                            missing_keys.append(key)
-                        # NOTA: O tratamento do original_secret para JSONDecodeError foi removido daqui
-                        # pois estamos forçando o uso do novo formato de chaves simples.
-                    else:
+                    # Verifica se a chave original existe se o novo formato falhar
+                    original_secret = st.secrets.get("gcp_service_account")
+                    if original_secret is None and prefix in secret_key:
                         missing_keys.append(key)
                 else:
                     creds_info[key] = value
@@ -616,11 +609,24 @@ def shutil_which(bin_name: str) -> Optional[str]:
     return _shutil.which(bin_name)
 
 def run_cmd(cmd: List[str]):
+    # 💡 CORREÇÃO FFmpeg: Limpa argumentos de caracteres invisíveis (\u00a0)
+    # que causam 'could not find codec parameters' ou erro de sintaxe.
+    cleaned_cmd = []
+    for arg in cmd:
+        if isinstance(arg, str):
+            # Remove o espaço sem quebra (\u00a0) e caracteres de formatação
+            cleaned_arg = arg.replace('\u00a0', ' ').strip()
+            # Adiciona o argumento limpo, desde que não esteja vazio
+            if cleaned_arg:
+                cleaned_cmd.append(cleaned_arg)
+        else:
+            cleaned_cmd.append(arg)
+            
     try: 
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(cleaned_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e: 
         stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-        raise RuntimeError(f"Comando falhou: {' '.join(cmd)}\nSTDERR: {stderr}")
+        raise RuntimeError(f"Comando falhou: {' '.join(cleaned_cmd)}\nSTDERR: {stderr}")
 
 def get_audio_duration_seconds(audio_path: str) -> Optional[float]:
     """Obtém a duração de um áudio a partir do caminho do arquivo."""
