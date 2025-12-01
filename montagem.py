@@ -1053,16 +1053,17 @@ with tab3:
                         music_source_path = SAVED_MUSIC_FILE
                     
                     if music_source_path:
-                        input_mix.extend(["-stream_loop", "-1", "-i", music_source_path])
-                        # A música tem o volume ajustado, depois é mixada com o áudio original.
+                        # Input da música é sempre o próximo índice livre, que é 1
+                        input_mix.extend(["-stream_loop", "-1", "-i", music_source_path]) 
+                        # A música tem o volume ajustado, depois é mixada com o áudio original [0:a].
                         filter_audio_mix = f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a_out]"
+                        filter_complex_parts.append(filter_audio_mix)
                     else:
                         # Se não há música, o stream de áudio final [a_out] é apenas o stream de áudio original [0:a]
                         filter_audio_mix = "[0:a]copy[a_out]"
-                    
-                    filter_complex_parts.append(filter_audio_mix)
-
-                    # Adiciona legendas (subtitles) - CORREÇÃO E FORMATO DE KARAOKE
+                        filter_complex_parts.append(filter_audio_mix) # Garantir que [a_out] é definido
+                        
+                    # Adiciona legendas (subtitles)
                     if usar_legendas and srt_path_final and os.path.exists(srt_path_final):
                         
                         # --- CONFIGURAÇÃO DE ESTILO ASS/SRT NO FFmpeg ---
@@ -1078,30 +1079,31 @@ with tab3:
                         primary_color = hex_to_bgr(sets.get("sub_color", "#FFFF00")) # Cor principal (Amarelo)
                         outline_color = hex_to_bgr(sets.get("sub_outline_color", "#000000")) # Cor da borda/sombra (Preto)
                         
-                        # A borda grossa (Outline) e a Sombra (Shadow) dão o efeito de destaque
+                        # Define os estilos de legenda para o filtro subtitles/libass
                         ass_style_params = (
                             f"FontName=Arial,"
                             f"FontSize={sets['sub_size']},"
                             f"PrimaryColour={primary_color},"  # Cor da legenda
                             f"OutlineColour={outline_color}," # Cor da borda
-                            f"Outline=2.5,"                    # Espessura da borda
-                            f"Shadow=0,"                       # Desabilita sombra (preferindo borda)
-                            f"Alignment=2,"                    # Alinhamento: Centro inferior (2 para center bottom)
-                            f"MarginV={res_params['h'] - sets['sub_y_pos']}" # Posição vertical (calculada a partir do bottom=1280)
+                            f"Outline=2.5,"                    
+                            f"Shadow=0,"                       
+                            f"Alignment=2,"                    
+                            f"MarginV={res_params['h'] - sets['sub_y_pos']}" 
                         )
 
-                        # Aplica o filtro de legenda no stream de vídeo original [0:v]
+                        # Aplica o filtro de legenda no stream de vídeo original [0:v] e nomeia [v_out]
                         filter_video_mix = f"[0:v]subtitles='{srt_path_final}':force_style='{ass_style_params}'[v_out]"
                         filter_complex_parts.append(filter_video_mix)
                     else:
-                        # Se não há legendas, o stream de vídeo final [v_out] é apenas o stream de vídeo original [0:v]
+                        # Se não há legendas, o stream de vídeo final [v_out] é apenas uma cópia nomeada do [0:v]
                         filter_video_mix = "[0:v]copy[v_out]"
+                        filter_complex_parts.append(filter_video_mix) # Garantir que [v_out] é definido
                     
                     # --- Execução ---
                     cmd_final = ["ffmpeg", "-y"]
                     cmd_final.extend(input_mix)
                     
-                    # Usamos ; para separar os filtros de áudio e vídeo
+                    # Conecta todos os filtros usando ponto e vírgula
                     cmd_final.extend(["-filter_complex", ";".join(filter_complex_parts)])
                     
                     # Mapeia os streams de saída nomeados: [v_out] (vídeo com/sem legenda) e [a_out] (áudio com/sem música)
@@ -1139,4 +1141,4 @@ with tab3:
         st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
 
 st.markdown("---")
-st.caption("Studio Jhonata v22.0 - Edição Leve + Whisper Subtitles")
+st.caption("Studio Jhonata v22.4 - Edição Leve + FFmpeg Complex Fix")
