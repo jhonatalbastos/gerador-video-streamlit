@@ -1,7 +1,7 @@
 # app.py — Studio Jhonata (COMPLETO v20.0 - COM INTEGRAÇÃO DRIVE)
 # Features: Música Persistente, Geração em Lote, Fix NameError, Transições, Overlay, Efeitos, Carregamento via Drive
 import os
-import re
+import re # Módulo de expressões regulares adicionado
 import json
 import time
 import tempfile
@@ -131,11 +131,18 @@ def get_drive_service():
                 st.error("❌ Configure 'gcp_service_account' em Settings → Secrets no Streamlit Cloud.")
                 st.stop()
 
-            # CORREÇÃO CRÍTICA: Limpeza e Decodificação da string JSON para evitar 'Invalid control character'
+            # CORREÇÃO ROBUSTA: Limpeza profunda de caracteres de controle invisíveis
+            # para resolver o erro 'Invalid control character' no json.loads.
             if isinstance(creds_json_raw, str):
-                # Remove espaços sem quebra (\u00a0) e outros caracteres de controle comuns.
-                # O .strip() final remove espaços em branco extras no início/fim.
-                creds_clean = creds_json_raw.replace('\u00a0', ' ').strip()
+                # 1. Remove qualquer caractere que não seja imprimível ou um espaço/tabulação padrão
+                # (ex: \u00a0, quebra de linha de macOS, caracteres de formatação invisíveis).
+                # Manter apenas caracteres ASCII imprimíveis e espaços/quebras de linha/tabs.
+                creds_clean = re.sub(r'[^\x20-\x7E\n\r\t]+', '', creds_json_raw) 
+                
+                # 2. Compacta a string removendo quebras de linha e espaços excedentes
+                # para garantir que o JSON esteja em um formato limpo para o parser.
+                creds_clean = creds_clean.replace('\n', '').replace('\r', '').strip()
+                
                 creds_info = json.loads(creds_clean)
             else:
                 creds_info = creds_json_raw
