@@ -19,10 +19,16 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
 
-# --- Google Drive API Imports ---
+# --- API Imports ---
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+# Importa a biblioteca OpenAI (assumindo que o pacote 'openai' está disponível no ambiente Streamlit)
+try:
+    from openai import OpenAI
+except ImportError:
+    # Fallback para evitar erro de importação, mas a funcionalidade não funcionará
+    OpenAI = None 
 
 # Force ffmpeg path for imageio if needed (Streamlit Cloud)
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
@@ -52,7 +58,12 @@ def load_config():
         "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)", "line3_anim": "Estático",
         "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
-        "music_vol": 0.15
+        "music_vol": 0.15,
+        # Configurações de Legenda
+        "sub_size": 50,
+        "sub_color": "Yellow",
+        "sub_outline_color": "Black",
+        "sub_y_pos": 900 
     }
 
     if os.path.exists(CONFIG_FILE):
@@ -474,6 +485,41 @@ def sanitize_text_for_ffmpeg(text: str) -> str:
     t = t.replace("'", "")
     return t
 
+# NOVO: Função para gerar legendas com Whisper
+def gerar_legendas_whisper(audio_path: str):
+    """
+    Gera legendas SRT usando a API Whisper da OpenAI para um arquivo de áudio.
+    Requer a chave OPENAI_API_KEY no Streamlit Secrets.
+    """
+    openai_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not openai_key:
+        st.error("❌ Chave OPENAI_API_KEY não configurada no Streamlit Secrets.")
+        return None
+    
+    try:
+        client = OpenAI(api_key=openai_key)
+        
+        st.write(f"Enviando áudio ({os.path.basename(audio_path)}) para a API Whisper...")
+
+        with open(audio_path, "rb") as audio_file:
+            # O Whisper gera automaticamente o SRT (ou VTT)
+            # response_format="srt" é crucial para obter o formato desejado
+            # language="pt" ajuda na precisão
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1", 
+                file=audio_file, 
+                response_format="srt",
+                language="pt"
+            )
+        
+        # O resultado é uma string SRT
+        return transcript
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao gerar legendas com Whisper: {e}")
+        st.error("Verifique se o arquivo de áudio não está vazio e se sua chave OpenAI está válida.")
+        return None
+
 # =========================
 # Interface principal
 # =========================
@@ -676,6 +722,15 @@ with tab2:
             if curr_a3 not in anim_options: curr_a3 = anim_options[0]
             ov_sets["line3_anim"] = st.selectbox("Animação L3", anim_options, index=anim_options.index(curr_a3), key="a3")
 
+        # NOVO: Configurações de Legendas
+        with st.expander("📝 Ajustes de Legendas", expanded=True):
+            ov_sets["sub_size"] = st.slider("Tamanho da Fonte", 20, 100, ov_sets.get("sub_size", 50), key="sub_s")
+            ov_sets["sub_color"] = st.color_picker("Cor da Legenda", ov_sets.get("sub_color", "Yellow"), key="sub_c")
+            ov_sets["sub_outline_color"] = st.color_picker("Cor da Sombra/Borda", ov_sets.get("sub_outline_color", "Black"), key="sub_o")
+            # NOVO: Posição Y da Legenda
+            ov_sets["sub_y_pos"] = st.slider("Posição Vertical Y", 600, 1200, ov_sets.get("sub_y_pos", 900), help="Posição em pixels na tela (1280 é o limite inferior para 9:16)")
+
+
         st.session_state["overlay_settings"] = ov_sets
         if st.button("💾 Salvar Configurações (Persistente)"):
             if save_config(ov_sets):
@@ -815,6 +870,60 @@ with tab3:
         if st.download_button("⬇️ Baixar SRT", st.session_state["generated_srt_content"], "legendas.srt", "text/plain"):
             pass
             
+    # NOVO: Botão para gerar legendas via Whisper
+    col_whisper, col_info = st.columns([1, 2])
+    with col_whisper:
+        if st.button("🎤 Gerar Legendas (Whisper API)", disabled=not st.session_state.get("job_loaded_from_drive")):
+            
+            # Requisito: Precisamos do áudio final concatenado (temp_video.mp4) para o Whisper
+            if st.session_state.get("temp_assets_dir"):
+                
+                # 1. Concatena os áudios individuais em um WAV mestre para o Whisper (mais estável)
+                status.update(label="Combinando áudios para o Whisper...", expanded=True)
+                
+                audio_paths = [path for path in st.session_state["generated_audios_blocks"].values() if os.path.exists(path)]
+                
+                if not audio_paths:
+                    st.error("Nenhum arquivo de áudio válido encontrado para transcrever.")
+                    st.stop()
+                    
+                # Cria um arquivo de lista para concatenação dos WAVs
+                concat_list_audio = os.path.join(st.session_state["temp_assets_dir"], "list_audio.txt")
+                with open(concat_list_audio, "w") as f:
+                    for p in audio_paths:
+                        f.write(f"file '{p}'\n")
+
+                master_audio_path = os.path.join(st.session_state["temp_assets_dir"], "master_audio.wav")
+                
+                # Concatena os streams de áudio em um único arquivo WAV de referência
+                cmd_concat_audio = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_audio, "-c:a", "pcm_s16le", master_audio_path]
+                
+                try:
+                    run_cmd(cmd_concat_audio)
+                    st.write("Áudio mestre concatenado com sucesso.")
+                    
+                    # 2. Chama a API Whisper
+                    status.update(label="Transcrevendo áudio com Whisper API (pode levar tempo)...", expanded=True)
+                    new_srt_content = gerar_legendas_whisper(master_audio_path)
+                    
+                    if new_srt_content:
+                        st.session_state["generated_srt_content"] = new_srt_content
+                        status.update(label="✅ Legendas geradas com sucesso via Whisper!", state="complete")
+                        st.rerun()
+                    else:
+                        status.update(label="❌ Falha na transcrição do Whisper.", state="error")
+                    
+                except Exception as e:
+                    status.update(label="❌ Erro na Concatenação de Áudio para Whisper.", state="error")
+                    st.error(f"Detalhes: {e}")
+                
+            else:
+                st.warning("Carregue um Job ID primeiro para ter os áudios disponíveis.")
+    with col_info:
+        if st.session_state.get("generated_srt_content"):
+            st.info("SRT carregado. O Whisper API é recomendado para máxima precisão de sincronismo, superando o cálculo de duração por bloco.")
+
+    st.markdown("---")
     if st.button("Renderizar Vídeo Completo (Unir tudo)", type="primary"):
         with st.status("Renderizando vídeo com efeitos...", expanded=True) as status:
             temp_dir_render = None
@@ -925,7 +1034,7 @@ with tab3:
 
                     final_path = os.path.join(temp_dir_render, "final.mp4")
                     
-                    # 2. Lógica de Mixagem e Legendas (COM CORREÇÃO DE FLUXO)
+                    # 2. Lógica de Mixagem e Legendas
                     
                     input_mix = ["-i", temp_video]
                     filter_complex_parts = []
@@ -940,8 +1049,6 @@ with tab3:
                     
                     if music_source_path:
                         input_mix.extend(["-stream_loop", "-1", "-i", music_source_path])
-                        # Stream de áudio do vídeo principal é [0:a]
-                        # Stream de áudio da música é [1:a]
                         # A música tem o volume ajustado, depois é mixada com o áudio original.
                         filter_audio_mix = f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a_out]"
                     else:
@@ -950,10 +1057,36 @@ with tab3:
                     
                     filter_complex_parts.append(filter_audio_mix)
 
-                    # Adiciona legendas (subtitles) - CORREÇÃO DE SINTAXE DO FFmpeg
+                    # Adiciona legendas (subtitles) - CORREÇÃO E FORMATO DE KARAOKE
                     if usar_legendas and srt_path_final and os.path.exists(srt_path_final):
-                        # Aplica o filtro subtitles no stream de vídeo original [0:v] e nomeia o resultado como [v_out]
-                        filter_video_mix = f"[0:v]subtitles='{srt_path_final}'[v_out]"
+                        
+                        # --- CONFIGURAÇÃO DE ESTILO ASS/SRT NO FFmpeg ---
+                        # Converte cores Hex para BGR (formato libass/FFmpeg)
+                        def hex_to_bgr(hex_color):
+                            # Remove #, garante 6 caracteres e converte para BGR
+                            hex_color = hex_color.lstrip('#')
+                            r = int(hex_color[0:2], 16)
+                            g = int(hex_color[2:4], 16)
+                            b = int(hex_color[4:6], 16)
+                            return f"&H{b:02X}{g:02X}{r:02X}"
+
+                        primary_color = hex_to_bgr(sets.get("sub_color", "#FFFF00")) # Cor principal (Amarelo)
+                        outline_color = hex_to_bgr(sets.get("sub_outline_color", "#000000")) # Cor da borda/sombra (Preto)
+                        
+                        # A borda grossa (Outline) e a Sombra (Shadow) dão o efeito de destaque
+                        ass_style_params = (
+                            f"FontName=Arial,"
+                            f"FontSize={sets['sub_size']},"
+                            f"PrimaryColour={primary_color},"  # Cor da legenda
+                            f"OutlineColour={outline_color}," # Cor da borda
+                            f"Outline=2.5,"                    # Espessura da borda
+                            f"Shadow=0,"                       # Desabilita sombra (preferindo borda)
+                            f"Alignment=2,"                    # Alinhamento: Centro inferior (2 para center bottom)
+                            f"MarginV={res_params['h'] - sets['sub_y_pos']}" # Posição vertical (calculada a partir do bottom=1280)
+                        )
+
+                        # Aplica o filtro de legenda no stream de vídeo original [0:v]
+                        filter_video_mix = f"[0:v]subtitles='{srt_path_final}':force_style='{ass_style_params}'[v_out]"
                         filter_complex_parts.append(filter_video_mix)
                     else:
                         # Se não há legendas, o stream de vídeo final [v_out] é apenas o stream de vídeo original [0:v]
@@ -1001,4 +1134,4 @@ with tab3:
         st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
 
 st.markdown("---")
-st.caption("Studio Jhonata v21.2 - Edição Leve + Legendas/Mixagem Fixas")
+st.caption("Studio Jhonata v22.0 - Edição Leve + Whisper Subtitles")
