@@ -318,9 +318,7 @@ def process_job_payload_and_update_state(payload: Dict[str, Any], temp_dir: str)
         # Carrega metadados iniciais, mas permite edição posterior via UI
         meta_recebido = payload.get("meta_dados", {"data": "", "ref": ""})
         
-        # Se os metadados no state estiverem vazios ou for um novo job, atualiza.
-        # Se já existirem (o usuário pode ter editado), mantemos ou perguntamos? 
-        # Aqui, vamos sobrescrever ao carregar um novo job para garantir que os dados batam com o arquivo.
+        # Sobrescreve ao carregar um novo job para garantir que os dados batam com o arquivo.
         st.session_state["meta_dados"] = meta_recebido
         st.session_state["data_display"] = meta_recebido.get("data", "") # Campo editável
         st.session_state["ref_display"] = meta_recebido.get("ref", "")   # Campo editável
@@ -340,6 +338,11 @@ def process_job_payload_and_update_state(payload: Dict[str, Any], temp_dir: str)
                 continue
 
             decoded_data = base64.b64decode(data_b64)
+
+            # --- DEBUGGING: Verificar se o arquivo decodificado tem 0 bytes ---
+            if len(decoded_data) == 0:
+                 st.error(f"❌ O asset {block_id} ({asset_type}) chegou vazio ou corrompido (0 bytes).")
+                 continue # Pula este asset corrompido
 
             if asset_type == "image":
                 file_path = os.path.join(temp_dir, f"{block_id}.png")
@@ -400,6 +403,7 @@ def get_audio_duration_seconds(audio_path: str) -> Optional[float]:
         out = p.stdout.decode().strip()
         return float(out) if out else None
     except Exception:
+        # Nota: O erro "could not find codec parameters" faz o ffprobe falhar, retornando 5.0 como fallback
         st.error(f"Erro ao obter duração do áudio com ffprobe para {os.path.basename(audio_path)}.")
         return 5.0 
     finally:
@@ -773,6 +777,10 @@ with tab3:
     st.divider()
     st.header("🎬 Finalização")
     usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay Personalizado)", value=True)
+    
+    # Checkbox para Legendas (NOVO)
+    usar_legendas = st.checkbox("Adicionar Legendas (SRT)", value=False, disabled=(not st.session_state.get("generated_srt_content")))
+
 
     st.subheader("🎵 Música de Fundo (Opcional)")
 
@@ -815,10 +823,18 @@ with tab3:
 
                 temp_dir_render = tempfile.mkdtemp()
                 clip_files = []
+                srt_path_final = None # Inicializa o caminho do SRT
 
                 font_path = resolve_font_path(st.session_state["overlay_settings"]["line1_font"], uploaded_font_file)
                 if usar_overlay and not font_path:
                     st.warning("⚠️ Fonte não encontrada. O overlay pode falhar.")
+                
+                # Prepara o arquivo SRT se a opção for marcada
+                if usar_legendas and st.session_state.get("generated_srt_content"):
+                    srt_path_final = os.path.join(temp_dir_render, "legendas.srt")
+                    with open(srt_path_final, "w", encoding="utf-8") as f:
+                        f.write(st.session_state["generated_srt_content"])
+                    st.write("✅ Arquivo SRT criado para renderização.")
 
                 # Usa os dados de display que podem ter sido editados
                 txt_dt = st.session_state.get("data_display", "")
@@ -890,8 +906,6 @@ with tab3:
 
                     filter_complex = ",".join(vf_filters)
 
-                    # Importante: Como o arquivo de áudio pode estar sendo salvo como .wav na função de processamento,
-                    # o FFmpeg precisa saber lidar com ele.
                     cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path, "-vf", filter_complex, "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip_path]
                     run_cmd(cmd)
                     clip_files.append(clip_path)
@@ -902,32 +916,70 @@ with tab3:
                         for p in clip_files: f.write(f"file '{p}'\n")
 
                     temp_video = os.path.join(temp_dir_render, "temp_video.mp4")
+                    
+                    # 1. Concatena clipes
                     run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", temp_video])
 
                     final_path = os.path.join(temp_dir_render, "final.mp4")
-
-                    # Lógica de Música: 1. Uploaded, 2. Saved Default, 3. None
+                    
+                    # 2. Lógica de Música, Legendas (NOVO)
                     music_source_path = None
-
                     if music_upload:
                         music_source_path = os.path.join(temp_dir_render, "bg.mp3")
                         with open(music_source_path, "wb") as f: f.write(music_upload.getvalue())
                     elif saved_music_exists:
                         music_source_path = SAVED_MUSIC_FILE
 
+                    # Monta o comando final (Mixagem de áudio + Adição de legendas)
+                    input_mix = ["-i", temp_video]
+                    filter_audio = "[0:a]anull[a]" # Padrão: áudio do vídeo original
+                    filter_video = "[0:v]copy[v]" # Padrão: vídeo original
+                    map_output = ["-map", "[v]", "-map", "[a]"]
+
+                    # Adiciona música de fundo
                     if music_source_path:
-                        cmd_mix = [
-                            "ffmpeg", "-y",
-                            "-i", temp_video,
-                            "-stream_loop", "-1", "-i", music_source_path,
-                            "-filter_complex", f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]",
-                            "-map", "0:v", "-map", "[a]",
-                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", 
-                            final_path
-                        ]
-                        run_cmd(cmd_mix)
+                        input_mix.extend(["-stream_loop", "-1", "-i", music_source_path])
+                        # [0:a] = áudio do vídeo, [1:a] = áudio da música
+                        filter_audio = f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]"
+
+                    # Adiciona legendas (NOVO)
+                    if usar_legendas and srt_path_final and os.path.exists(srt_path_final):
+                        # Se o filtro de áudio for complexo, ele já está no [a], caso contrário, usamos [0:a]
+                        audio_stream = "[a]" if filter_audio != "[0:a]anull[a]" else "[0:a]" 
+
+                        # O filtro de legendas (subtitles) deve ser o último filtro de vídeo
+                        filter_video_subs = f"subtitles='{srt_path_final}'"
+                        
+                        # Se houver áudio e legendas, o filtro de áudio define [a] e o de vídeo define [v]
+                        filter_complex_final = f"{filter_audio};[0:v]{filter_video_subs}[v]"
+                        
+                        cmd_final = ["ffmpeg", "-y"]
+                        cmd_final.extend(input_mix)
+                        cmd_final.extend(["-filter_complex", filter_complex_final])
+                        cmd_final.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", final_path])
+                        
+                        # Executa o comando complexo (com mixagem de áudio e legendas)
+                        run_cmd(cmd_final)
+                    
                     else:
-                        os.rename(temp_video, final_path)
+                        # Se houver apenas mixagem de áudio (sem legendas), ou se não houver mixagem/legendas
+                        cmd_final = ["ffmpeg", "-y"]
+                        cmd_final.extend(input_mix)
+                        
+                        if filter_audio != "[0:a]anull[a]":
+                            # Se a mixagem de áudio foi definida (música de fundo)
+                            cmd_final.extend(["-filter_complex", filter_audio])
+                            cmd_final.extend(["-map", "0:v", "-map", "[a]"])
+                        else:
+                            # Se não houver filtros de áudio, copiamos o áudio original
+                            cmd_final.extend(["-map", "0:v", "-map", "0:a"])
+
+
+                        cmd_final.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", final_path])
+                        
+                        # Executa o comando (Mixagem simples ou cópia)
+                        run_cmd(cmd_final)
+
 
                     with open(final_path, "rb") as f:
                         st.session_state["video_final_bytes"] = BytesIO(f.read())
