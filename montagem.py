@@ -968,17 +968,14 @@ with tab3:
 
                 zoom_expr = None
 
-                # CORREÇÃO CRÍTICA DO TREMOR (v22.6)
+                # Expressões de movimento Ken Burns e Panorâmica
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
-                    # Expressão FFmpeg: z='min(1 + speed*on, 1.5)':x='...':y='...':d=frames:s=size:fps=25
                     zoom_expr_content = f"min(zoom+{speed_val},1.5):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Zoom Out":
                     zoom_expr_content = f"max(1,1.5-{speed_val}*on):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Panorâmica Esquerda":
-                    # 1.2 é o zoom inicial, o pan (movimento em x) vai da direita para a esquerda
                     zoom_expr_content = f"1.2:x='min(x+{speed_val}*100,iw-iw/zoom)':y='(ih-ih/zoom)/2'"
                 elif sets["effect_type"] == "Panorâmica Direita":
-                    # 1.2 é o zoom inicial, o pan (movimento em x) vai da esquerda para a direita
                     zoom_expr_content = f"1.2:x='max(0,x-{speed_val}*100)':y='(ih-ih/zoom)/2'"
                 else:
                     zoom_expr_content = "1:x=0:y=0" # Estático
@@ -1002,7 +999,7 @@ with tab3:
                     
                     # Aplica zoompan com FPS forçado para suavizar o movimento
                     if sets["effect_type"] != "Estático (Sem movimento)":
-                        # Injeta zoom_expr_content sem aspas externas, e envolve APENAS a expressão principal em aspas
+                        # Injeta zoom_expr_content e garante o FPS e Size para saída suave
                         zoom_pan_params = f"z='{zoom_expr_content}':d={frames}:s={s_out}:fps=25" 
                         vf_filters.append(f"zoompan={zoom_pan_params}")
                     else:
