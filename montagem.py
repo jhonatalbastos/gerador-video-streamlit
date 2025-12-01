@@ -994,8 +994,12 @@ with tab3:
                     frames = int(dur * 25)
 
                     vf_filters = []
+                    
+                    # CORREÇÃO SMOOTHNESS: Injetando FPS e tamanho na expressão zoompan
                     if sets["effect_type"] != "Estático (Sem movimento)":
-                        vf_filters.append(f"zoompan={zoom_expr}:d={frames}:s={s_out}")
+                        # Adiciona fps=25 e s={s_out} para suavizar o movimento Ken Burns/Panorâmica
+                        zoom_pan_params = f"z='{zoom_expr}':d={frames}:s={s_out}:fps=25" 
+                        vf_filters.append(f"zoompan={zoom_pan_params}")
                     else:
                         vf_filters.append(f"scale={s_out}")
 
@@ -1141,4 +1145,4 @@ with tab3:
         st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
 
 st.markdown("---")
-st.caption("Studio Jhonata v22.4 - Edição Leve + FFmpeg Complex Fix")
+st.caption("Studio Jhonata v22.5 - Suavização de Ken Burns")
