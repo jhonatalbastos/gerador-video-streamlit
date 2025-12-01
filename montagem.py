@@ -511,6 +511,8 @@ if "data_display" not in st.session_state:
     st.session_state["data_display"] = ""
 if "ref_display" not in st.session_state:
     st.session_state["ref_display"] = ""
+if "lista_jobs" not in st.session_state:
+    st.session_state["lista_jobs"] = []
 
 if "job_loaded_from_drive" not in st.session_state:
     st.session_state["job_loaded_from_drive"] = False
@@ -832,7 +834,8 @@ with tab3:
                 # Prepara o arquivo SRT se a opção for marcada
                 if usar_legendas and st.session_state.get("generated_srt_content"):
                     srt_path_final = os.path.join(temp_dir_render, "legendas.srt")
-                    with open(srt_path_final, "w", encoding="utf-8") as f:
+                    # Usando 'utf-8' para garantir que caracteres especiais funcionem no FFmpeg (assumes font support)
+                    with open(srt_path_final, "w", encoding="utf-8") as f: 
                         f.write(st.session_state["generated_srt_content"])
                     st.write("✅ Arquivo SRT criado para renderização.")
 
@@ -906,6 +909,8 @@ with tab3:
 
                     filter_complex = ",".join(vf_filters)
 
+                    # Importante: Como o arquivo de áudio pode estar sendo salvo como .wav na função de processamento,
+                    # o FFmpeg precisa saber lidar com ele.
                     cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path, "-vf", filter_complex, "-c:v", "libx264", "-t", f"{dur}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip_path]
                     run_cmd(cmd)
                     clip_files.append(clip_path)
@@ -922,63 +927,56 @@ with tab3:
 
                     final_path = os.path.join(temp_dir_render, "final.mp4")
                     
-                    # 2. Lógica de Música, Legendas (NOVO)
-                    music_source_path = None
+                    # 2. Lógica de Mixagem e Legendas (COM CORREÇÃO PARA FLUXO DE FILTROS)
+                    
+                    input_mix = ["-i", temp_video]
+                    filter_video_mix = ""
+                    filter_audio_mix = "[0:a]anull[a_in]" # Áudio do vídeo temporário, pronto para mixagem
+
+                    # Adiciona música de fundo
                     if music_upload:
                         music_source_path = os.path.join(temp_dir_render, "bg.mp3")
                         with open(music_source_path, "wb") as f: f.write(music_upload.getvalue())
                     elif saved_music_exists:
                         music_source_path = SAVED_MUSIC_FILE
+                    else:
+                        music_source_path = None
 
-                    # Monta o comando final (Mixagem de áudio + Adição de legendas)
-                    input_mix = ["-i", temp_video]
-                    filter_audio = "[0:a]anull[a]" # Padrão: áudio do vídeo original
-                    filter_video = "[0:v]copy[v]" # Padrão: vídeo original
-                    map_output = ["-map", "[v]", "-map", "[a]"]
-
-                    # Adiciona música de fundo
                     if music_source_path:
                         input_mix.extend(["-stream_loop", "-1", "-i", music_source_path])
-                        # [0:a] = áudio do vídeo, [1:a] = áudio da música
-                        filter_audio = f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]"
-
-                    # Adiciona legendas (NOVO)
-                    if usar_legendas and srt_path_final and os.path.exists(srt_path_final):
-                        # Se o filtro de áudio for complexo, ele já está no [a], caso contrário, usamos [0:a]
-                        audio_stream = "[a]" if filter_audio != "[0:a]anull[a]" else "[0:a]" 
-
-                        # O filtro de legendas (subtitles) deve ser o último filtro de vídeo
-                        filter_video_subs = f"subtitles='{srt_path_final}'"
-                        
-                        # Se houver áudio e legendas, o filtro de áudio define [a] e o de vídeo define [v]
-                        filter_complex_final = f"{filter_audio};[0:v]{filter_video_subs}[v]"
-                        
-                        cmd_final = ["ffmpeg", "-y"]
-                        cmd_final.extend(input_mix)
-                        cmd_final.extend(["-filter_complex", filter_complex_final])
-                        cmd_final.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", final_path])
-                        
-                        # Executa o comando complexo (com mixagem de áudio e legendas)
-                        run_cmd(cmd_final)
-                    
+                        # [1:a] é o stream de áudio da música (Input #1)
+                        # Combina [0:a] (vídeo original) com [1:a] (música) para gerar [a_out]
+                        filter_audio_mix = f"[0:a][1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a_out]"
                     else:
-                        # Se houver apenas mixagem de áudio (sem legendas), ou se não houver mixagem/legendas
-                        cmd_final = ["ffmpeg", "-y"]
-                        cmd_final.extend(input_mix)
-                        
-                        if filter_audio != "[0:a]anull[a]":
-                            # Se a mixagem de áudio foi definida (música de fundo)
-                            cmd_final.extend(["-filter_complex", filter_audio])
-                            cmd_final.extend(["-map", "0:v", "-map", "[a]"])
-                        else:
-                            # Se não houver filtros de áudio, copiamos o áudio original
-                            cmd_final.extend(["-map", "0:v", "-map", "0:a"])
+                        # Se não houver música, o stream de áudio final [a_out] é apenas o stream de áudio original [0:a]
+                        filter_audio_mix = "[0:a]copy[a_out]"
 
-
-                        cmd_final.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", final_path])
+                    # Adiciona legendas (subtitles) - NOVO
+                    if usar_legendas and srt_path_final and os.path.exists(srt_path_final):
+                        # O stream de vídeo inicial é [0:v]. 
+                        # Aplicamos o filtro subtitles a ele e nomeamos o stream de saída como [v_out]
+                        # O filtro 'subtitles' é o único que precisa da fonte do SRT.
+                        filter_video_mix = f"[0:v]subtitles='{srt_path_final}'[v_out]"
                         
-                        # Executa o comando (Mixagem simples ou cópia)
-                        run_cmd(cmd_final)
+                    else:
+                        # Se não há legendas, o stream de vídeo final [v_out] é apenas o stream de vídeo original [0:v]
+                        filter_video_mix = "[0:v]copy[v_out]"
+                    
+                    # Monta o filter_complex completo
+                    filter_complex_final = f"{filter_audio_mix},{filter_video_mix}"
+                    
+                    cmd_final = ["ffmpeg", "-y"]
+                    cmd_final.extend(input_mix)
+                    cmd_final.extend(["-filter_complex", filter_complex_final])
+                    
+                    # Mapeia os streams de saída nomeados: [v_out] (vídeo com/sem legenda) e [a_out] (áudio com/sem música)
+                    cmd_final.extend(["-map", "[v_out]", "-map", "[a_out]"])
+                    
+                    # Encoders finais
+                    cmd_final.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", final_path])
+                    
+                    # Executa o comando complexo
+                    run_cmd(cmd_final)
 
 
                     with open(final_path, "rb") as f:
@@ -1006,4 +1004,4 @@ with tab3:
         st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
 
 st.markdown("---")
-st.caption("Studio Jhonata v21.0 - Edição Leve")
+st.caption("Studio Jhonata v21.1 - Edição Leve + Legendas Fixas")
