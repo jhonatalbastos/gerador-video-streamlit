@@ -968,15 +968,16 @@ with tab3:
                 zoom_expr = None
 
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
-                    zoom_expr = f"z='min(zoom+{speed_val},1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                    # CORREÇÃO SMOOTHNESS: Expressão de zoom suave
+                    zoom_expr = f"min(zoom+{speed_val},1.5):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Zoom Out":
-                    zoom_expr = f"z='max(1,1.5-{speed_val}*on)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                    zoom_expr = f"max(1,1.5-{speed_val}*on):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Panorâmica Esquerda":
-                    zoom_expr = f"z=1.2:x='min(x+{speed_val}*100,iw-iw/zoom)':y='(ih-ih/zoom)/2'"
+                    zoom_expr = f"1.2:x='min(x+{speed_val}*100,iw-iw/zoom)':y='(ih-ih/zoom)/2'"
                 elif sets["effect_type"] == "Panorâmica Direita":
-                    zoom_expr = f"z=1.2:x='max(0,x-{speed_val}*100)':y='(ih-ih/zoom)/2'"
+                    zoom_expr = f"1.2:x='max(0,x-{speed_val}*100)':y='(ih-ih/zoom)/2'"
                 else:
-                    zoom_expr = "z=1:x=0:y=0"
+                    zoom_expr = "1:x=0:y=0" # Estático
 
                 for b in blocos_config:
                     bid = b["id"]
@@ -995,9 +996,9 @@ with tab3:
 
                     vf_filters = []
                     
-                    # CORREÇÃO SMOOTHNESS: Injetando FPS e tamanho na expressão zoompan
+                    # Aplica zoompan com FPS forçado para suavizar o movimento
                     if sets["effect_type"] != "Estático (Sem movimento)":
-                        # Adiciona fps=25 e s={s_out} para suavizar o movimento Ken Burns/Panorâmica
+                        # Note: 'z=...' e 'x=...' são parte do zoom_expr, não precisam de aspas extras.
                         zoom_pan_params = f"z='{zoom_expr}':d={frames}:s={s_out}:fps=25" 
                         vf_filters.append(f"zoompan={zoom_pan_params}")
                     else:
