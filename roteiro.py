@@ -4,21 +4,58 @@ import json
 import os
 import re
 import calendar
-import shutil
 from datetime import date, timedelta, datetime
 from groq import Groq
 
 # ==========================================
 # CONFIGURAÇÕES
 # ==========================================
-st.set_page_config(page_title="Roteirista Litúrgico Multi-Job", layout="wide")
+st.set_page_config(page_title="Roteirista Litúrgico", layout="wide")
 CHARACTERS_FILE = "characters_db.json"
 HISTORY_FILE = "history_db.json"
 STYLE_SUFFIX = ". Style: Cinematic Realistic, 1080p resolution, highly detailed, masterpiece, cinematic lighting, detailed texture, photography style."
+
 FIXED_CHARACTERS = {
     "Jesus": "Homem de 33 anos, descendência do oriente médio, cabelos longos e escuros, barba, túnica branca, faixa vermelha, expressão serena.",
     "Pessoa Moderna": "Jovem adulto (homem ou mulher), roupas casuais modernas (jeans/camiseta), aparência cotidiana e identificável."
 }
+
+# ==========================================
+# UTILITÁRIOS DE TEXTO (CORREÇÃO DE BUGS)
+# ==========================================
+def normalize_content(data):
+    """
+    Extrai texto de qualquer formato (dict, str, list) para evitar campos em branco.
+    """
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data.strip()
+    if isinstance(data, dict):
+        # Tenta todas as chaves possíveis que a IA possa ter inventado
+        return (data.get('text') or data.get('texto') or data.get('content') or data.get('conteudo') or "").strip()
+    if isinstance(data, list):
+        return " ".join([str(x) for x in data])
+    return str(data)
+
+def clean_text(text):
+    if not text: return ""
+    # Remove números de versículos isolados ou no início
+    text = re.sub(r'\d{1,3}(?=[A-Za-zÀ-ÿ])', '', text)
+    text = re.sub(r'\b\d{1,3}\s+(?=["\'A-Za-zÀ-ÿ])', '', text)
+    return re.sub(r'\b\d{1,3}\.\s+', '', text).replace('  ', ' ').strip()
+
+def extract(obj):
+    if not obj: return ""
+    # Lógica especial para Salmos (lista de estrofes)
+    if obj.get("content_psalm"): 
+        c = obj["content_psalm"]
+        full_psalm = "\n".join(c) if isinstance(c, list) else str(c)
+        return f"{obj.get('response', '')}\n{full_psalm}"
+    
+    # Lógica padrão
+    raw_text = obj.get("text") or obj.get("texto") or obj.get("conteudo") or ""
+    return clean_text(raw_text)
 
 # ==========================================
 # PERSISTÊNCIA
@@ -34,32 +71,26 @@ def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
 def load_characters():
-    custom = load_json(CHARACTERS_FILE)
     all_chars = FIXED_CHARACTERS.copy()
-    all_chars.update(custom)
+    all_chars.update(load_json(CHARACTERS_FILE))
     return all_chars
 
 def save_characters(data): save_json(CHARACTERS_FILE, data)
-
 def load_history(): return load_json(HISTORY_FILE)
 
-def update_history_bulk(dates_list):
+def update_history_bulk(dates):
     hist = load_history()
     updated = False
-    for d in dates_list:
-        if d not in hist:
-            hist.append(d)
-            updated = True
-    if updated:
-        hist.sort()
-        save_json(HISTORY_FILE, hist)
+    for d in dates:
+        if d not in hist: hist.append(d); updated = True
+    if updated: hist.sort(); save_json(HISTORY_FILE, hist)
 
 # ==========================================
 # FONTES DE DADOS
 # ==========================================
 def get_groq_client():
     api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-    if not api_key: st.error("❌ GROQ_API_KEY não encontrada."); st.stop()
+    if not api_key: st.error("❌ Configure GROQ_API_KEY."); st.stop()
     return Groq(api_key=api_key)
 
 def fetch_liturgia(date_obj):
@@ -84,7 +115,7 @@ def fetch_liturgia(date_obj):
             return norm
     except: pass
     
-    return None # Falha total -> Modo Manual
+    return None
 
 def send_to_gas(payload):
     gas_url = st.secrets.get("GAS_SCRIPT_URL") or os.getenv("GAS_SCRIPT_URL")
@@ -95,69 +126,37 @@ def send_to_gas(payload):
     except: return None
 
 # ==========================================
-# LÓGICA IA & PROCESSAMENTO DE TEXTO
+# LÓGICA IA
 # ==========================================
-def clean_text(text):
-    if not text: return ""
-    text = re.sub(r'\d{1,3}(?=[A-Za-zÀ-ÿ])', '', text)
-    text = re.sub(r'\b\d{1,3}\s+(?=["\'A-Za-zÀ-ÿ])', '', text)
-    return re.sub(r'\b\d{1,3}\.\s+', '', text).replace('  ', ' ').strip()
-
-def extract(obj):
-    if not obj: return ""
-    if obj.get("content_psalm"): 
-        c = obj["content_psalm"]
-        full_psalm = "\n".join(c) if isinstance(c, list) else str(c)
-        return f"{obj.get('response', '')}\n{full_psalm}"
-    
-    raw_text = obj.get("text") or obj.get("texto") or obj.get("conteudo") or ""
-    return clean_text(raw_text)
-
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
     
-    # Regras de Formatação da Leitura
-    regras_leitura = "Texto LIMPO."
-    if "1ª" in reading_type: regras_leitura = "1. INÍCIO: 'Leitura do Livro...'. 2. FIM: 'Palavra do Senhor!'."
-    if "2ª" in reading_type: regras_leitura = "1. INÍCIO: 'Leitura da Carta...'. 2. FIM: 'Palavra do Senhor!'."
-    if "Salmo" in reading_type: regras_leitura = "1. INÍCIO: 'Salmo Responsorial: '. 2. Sem números."
-    if "Evangelho" in reading_type: regras_leitura = "1. INÍCIO: 'Proclamação do Evangelho...'. 2. FIM: 'Palavra da Salvação...'. 3. NÃO duplicar."
+    regras = "Texto LIMPO."
+    if "1ª" in reading_type: regras = "1. INÍCIO: 'Leitura do Livro...'. 2. FIM: 'Palavra do Senhor!'."
+    if "2ª" in reading_type: regras = "1. INÍCIO: 'Leitura da Carta...'. 2. FIM: 'Palavra do Senhor!'."
+    if "Salmo" in reading_type: regras = "1. INÍCIO: 'Salmo Responsorial: '. 2. Sem números."
+    if "Evangelho" in reading_type: regras = "1. INÍCIO: 'Proclamação do Evangelho...'. 2. FIM: 'Palavra da Salvação...'. 3. NÃO duplicar."
     
-    # PROMPT AVANÇADO (Reflexão/Aplicação/Oração Aprofundadas)
-    prompt = f"""Você é um teólogo e orador católico experiente. Sua tarefa é criar um roteiro de vídeo curto, profundo e com autoridade, baseado na leitura: {reading_type}.
+    prompt = f"""Você é um teólogo e orador católico experiente. TAREFA: Criar roteiro baseado na leitura ({reading_type}).
 
-    ESTRUTURA DO ROTEIRO (Siga estritamente os tempos):
-
-    1. HOOK (10-20s total):
-       - Parte A: Frase impactante que desperte curiosidade imediata sobre o tema central da leitura.
-       - Parte B: CTA breve ("De qual cidade você nos acompanha?").
-
+    ESTRUTURA (Respeite os tempos):
+    1. HOOK (10-15s):
+       - Frase impactante sobre o tema.
+       - CTA OBRIGATÓRIO NO FINAL: "De qual cidade você nos acompanha?".
     2. LEITURA:
-       - {regras_leitura}
+       - {regras}
+    3. REFLEXÃO (30s / ~80 palavras):
+       - INÍCIO: "Reflexão:". Explique a teologia e mensagem profunda do texto.
+    4. APLICAÇÃO (30s / ~80 palavras):
+       - Como aplicar isso hoje na vida prática e moderna.
+    5. ORAÇÃO (30s / ~80 palavras):
+       - INÍCIO: "Vamos orar". FINAL: "Amém!". Oração fervorosa baseada no texto.
 
-    3. REFLEXÃO (Aprox. 30s / 70-80 palavras):
-       - INÍCIO OBRIGATÓRIO: "Reflexão:"
-       - CONTEÚDO: Explique o significado espiritual profundo do texto que acabou de ser lido. Não seja superficial. Mostre autoridade bíblica e conecte o ouvinte com a essência da mensagem divina revelada na passagem.
-
-    4. APLICAÇÃO (Aprox. 30s / 70-80 palavras):
-       - CONTEÚDO: Traduza o ensinamento para a vida prática moderna. Desafie o espectador a mudar uma atitude ou pensamento hoje com base no que ouviu. Seja direto e inspirador.
-
-    5. ORAÇÃO (Aprox. 30s / 70-80 palavras):
-       - INÍCIO OBRIGATÓRIO: "Vamos orar", "Oremos" ou "Ore comigo".
-       - FINAL OBRIGATÓRIO: "Amém!".
-       - CONTEÚDO: Uma oração fervorosa e poderosa, utilizando as próprias palavras e promessas do texto lido. Fale com Deus com intimidade e autoridade, intercedendo por quem está ouvindo.
-
-    EXTRA: Identifique PERSONAGENS (exceto Jesus/Deus) para geração de imagem.
-    
-    SAÍDA JSON OBRIGATÓRIA: {{"roteiro": {{...}}, "personagens_identificados": [...]}}"""
+    EXTRA: Identifique PERSONAGENS (exceto Jesus/Deus). 
+    SAÍDA JSON: {{"roteiro": {{"hook": "...", "leitura": "...", "reflexao": "...", "aplicacao": "...", "oracao": "..."}}, "personagens_identificados": [...]}}"""
     
     try:
-        chat = client.chat.completions.create(
-            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": f"Texto da Leitura:\n{reading_text}"}],
-            model="llama-3.3-70b-versatile",
-            response_format={"type": "json_object"},
-            temperature=0.7
-        )
+        chat = client.chat.completions.create(messages=[{"role": "system", "content": prompt}, {"role": "user", "content": f"Texto:\n{reading_text}"}], model="llama-3.3-70b-versatile", response_format={"type": "json_object"}, temperature=0.7)
         return json.loads(chat.choices[0].message.content)
     except: return None
 
@@ -172,23 +171,19 @@ def build_prompts(roteiro, chars, db, style):
     desc_m = db.get("Pessoa Moderna", FIXED_CHARACTERS["Pessoa Moderna"])
     desc_b = ("Chars: " + " | ".join([f"{n}: {db.get(n,'')}" for n in chars])) if chars else ""
     
-    # Recupera texto com segurança
-    def get_txt(key):
-        val = roteiro.get(key, '')
-        return val if isinstance(val, str) else str(val)
+    def get_p(key): return normalize_content(roteiro.get(key))
 
     return {
-        "hook": f"Cena Bíblica Realista: {get_txt('hook')}. {desc_b} {style}",
-        "leitura": f"Cena Bíblica Realista. Contexto: {get_txt('leitura').strip()[:300]}... {desc_b} {style}",
-        "reflexao": f"Cena Moderna. Jesus conversando com Pessoa Moderna (café/sala). Jesus: {desc_j} Modern: {desc_m} {style}",
-        "aplicacao": f"Cena Moderna. Jesus e Pessoa Moderna caminhando/ensinando. Jesus: {desc_j} Modern: {desc_m} {style}",
-        "oracao": f"Cena Moderna. Jesus e Pessoa Moderna orando juntos, paz. Jesus: {desc_j} Modern: {desc_m} {style}"
+        "hook": f"Cena Bíblica Realista: {get_p('hook')}. {desc_b} {style}",
+        "leitura": f"Cena Bíblica Realista. Contexto: {get_p('leitura')[:300]}... {desc_b} {style}",
+        "reflexao": f"Cena Moderna. Jesus e Pessoa Moderna (café). Jesus: {desc_j} Modern: {desc_m} {style}",
+        "aplicacao": f"Cena Moderna. Jesus e Pessoa Moderna caminhando. Jesus: {desc_j} Modern: {desc_m} {style}",
+        "oracao": f"Cena Moderna. Jesus e Pessoa Moderna orando. Jesus: {desc_j} Modern: {desc_m} {style}"
     }
 
 def render_calendar(history):
     today = date.today()
     cal = calendar.monthcalendar(today.year, today.month)
-    month_name = calendar.month_name[today.month]
     html = f"<div style='font-size:12px; font-family:monospace; text-align:center; border:1px solid #ddd; padding:5px; border-radius:5px; background:white;'><strong>{calendar.month_name[today.month]}</strong><div style='display:grid; grid-template-columns:repeat(7, 1fr); gap:2px;'>"
     for week in cal:
         for day in week:
@@ -201,7 +196,7 @@ def render_calendar(history):
     st.sidebar.markdown(html + "</div></div>", unsafe_allow_html=True)
 
 # ==========================================
-# PROCESSAMENTO CENTRAL (SINGLE & MASS)
+# LÓGICA DE INTERFACE
 # ==========================================
 def run_process_dashboard(mode_key, dt_ini, dt_fim):
     k_daily = f"{mode_key}_daily"
@@ -237,7 +232,7 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
                         if not obj and k=='second_reading': obj = rds.get('segunda_leitura') or rds.get('leitura_2')
                         
                         if obj:
-                            txt = extract(obj) # Passa o objeto completo
+                            txt = extract(obj) # Usa o objeto completo
                             ref = obj.get('title') or obj.get('referencia', t)
                             if txt and len(txt)>20:
                                 return {"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")}
@@ -303,7 +298,16 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
                     for c in chars:
                         if c not in char_db: char_db[c] = generate_character_description(c)
                     save_characters(char_db)
-                    st.session_state[k_scripts].append({"meta": r, "roteiro": res.get('roteiro', {}), "chars": chars})
+                    
+                    # --- CORREÇÃO DE SEGURANÇA: FALLBACK PARA LEITURA VAZIA ---
+                    roteiro_final = res.get('roteiro', {})
+                    leitura_gerada = normalize_content(roteiro_final.get('leitura'))
+                    
+                    # Se a IA não devolveu o texto da leitura, usa o original
+                    if len(leitura_gerada) < 50: 
+                        roteiro_final['leitura'] = r['text']
+                    
+                    st.session_state[k_scripts].append({"meta": r, "roteiro": roteiro_final, "chars": chars})
                 prog.progress((i+1)/len(st.session_state[k_daily]))
             st.rerun()
 
@@ -321,27 +325,22 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
             m, r = s['meta'], s['roteiro']
             prompts = build_prompts(r, s['chars'], load_characters(), STYLE_SUFFIX)
             
-            # Helper seguro para display
-            def get_disp(k):
-                val = r.get(k)
-                if isinstance(val, dict): return val.get('text', '')
-                return str(val) if val else ''
-
             with st.expander(f"✅ {m['d_show']} - {m['type']} ({m['ref']})"):
                 st.subheader("📝 Texto do Roteiro")
-                st.markdown(f"**🎣 Hook:** {get_disp('hook')}")
-                st.text_area("📖 Leitura", get_disp('leitura'), height=150, key=f"l_{m['ref']}_{mode_key}")
+                st.markdown(f"**🎣 Hook:** {normalize_content(r.get('hook'))}")
+                # Exibe o texto (que agora garantimos não estar vazio)
+                st.text_area("📖 Leitura", normalize_content(r.get('leitura')), height=150, key=f"l_{m['ref']}_{mode_key}")
                 
                 c1, c2, c3 = st.columns(3)
                 with c1: 
                     st.markdown("**💭 Reflexão:**")
-                    st.write(get_disp('reflexao'))
+                    st.write(normalize_content(r.get('reflexao')))
                 with c2:
                     st.markdown("**🚀 Aplicação:**")
-                    st.write(get_disp('aplicacao'))
+                    st.write(normalize_content(r.get('aplicacao')))
                 with c3:
                     st.markdown("**🙏 Oração:**")
-                    st.write(get_disp('oracao'))
+                    st.write(normalize_content(r.get('oracao')))
                 
                 st.divider()
                 st.subheader("🎨 Prompts de Imagem")
@@ -366,15 +365,10 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
                 m, r = s['meta'], s['roteiro']
                 prompts = build_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
                 
-                # Garante que o texto enviado seja string
-                def safe_txt(k):
-                    val = r.get(k)
-                    if isinstance(val, dict): return val.get('text', '')
-                    return str(val) if val else ''
-
+                # Prepara Payload com textos normalizados
                 pld = {
                     "meta_dados": {"data": m['d_show'], "ref": f"{m['type']} - {m['ref']}"},
-                    "roteiro": {k: {"text": safe_txt(k), "prompt": prompts.get(k,'')} for k in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]},
+                    "roteiro": {k: {"text": normalize_content(r.get(k)), "prompt": prompts.get(k,'')} for k in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]},
                     "assets": []
                 }
                 if send_to_gas(pld): cnt+=1; sent.add(m['d_iso'])
