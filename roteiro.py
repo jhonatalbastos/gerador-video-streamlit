@@ -4,10 +4,8 @@ import json
 import os
 import re
 import calendar
-import logging
 from datetime import date, timedelta, datetime
 from groq import Groq
-from bs4 import BeautifulSoup
 
 # ==========================================
 # CONFIGURAÇÕES
@@ -23,7 +21,7 @@ FIXED_CHARACTERS = {
 }
 
 # ==========================================
-# FUNÇÕES DE PERSISTÊNCIA
+# PERSISTÊNCIA
 # ==========================================
 def load_json(file_path):
     if os.path.exists(file_path):
@@ -51,7 +49,7 @@ def update_history_bulk(dates):
     if updated: hist.sort(); save_json(HISTORY_FILE, hist)
 
 # ==========================================
-# FONTES DE DADOS
+# FONTES DE DADOS (APIS APENAS)
 # ==========================================
 def get_groq_client():
     api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
@@ -59,42 +57,29 @@ def get_groq_client():
     return Groq(api_key=api_key)
 
 def fetch_liturgia(date_obj):
-    # 1. Vercel
+    # 1. PRINCIPAL: Vercel
     try:
         url = f"https://api-liturgia-diaria.vercel.app/?date={date_obj.strftime('%Y-%m-%d')}".strip()
         r = requests.get(url, timeout=5)
         if r.status_code == 200: return r.json()
     except: pass
 
-    # 2. Railway
+    # 2. SECUNDÁRIA: Railway
     try:
         url = f"https://liturgia.up.railway.app/v2/{date_obj.strftime('%Y-%m-%d')}"
         r = requests.get(url, timeout=8)
         if r.status_code == 200:
             d = r.json()
+            # Normaliza Railway para padrão
             norm = {'readings': {}}
-            if d.get('evangelho'): norm['readings']['gospel'] = {'text': d['evangelho'].get('texto'), 'title': 'Evangelho'}
-            if d.get('primeira_leitura'): norm['readings']['first_reading'] = {'text': d['primeira_leitura'].get('texto'), 'title': '1ª Leitura'}
-            if d.get('salmo'): norm['readings']['psalm'] = {'text': d['salmo'].get('texto'), 'title': 'Salmo'}
-            if d.get('segunda_leitura'): norm['readings']['second_reading'] = {'text': d['segunda_leitura'].get('texto'), 'title': '2ª Leitura'}
+            if d.get('evangelho'): norm['readings']['gospel'] = {'text': d['evangelho'].get('texto'), 'title': d['evangelho'].get('referencia')}
+            if d.get('primeira_leitura'): norm['readings']['first_reading'] = {'text': d['primeira_leitura'].get('texto'), 'title': d['primeira_leitura'].get('referencia')}
+            if d.get('salmo'): norm['readings']['psalm'] = {'text': d['salmo'].get('texto'), 'title': d['salmo'].get('referencia')}
+            if d.get('segunda_leitura'): norm['readings']['second_reading'] = {'text': d['segunda_leitura'].get('texto'), 'title': d['segunda_leitura'].get('referencia')}
             return norm
     except: pass
     
-    # 3. Arautos (Scraper)
-    try:
-        url = f"https://www.arautos.org/liturgia-diaria?date={date_obj.strftime('%Y-%m-%d')}"
-        r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.content, 'html.parser')
-            full = soup.get_text("\n")
-            # Extração simples via regex
-            idx_ev = re.search(r'(Evangelho|Proclamação do Evangelho)', full, re.IGNORECASE)
-            if idx_ev:
-                raw = full[idx_ev.end():]
-                clean = re.split(r'(Outros santos|Santo do dia)', raw, flags=re.IGNORECASE)[0]
-                return {'readings': {'gospel': {'text': clean.strip()[:4000], 'title': 'Evangelho (Arautos)'}}}
-    except: pass
-
+    # 3. FALHA TOTAL (Retorna None para ativar manual)
     return None
 
 def send_to_gas(payload):
@@ -106,17 +91,19 @@ def send_to_gas(payload):
     except: return None
 
 # ==========================================
-# IA & TEXTO
+# LÓGICA IA (GROQ)
 # ==========================================
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
     regras = "Texto LIMPO."
     if "1ª" in reading_type: regras = "1. INÍCIO: 'Leitura do Livro...'. 2. FIM: 'Palavra do Senhor!'."
+    if "2ª" in reading_type: regras = "1. INÍCIO: 'Leitura da Carta...'. 2. FIM: 'Palavra do Senhor!'."
+    if "Salmo" in reading_type: regras = "1. INÍCIO: 'Salmo Responsorial: '. 2. Sem números."
     if "Evangelho" in reading_type: regras = "1. INÍCIO: 'Proclamação do Evangelho...'. 2. FIM: 'Palavra da Salvação...'. 3. NÃO duplicar."
     
     prompt = f"""Assistente litúrgico. TAREFA: Roteiro curto ({reading_type}).
     ESTRUTURA: 
-    1. hook (5-10s): Impactante. FIM: CTA "Comente sua cidade".
+    1. hook (5-10s): Impactante. FIM OBRIGATÓRIO: CTA "Comente sua cidade".
     2. leitura: {regras}
     3. reflexao (20-25s): Inicie "Reflexão:".
     4. aplicacao (20-25s).
@@ -170,101 +157,105 @@ def render_calendar(history):
     st.sidebar.markdown(html + "</div></div>", unsafe_allow_html=True)
 
 # ==========================================
-# PROCESSAMENTO DE DADOS (CORE)
+# PROCESSAMENTO (SINGLE & MASS)
 # ==========================================
 def run_process_dashboard(mode_key, dt_ini, dt_fim):
-    """Lógica central de UI para Single ou Mass."""
-    
-    # Session Keys específicas para evitar conflito entre abas
     k_daily = f"{mode_key}_daily"
     k_scripts = f"{mode_key}_scripts"
-    k_manual = f"{mode_key}_manual"
-    k_manual_dt = f"{mode_key}_manual_dt"
+    k_missing = f"{mode_key}_missing" # Fila de dias faltando (Manual)
 
-    # Inicializa
     if k_daily not in st.session_state: st.session_state[k_daily] = []
     if k_scripts not in st.session_state: st.session_state[k_scripts] = []
-    if k_manual not in st.session_state: st.session_state[k_manual] = False
+    if k_missing not in st.session_state: st.session_state[k_missing] = []
 
-    # 1. BUSCAR
+    # 1. BUSCA
     if st.button("🔎 Buscar Leituras", key=f"btn_fetch_{mode_key}"):
-        if dt_fim < dt_ini: st.error("Data final menor que inicial"); return
+        if dt_fim < dt_ini: st.error("Data final < inicial"); return
         st.session_state[k_daily] = []
         st.session_state[k_scripts] = []
-        st.session_state[k_manual] = False
+        st.session_state[k_missing] = []
         
-        with st.status("Baixando...", expanded=True) as status:
+        with st.status("Processando...", expanded=True) as status:
             curr = dt_ini
             while curr <= dt_fim:
                 st.write(f"🗓️ {curr.strftime('%d/%m')}")
                 data = fetch_liturgia(curr)
-                found = False
+                day_readings = []
+                has_gospel = False
                 
                 if data:
                     rds = data.get('readings') or data.get('today', {}).get('readings', {}) or data
-                    # Helper interno para extrair
-                    def add_read(k, t):
+                    def check_add(k, t):
                         obj = rds.get(k)
-                        # Fallbacks de chaves
                         if not obj and k=='gospel': obj = rds.get('evangelho')
                         if not obj and k=='first_reading': obj = rds.get('primeira_leitura') or rds.get('leitura_1')
                         if not obj and k=='psalm': obj = rds.get('salmo') or rds.get('salmo_responsorial')
                         if not obj and k=='second_reading': obj = rds.get('segunda_leitura') or rds.get('leitura_2')
                         
                         if obj:
-                            raw = obj.get('text') or obj.get('texto') or obj.get('conteudo') or obj.get('refrao')
+                            txt = extract({'text': obj.get('text') or obj.get('texto') or obj.get('conteudo'), 'content_psalm': obj.get('content_psalm'), 'response': obj.get('response')})
                             ref = obj.get('title') or obj.get('referencia', t)
-                            txt = extract({'text': raw, 'content_psalm': obj.get('content_psalm'), 'response': obj.get('response')})
                             if txt and len(txt)>20:
-                                st.session_state[k_daily].append({"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")})
-                                return True
-                        return False
+                                return {"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")}
+                        return None
 
-                    if any([
-                        add_read('first_reading', '1ª Leitura'),
-                        add_read('psalm', 'Salmo'),
-                        add_read('second_reading', '2ª Leitura'),
-                        add_read('gospel', 'Evangelho')
-                    ]): found = True
-                
-                if not found:
-                    st.warning(f"⚠️ Sem dados para {curr.strftime('%d/%m')}")
-                    # Ativa manual apenas se for modo Single (para não travar massa)
-                    if mode_key == "single":
-                        st.session_state[k_manual] = True
-                        st.session_state[k_manual_dt] = curr
+                    # Tenta extrair
+                    r1 = check_add('first_reading', '1ª Leitura'); 
+                    if r1: day_readings.append(r1)
+                    
+                    sl = check_add('psalm', 'Salmo'); 
+                    if sl: day_readings.append(sl)
+                    
+                    r2 = check_add('second_reading', '2ª Leitura'); 
+                    if r2: day_readings.append(r2)
+                    
+                    ev = check_add('gospel', 'Evangelho'); 
+                    if ev: day_readings.append(ev); has_gospel = True
+
+                # LÓGICA CRÍTICA: Se não achou Evangelho, considera FALHA para ativar manual
+                if has_gospel:
+                    st.session_state[k_daily].extend(day_readings)
+                else:
+                    st.warning(f"⚠️ {curr.strftime('%d/%m')}: Dados insuficientes/ausentes. Adicionado à fila manual.")
+                    st.session_state[k_missing].append(curr)
                 
                 curr += timedelta(days=1)
-            status.update(label="Busca concluída!", state="complete")
+            status.update(label="Busca finalizada!", state="complete")
 
-    # 2. MODO MANUAL (Se ativado)
-    if st.session_state[k_manual]:
+    # 2. FILA DE CORREÇÃO MANUAL
+    missing_dates = st.session_state[k_missing]
+    if missing_dates:
+        curr_missing = missing_dates[0]
         st.markdown("---")
-        st.error(f"✍️ **Modo Manual: {st.session_state[k_manual_dt].strftime('%d/%m/%Y')}**")
-        with st.form(f"form_manual_{mode_key}"):
-            c1, c2 = st.columns([1,3]); r1=c1.text_input("Ref. 1ª Leitura"); t1=c2.text_area("Texto 1ª Leitura")
-            c3, c4 = st.columns([1,3]); rsl=c3.text_input("Ref. Salmo"); tsl=c4.text_area("Texto Salmo")
-            c5, c6 = st.columns([1,3]); r2=c5.text_input("Ref. 2ª Leitura"); t2=c6.text_area("Texto 2ª Leitura")
-            c7, c8 = st.columns([1,3]); rev=c7.text_input("Ref. Evangelho"); tev=c8.text_area("Texto Evangelho")
+        st.error(f"✍️ **Entrada Manual: {curr_missing.strftime('%d/%m/%Y')}**")
+        st.info("APIs não retornaram o Evangelho. Preencha abaixo para continuar.")
+        
+        with st.form(f"form_manual_{mode_key}_{curr_missing}"):
+            c1, c2 = st.columns([1,3]); r1=c1.text_input("Ref. 1ª Leitura (ex: Is 26,1-6)"); t1=c2.text_area("Texto 1ª Leitura")
+            c3, c4 = st.columns([1,3]); rsl=c3.text_input("Ref. Salmo (ex: Sl 118)"); tsl=c4.text_area("Texto Salmo")
+            c5, c6 = st.columns([1,3]); r2=c5.text_input("Ref. 2ª Leitura (Opcional)"); t2=c6.text_area("Texto 2ª Leitura")
+            c7, c8 = st.columns([1,3]); rev=c7.text_input("Ref. Evangelho (ex: Mt 7,21)"); tev=c8.text_area("Texto Evangelho (Obrigatório)")
             
-            if st.form_submit_button("Salvar Manual"):
-                d_obj = st.session_state[k_manual_dt]
-                common = {"d_show": d_obj.strftime("%d/%m/%Y"), "d_iso": d_obj.strftime("%Y-%m-%d")}
-                if t1: st.session_state[k_daily].append({**common, "type": "1ª Leitura", "text": t1, "ref": r1 or "1ª Leitura"})
-                if tsl: st.session_state[k_daily].append({**common, "type": "Salmo", "text": tsl, "ref": rsl or "Salmo"})
-                if t2: st.session_state[k_daily].append({**common, "type": "2ª Leitura", "text": t2, "ref": r2 or "2ª Leitura"})
-                if tev: st.session_state[k_daily].append({**common, "type": "Evangelho", "text": tev, "ref": rev or "Evangelho"})
-                st.session_state[k_manual] = False
+            if st.form_submit_button("💾 Salvar e Próximo"):
+                d_iso, d_show = curr_missing.strftime("%Y-%m-%d"), curr_missing.strftime("%d/%m/%Y")
+                
+                # Só adiciona se tiver texto
+                if t1: st.session_state[k_daily].append({"type": "1ª Leitura", "text": t1, "ref": r1 or "1ª Leitura", "d_show": d_show, "d_iso": d_iso})
+                if tsl: st.session_state[k_daily].append({"type": "Salmo", "text": tsl, "ref": rsl or "Salmo", "d_show": d_show, "d_iso": d_iso})
+                if t2: st.session_state[k_daily].append({"type": "2ª Leitura", "text": t2, "ref": r2 or "2ª Leitura", "d_show": d_show, "d_iso": d_iso})
+                if tev: st.session_state[k_daily].append({"type": "Evangelho", "text": tev, "ref": rev or "Evangelho", "d_show": d_show, "d_iso": d_iso})
+                
+                st.session_state[k_missing].pop(0) # Remove da fila
                 st.rerun()
 
-    # 3. LISTAGEM & GERAÇÃO
-    if st.session_state[k_daily]:
+    # 3. GERAÇÃO
+    if st.session_state[k_daily] and not st.session_state[k_missing]:
+        # Ordena por data
+        st.session_state[k_daily].sort(key=lambda x: x['d_iso'])
+        
         st.divider()
-        st.write(f"📖 **{len(st.session_state[k_daily])} Leitura(s) na Fila**")
-        with st.expander("Ver lista detalhada"):
-            for item in st.session_state[k_daily]:
-                st.text(f"{item['d_show']} | {item['type']} | {item['ref']}")
-
+        st.write(f"📖 **{len(st.session_state[k_daily])} Leituras Prontas para Roteiro**")
+        
         if st.button("✨ Gerar Roteiros", key=f"btn_gen_{mode_key}"):
             st.session_state[k_scripts] = []
             char_db = load_characters()
@@ -290,10 +281,9 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
         dates = sorted(list(set([s['meta']['d_iso'] for s in st.session_state[k_scripts]])))
         dups = [d for d in dates if d in hist]
         
-        if dups: st.warning(f"⚠️ Datas já enviadas anteriormente: {', '.join(dups)}")
+        if dups: st.warning(f"⚠️ Já enviados: {', '.join(dups)}")
         force = st.checkbox("Forçar envio duplicado", key=f"chk_{mode_key}") if dups else True
 
-        # Preview detalhado
         for s in st.session_state[k_scripts]:
             m, r = s['meta'], s['roteiro']
             prompts = build_prompts(r, s['chars'], load_characters(), STYLE_SUFFIX)
@@ -301,39 +291,32 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
                 c1, c2 = st.columns(2)
                 with c1: 
                     st.info(f"**Hook:** {r.get('hook')}")
-                    st.text_area("Leitura", r.get('leitura'), height=100, key=f"view_l_{m['ref']}_{mode_key}")
+                    st.text_area("Leitura", r.get('leitura'), height=100, key=f"v_{m['d_iso']}_{m['type']}")
                 with c2:
-                    st.write(f"Reflexão: {r.get('reflexao')[:100]}...")
-                    st.write(f"Oração: {r.get('oracao')}")
-                st.caption("🎨 Prompts Gerados:")
-                st.code(f"HOOK: {prompts['hook']}\nLEITURA: {prompts['leitura']}\nREFLEXÃO: {prompts['reflexao']}", language="text")
+                    st.write(f"**Reflexão:** {r.get('reflexao')[:100]}...")
+                    st.write(f"**Oração:** {r.get('oracao')}")
+                st.caption("🎨 Prompts:")
+                st.code(f"HOOK: {prompts['hook']}\nLEITURA: {prompts['leitura']}\nREFLEXÃO: {prompts['reflexao']}\nAPLICAÇÃO: {prompts['aplicacao']}\nORAÇÃO: {prompts['oracao']}", language="text")
 
-        if st.button("🚀 Enviar Agora", disabled=not force, key=f"btn_send_{mode_key}"):
+        if st.button("🚀 Enviar Lote", disabled=not force, key=f"btn_snd_{mode_key}"):
             prog = st.progress(0)
-            sent_dates = set()
+            sent = set()
             char_db = load_characters()
-            
             for i, s in enumerate(st.session_state[k_scripts]):
                 m, r = s['meta'], s['roteiro']
                 prompts = build_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
-                payload = {
+                pld = {
                     "meta_dados": {"data": m['d_show'], "ref": f"{m['type']} - {m['ref']}"},
                     "roteiro": {k: {"text": r.get(k,''), "prompt": prompts.get(k,'')} for k in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]},
                     "assets": []
                 }
-                if send_to_gas(payload): sent_dates.add(m['d_iso'])
+                if send_to_gas(pld): sent.add(m['d_iso'])
                 prog.progress((i+1)/len(st.session_state[k_scripts]))
             
-            if sent_dates:
-                update_history_bulk(list(sent_dates))
-                st.balloons()
-                st.success("Envio concluído!")
-                # Limpa após sucesso
-                st.session_state[k_daily] = []
-                st.session_state[k_scripts] = []
-                st.rerun()
-            else:
-                st.error("Nenhum roteiro enviado.")
+            if sent:
+                update_history_bulk(list(sent))
+                st.balloons(); st.success("Envio concluído!"); st.session_state[k_daily] = []; st.session_state[k_scripts] = []; st.rerun()
+            else: st.error("Falha.")
 
 # ==========================================
 # MAIN APP
