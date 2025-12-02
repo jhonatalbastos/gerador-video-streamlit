@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Legendas Dinâmicas Curtas
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Correção Definitiva de Legendas (CWD Fix)
 import os
 import re
 import json
@@ -292,12 +292,13 @@ def process_job_payload(payload: Dict, temp_dir: str):
 # =========================
 def shutil_which(name): return _shutil.which(name)
 
-def run_cmd(cmd):
+def run_cmd(cmd, cwd=None):
+    """Executa comando shell, com suporte a diretório de trabalho (cwd)"""
     clean = [arg.replace('\u00a0', ' ').strip() if isinstance(arg, str) else arg for arg in cmd if arg]
     # Debug: Imprime comando para verificar caminhos
-    print(f"Executando: {' '.join(clean)}")
+    # print(f"Executando: {' '.join(clean)}") 
     try:
-        subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"CMD Falhou: {e.stderr.decode()}")
 
@@ -439,13 +440,12 @@ def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
     try:
         if progress_bar: progress_bar.progress(10, text="Carregando modelo Whisper (Tiny)...")
         
+        # Carrega o modelo tiny
         model = whisper.load_model("tiny")
         
         if progress_bar: progress_bar.progress(30, text="Transcrevendo áudio...")
         
-        # Word timestamps = True para ter precisão palavra por palavra
-        # Mas a lib 'whisper' padrão não expõe 'word_timestamps' tão facilmente quanto 'faster-whisper'.
-        # Vamos usar o padrão e quebrar os segmentos longos manualmente.
+        # Transcreve
         result = model.transcribe(audio_path, language="pt", task="transcribe")
         
         if progress_bar: progress_bar.progress(80, text="Formatando legendas dinâmicas...")
@@ -463,15 +463,11 @@ def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
             end_time = segment['end']
             duration = end_time - start_time
             
-            # Se o segmento for muito longo, tentamos dividir proporcionalmente
-            # (Nota: Isso é uma aproximação, pois whisper padrão sem word_level é bloco a bloco)
-            # Para ficar perfeito precisaria de 'faster-whisper' com word_timestamps, mas vamos aproximar.
-            
             current_line = []
             current_len = 0
             
             # Divisão simples baseada em caracteres para visualização
-            # O tempo será interpolado linearmente (não perfeito, mas melhor que blocão)
+            # O tempo será interpolado linearmente
             total_words = len(words)
             if total_words == 0: continue
             
@@ -827,27 +823,29 @@ with tab3:
                 else:
                     map_a = "0:a"
 
-                # FORÇANDO A CRIAÇÃO DO ARQUIVO SRT FÍSICO
+                # CORREÇÃO DE LEGENDAS: CWD FIX
+                # Ao invés de passar o caminho absoluto do SRT (que falha), vamos copiar o SRT para a pasta TMP
+                # e rodar o FFmpeg DENTRO da pasta TMP.
                 if use_subs and st.session_state.get("generated_srt_content"):
-                    srtp = os.path.join(tmp, "subs.srt")
-                    srtp_abs = os.path.abspath(srtp)
+                    srt_filename = "subs.srt"
+                    srtp = os.path.join(tmp, srt_filename)
                     
-                    # Escreve o conteúdo da memória para o disco AGORA
-                    with open(srtp_abs, "w", encoding="utf-8") as f: 
+                    with open(srtp, "w", encoding="utf-8") as f: 
                         f.write(st.session_state["generated_srt_content"])
                     
-                    # Verifica se escreveu corretamente
-                    if os.path.exists(srtp_abs) and os.path.getsize(srtp_abs) > 0:
+                    if os.path.exists(srtp) and os.path.getsize(srtp) > 0:
                         c = sets["sub_color"].lstrip("#")
                         co = sets["sub_outline_color"].lstrip("#")
                         ass_c = f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
                         ass_co = f"&H00{co[4:6]}{co[2:4]}{co[0:2]}"
                         margin_v = res['h'] - sets['sub_y_pos']
-                        style = f"FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
+                        # Garantimos que a fonte Arial existe, senão FFmpeg pode falhar se não achar
+                        font_name = "Arial"
+                        # Se tiver fonte personalizada salva, poderíamos usar, mas Arial é seguro
+                        style = f"FontName={font_name},FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
                         
-                        # Caminho escapado
-                        srtp_esc = srtp_abs.replace("\\", "/").replace(":", "\\:")
-                        filter_complex.append(f"subtitles='{srtp_esc}':force_style='{style}'")
+                        # Usamos apenas o nome do arquivo, pois rodaremos o comando dentro do diretório tmp
+                        filter_complex.append(f"subtitles='{srt_filename}':force_style='{style}'")
                     else:
                         st.warning("Falha ao escrever arquivo de legenda temporário.")
 
@@ -856,13 +854,15 @@ with tab3:
                     if "amix" in "".join(filter_complex):
                         mix_cmd.extend(["-map", "0:v", "-map", map_a])
                 
-                # Redução de tamanho para o vídeo final também
                 mix_cmd.extend(["-crf", "28", "-preset", "fast"])
+                mix_cmd.append("final.mp4") # Saída relativa
                 
-                mix_cmd.append(final)
-                run_cmd(mix_cmd)
+                # Executa o FFmpeg dentro do diretório temporário (cwd=tmp)
+                run_cmd(mix_cmd, cwd=tmp)
                 
-                with open(final, "rb") as f:
+                final_absolute_path = os.path.join(tmp, "final.mp4")
+                
+                with open(final_absolute_path, "rb") as f:
                     st.session_state["video_final_bytes"] = BytesIO(f.read())
                 
                 render_prog.progress(100, text="Finalizado!")
