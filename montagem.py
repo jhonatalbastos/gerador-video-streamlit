@@ -1,746 +1,444 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V5 (Fix Overlay em Branco)
+import streamlit as st
+import requests
+import json
 import os
 import re
-import json
-import time
-import tempfile
-import traceback
-import subprocess
-from io import BytesIO
-from datetime import datetime
-from typing import List, Optional, Dict, Any
-import base64
-import shutil as _shutil
+import calendar
+from datetime import date, timedelta, datetime
+from groq import Groq
 
-import requests
-from PIL import Image, ImageDraw, ImageFont
-import streamlit as st
-import whisper  # Importação do Whisper Local
+# ==========================================
+# CONFIGURAÇÕES
+# ==========================================
+st.set_page_config(page_title="Roteirista Litúrgico Híbrido", layout="wide")
+CHARACTERS_FILE = "characters_db.json"
+HISTORY_FILE = "history_db.json"
+STYLE_SUFFIX = ". Style: Cinematic Realistic, 1080p resolution, highly detailed, masterpiece, cinematic lighting, detailed texture, photography style."
 
-# --- API Imports ---
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError 
-try:
-    from groq import Groq  # Importação do Groq para correção
-except ImportError:
-    Groq = None
+FIXED_CHARACTERS = {
+    "Jesus": "Homem de 33 anos, descendência do oriente médio, cabelos longos e escuros, barba, túnica branca, faixa vermelha, expressão serena.",
+    "Pessoa Moderna": "Jovem adulto (homem ou mulher), roupas casuais modernas (jeans/camiseta), aparência cotidiana e identificável."
+}
 
-# --- CONFIGURAÇÃO ---
-FRONTEND_AI_STUDIO_URL = "https://ai.studio/apps/drive/1gfrdHffzH67cCcZBJWPe6JfE1ZEttn6u"
-os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
-CONFIG_FILE = "overlay_config.json"
-SAVED_MUSIC_FILE = "saved_bg_music.mp3"
-SAVED_FONT_FILE = "saved_custom_font.ttf" # Arquivo de fonte persistente
-MONETIZA_DRIVE_FOLDER_NAME = "Monetiza_Studio_Jobs"
-
-# =========================
-# Page Config
-# =========================
-st.set_page_config(
-    page_title="Fábrica de Vídeo - Montagem",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# =========================
-# Persistência
-# =========================
-def load_config():
-    # NOVOS PADRÕES SOLICITADOS
-    default = {
-        "line1_y": 150, "line1_size": 70, "line1_font": "Alegreya Sans Black", "line1_anim": "Estático",
-        "line2_y": 250, "line2_size": 50, "line2_font": "Alegreya Sans Black", "line2_anim": "Estático",
-        "line3_y": 350, "line3_size": 50, "line3_font": "Alegreya Sans Black", "line3_anim": "Estático",
-        "effect_type": "Estático", "effect_speed": 3, # Movimento padrão agora é Estático
-        "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
-        "music_vol": 0.15,
-        "sub_size": 50, "sub_color": "#FFFF00", "sub_outline_color": "#000000", "sub_y_pos": 150 
-    }
-    if os.path.exists(CONFIG_FILE):
+# ==========================================
+# PERSISTÊNCIA
+# ==========================================
+def load_json(file_path):
+    if os.path.exists(file_path):
         try:
-            with open(CONFIG_FILE, "r") as f:
-                saved = json.load(f)
-                # Atualiza apenas chaves que já existem no salvo, mas garante novos defaults se faltar
-                default.update(saved)
-        except: pass
-    return default
+            with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
+        except: return {} if "char" in file_path else []
+    return {} if "char" in file_path else []
 
-def save_config(settings):
+def save_json(file_path, data):
+    with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_characters():
+    all_chars = FIXED_CHARACTERS.copy()
+    all_chars.update(load_json(CHARACTERS_FILE))
+    return all_chars
+
+def save_characters(data): save_json(CHARACTERS_FILE, data)
+def load_history(): return load_json(HISTORY_FILE)
+
+def update_history_bulk(dates):
+    hist = load_history()
+    updated = False
+    for d in dates:
+        if d not in hist: hist.append(d); updated = True
+    if updated: hist.sort(); save_json(HISTORY_FILE, hist)
+
+# ==========================================
+# FONTES DE DADOS (APIS APENAS)
+# ==========================================
+def get_groq_client():
+    api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+    if not api_key: st.error("❌ Configure GROQ_API_KEY."); st.stop()
+    return Groq(api_key=api_key)
+
+def fetch_liturgia(date_obj):
+    # 1. PRINCIPAL: Vercel
     try:
-        with open(CONFIG_FILE, "w") as f: json.dump(settings, f)
-        return True
-    except: return False
+        url = f"https://api-liturgia-diaria.vercel.app/?date={date_obj.strftime('%Y-%m-%d')}".strip()
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200: return r.json()
+    except: pass
 
-def save_music_file(file_bytes):
+    # 2. SECUNDÁRIA: Railway
     try:
-        with open(SAVED_MUSIC_FILE, "wb") as f: f.write(file_bytes)
-        return True
-    except: return False
-
-def save_font_file(file_bytes):
-    """Salva a fonte enviada no disco para persistência."""
-    try:
-        with open(SAVED_FONT_FILE, "wb") as f: f.write(file_bytes)
-        return True
-    except: return False
-
-def delete_music_file():
-    if os.path.exists(SAVED_MUSIC_FILE): os.remove(SAVED_MUSIC_FILE); return True
-    return False
-
-def delete_font_file():
-    if os.path.exists(SAVED_FONT_FILE): os.remove(SAVED_FONT_FILE); return True
-    return False
-
-# =========================
-# Google Drive API
-# =========================
-_drive_service = None
-
-def get_drive_service():
-    global _drive_service
-    required_keys = ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id", "auth_uri", "token_uri", "auth_provider_x509_cert_url", "client_x509_cert_url", "universe_domain"]
-    prefix = "gcp_service_account_"
-
-    if _drive_service is None:
-        try:
-            creds_info = {}
-            for key in required_keys:
-                val = st.secrets.get(prefix + key)
-                if val is None: st.error(f"Falta a chave: {prefix + key}"); st.stop()
-                creds_info[key] = val
-
-            creds = service_account.Credentials.from_service_account_info(
-                creds_info, scopes=['https://www.googleapis.com/auth/drive.readonly']
-            )
-            _drive_service = build('drive', 'v3', credentials=creds)
-        except Exception as e:
-            st.error(f"Erro Drive API: {e}"); st.stop()
-    return _drive_service
-
-def get_resolution_params(choice: str) -> dict:
-    if "9:16" in choice: return {"w": 720, "h": 1280, "ratio": "9:16"}
-    elif "16:9" in choice: return {"w": 1280, "h": 720, "ratio": "16:9"}
-    else: return {"w": 1024, "h": 1024, "ratio": "1:1"}
-
-# =========================
-# Drive Operations
-# =========================
-def find_file_in_drive_folder(service, file_name: str, folder_name: str) -> Optional[str]:
-    try:
-        q_f = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        folders = service.files().list(q=q_f, fields="files(id)").execute().get('files', [])
-        if not folders: return None
-        folder_id = folders[0]['id']
-        
-        q_file = f"name = '{file_name}' and mimeType = 'application/json' and '{folder_id}' in parents and trashed = false"
-        files = service.files().list(q=q_file, fields="files(id, name)").execute().get('files', [])
-        return files[0]['id'] if files else None
-    except: return None
-
-def download_file_content(service, file_id: str) -> Optional[str]:
-    try:
-        request = service.files().get_media(fileId=file_id)
-        return request.execute().decode('utf-8')
-    except: return None
-
-def list_recent_jobs(limit: int = 15) -> List[Dict]:
-    """Lista Jobs CONCLUÍDOS (com descrição 'COMPLETE') na pasta."""
-    service = get_drive_service()
-    if not service: return []
-    jobs_list = []
-    
-    try:
-        q_f = f"name = '{MONETIZA_DRIVE_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        folders = service.files().list(q=q_f, fields="files(id)").execute().get('files', [])
-        if not folders: return []
-        folder_id = folders[0]['id']
-
-        # Filtra arquivos JSON
-        query_file = (
-            f"mimeType = 'application/json' and "
-            f"'{folder_id}' in parents and "
-            f"trashed = false"
-        )
-        
-        results = service.files().list(
-            q=query_file, 
-            orderBy="createdTime desc", 
-            pageSize=50, 
-            fields="files(id, name, createdTime, description)"
-        ).execute()
-        
-        files = results.get('files', [])
-
-        for f in files:
-            if f.get('description') != 'COMPLETE': continue
-
-            content = download_file_content(service, f['id'])
-            if content:
-                try:
-                    data = json.loads(content)
-                    meta = data.get("meta_dados", {})
-                    jid = f['name'].replace("job_data_", "").replace(".json", "")
-                    jobs_list.append({
-                        "display": f"✅ {meta.get('data','?')} | {meta.get('ref','?')}",
-                        "job_id": jid,
-                        "file_id": f['id']
-                    })
-                except: continue
+        url = f"https://liturgia.up.railway.app/v2/{date_obj.strftime('%Y-%m-%d')}"
+        r = requests.get(url, timeout=8)
+        if r.status_code == 200:
+            d = r.json()
+            # Normaliza Railway para padrão
+            norm = {'readings': {}}
             
-            if len(jobs_list) >= limit: break
-                
-    except Exception as e:
-        st.error(f"Erro ao listar: {e}")
-        return []
-    return jobs_list
+            # Helper para limpar referencia Railway
+            def clean_ref_railway(ref_text):
+                 if not ref_text: return ""
+                 # Remove tudo até "segundo " (case insensitive)
+                 clean = re.sub(r"^.*segundo\s+", "", ref_text, flags=re.IGNORECASE)
+                 # Remove "São ", "Santo "
+                 clean = clean.replace("São ", "").replace("Santo ", "").replace("+", "").strip()
+                 return clean
 
-def load_job_from_drive(job_id: str) -> Optional[Dict[str, Any]]:
-    service = get_drive_service()
-    if not service: return None
-    fid = find_file_in_drive_folder(service, f"job_data_{job_id}.json", MONETIZA_DRIVE_FOLDER_NAME)
-    if fid:
-        c = download_file_content(service, fid)
-        if c: return json.loads(c)
+            if d.get('evangelho'): 
+                ref = d['evangelho'].get('referencia', 'Evangelho')
+                texto = d['evangelho'].get('texto', '')
+                norm['readings']['gospel'] = {'text': texto, 'title': clean_ref_railway(ref)}
+
+            if d.get('primeira_leitura'): 
+                ref = d['primeira_leitura'].get('referencia', '1ª Leitura')
+                norm['readings']['first_reading'] = {'text': d['primeira_leitura'].get('texto'), 'title': ref}
+                
+            if d.get('salmo'): 
+                ref = d['salmo'].get('referencia', 'Salmo')
+                norm['readings']['psalm'] = {'text': d['salmo'].get('texto'), 'title': ref}
+                
+            if d.get('segunda_leitura'): 
+                ref = d['segunda_leitura'].get('referencia', '2ª Leitura')
+                norm['readings']['second_reading'] = {'text': d['segunda_leitura'].get('texto'), 'title': ref}
+                
+            return norm
+    except: pass
+    
+    # 3. FALHA TOTAL (Retorna None para ativar manual)
     return None
 
-def process_job_payload(payload: Dict, temp_dir: str):
+def send_to_gas(payload):
+    gas_url = st.secrets.get("GAS_SCRIPT_URL") or os.getenv("GAS_SCRIPT_URL")
+    if not gas_url: st.error("❌ Configure GAS_SCRIPT_URL."); return None
     try:
-        st.session_state["roteiro_gerado"] = payload.get("roteiro", {})
-        meta = payload.get("meta_dados", {})
-        
-        # --- 1. DATA (Formatação com Ponto) ---
-        d_raw = meta.get("data", "")
-        if re.match(r"\d{4}-\d{2}-\d{2}", d_raw):
-            try:
-                d_obj = datetime.strptime(d_raw, '%Y-%m-%d')
-                st.session_state["data_display"] = d_obj.strftime('%d.%m.%Y')
-            except:
-                st.session_state["data_display"] = d_raw.replace('/', '.')
-        else:
-            st.session_state["data_display"] = d_raw.replace('/', '.')
-            
-        # --- 2. TÍTULO E REFERÊNCIA ---
-        raw_ref = meta.get("ref", "")
-        title = "EVANGELHO" # Padrão
-        clean_ref = raw_ref
-
-        if " - " in raw_ref:
-            parts = raw_ref.split(" - ", 1)
-            tipo_raw = parts[0]
-            clean_ref = parts[1]
-            
-            if "1ª" in tipo_raw or "Primeira" in tipo_raw: title = "1ª LEITURA"
-            elif "2ª" in tipo_raw or "Segunda" in tipo_raw: title = "2ª LEITURA"
-            elif "Salmo" in tipo_raw: title = "SALMO"
-        else:
-            if "Salmo" in raw_ref: title = "SALMO"
-            elif "Leitura" in raw_ref: title = "1ª LEITURA"
-        
-        # Limpeza fina de prefixos (REGEX CORRIGIDO E SEGURO)
-        patterns_to_remove = [
-            r"^(Primeira|Segunda|1ª|2ª)\s*Leitura\s*:\s*",
-            r"^Leitura\s*(do|da)\s*.*:\s*",  # Cuidado: remove tudo até os dois pontos
-            r"^Salmo\s*Responsorial\s*:\s*",
-            r"^Salmo\s*:\s*",
-            r"^Evangelho\s*:\s*",
-            r"^Proclamação\s*do\s*Evangelho\s*(de\s*Jesus\s*Cristo\s*)?segundo\s*" # Mantém o nome do evangelista
-        ]
-        
-        temp_clean = clean_ref
-        for pat in patterns_to_remove:
-            # Usa regex non-greedy onde possível ou específico
-            temp_clean = re.sub(pat, "", temp_clean, flags=re.IGNORECASE).strip()
-
-        # Limpa dois pontos finais que podem sobrar (ex: "São Lucas:")
-        temp_clean = temp_clean.rstrip(":")
-        
-        # Fallback: Se limpou tudo (ficou vazio), restaura o original (após o traço)
-        if not temp_clean:
-             if " - " in raw_ref:
-                  temp_clean = raw_ref.split(" - ", 1)[1]
-             else:
-                  temp_clean = raw_ref # Último caso, mostra tudo
-
-        st.session_state["title_display"] = title
-        st.session_state["ref_display"] = temp_clean
-
-        # --- 3. ASSETS ---
-        st.session_state["generated_images_blocks"] = {}
-        st.session_state["generated_audios_blocks"] = {}
-        st.session_state["generated_srt_content"] = ""
-
-        assets = payload.get("assets", [])
-        if not assets:
-            st.warning("⚠️ Job sem assets. Use upload manual.")
-
-        for asset in assets:
-            bid, atype, b64 = asset.get("block_id"), asset.get("type"), asset.get("data_b64")
-            if not bid or not atype or not b64: continue
-            try:
-                raw = base64.b64decode(b64)
-                if atype == "image":
-                    path = os.path.join(temp_dir, f"{bid}.png")
-                    with open(path, "wb") as f: f.write(raw)
-                    st.session_state["generated_images_blocks"][bid] = path
-                elif atype == "audio":
-                    path = os.path.join(temp_dir, f"{bid}.wav")
-                    with open(path, "wb") as f: f.write(raw)
-                    st.session_state["generated_audios_blocks"][bid] = path
-                elif atype == "srt" and bid == "legendas":
-                    st.session_state["generated_srt_content"] = raw.decode('utf-8')
-            except Exception as ex: continue
-                
-        return True
-    except Exception as e:
-        st.error(f"Erro processando payload: {e}")
-        return False
-
-# =========================
-# Utils & FFmpeg
-# =========================
-def shutil_which(name): return _shutil.which(name)
-
-def run_cmd(cmd):
-    clean = [arg.replace('\u00a0', ' ').strip() if isinstance(arg, str) else arg for arg in cmd if arg]
-    # Debug: Imprime comando para verificar caminhos
-    print(f"Executando: {' '.join(clean)}")
-    try:
-        subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"CMD Falhou: {e.stderr.decode()}")
-
-def get_audio_duration(path):
-    if not shutil_which("ffprobe"): return 5.0
-    try:
-        cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
-        out = subprocess.check_output(cmd).decode().strip()
-        return float(out)
-    except: return 5.0
-
-def resolve_font(choice, upload):
-    # 1. Prioridade: Upload Temporário (na sessão atual)
-    if choice == "Upload Personalizada" and upload:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp:
-            tmp.write(upload.getvalue())
-            return tmp.name
-            
-    # 2. Prioridade: Fonte Salva/Persistente (no disco)
-    if choice == "Upload Personalizada" and os.path.exists(SAVED_FONT_FILE):
-        return SAVED_FONT_FILE
-        
-    # 3. Prioridade: Fontes do Sistema ou Específicas
-    # Se a escolha for a "Alegreya", e tivermos o arquivo salvo, usamos ele.
-    # Caso contrário, tenta achar no sistema ou fallback.
-    if choice == "Alegreya Sans Black" and os.path.exists(SAVED_FONT_FILE):
-         return SAVED_FONT_FILE
-
-    sys_fonts = {
-        "Padrão (Sans)": ["arial.ttf", "DejaVuSans.ttf"], 
-        "Serif": ["times.ttf"], 
-        "Monospace": ["courier.ttf"],
-    }
-    
-    # Tenta encontrar a fonte específica ou fallback
-    font_list = sys_fonts.get(choice, [])
-    for f in font_list: return f
-    return None
-
-def get_main_title(ref_text: str) -> str:
-    ref = ref_text.lower()
-    if "1ª leitura" in ref or "primeira leitura" in ref: return "1ª LEITURA"
-    if "2ª leitura" in ref or "segunda leitura" in ref: return "2ª LEITURA"
-    if "salmo" in ref: return "SALMO"
-    return "EVANGELHO" 
-
-def criar_preview(w, h, texts, upload):
-    img = Image.new("RGB", (w, h), "black")
-    draw = ImageDraw.Draw(img)
-    for t in texts:
-        if not t["text"]: continue
-        try: font = ImageFont.truetype(resolve_font(t["font_style"], upload), t["size"])
-        except: font = ImageFont.load_default()
-        try: length = draw.textlength(t["text"], font=font)
-        except: length = len(t["text"]) * t["size"] * 0.5
-        x = (w - length) / 2
-        
-        # Adiciona borda preta (stroke)
-        draw.text((x, t["y"]), t["text"], fill=t["color"], font=font, stroke_width=2, stroke_fill="black")
-        
-    bio = BytesIO(); img.save(bio, "PNG"); bio.seek(0)
-    return bio
-
-def san(txt): return txt.replace(":", "\\:").replace("'", "") if txt else ""
-
-def whisper_srt(audio_path):
-    key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not key or not OpenAI: return None
-    try:
-        client = OpenAI(api_key=key)
-        with open(audio_path, "rb") as f:
-            return client.audio.transcriptions.create(model="whisper-1", file=f, response_format="srt", language="pt")
+        r = requests.post(f"{gas_url}?action=generate_job", json=payload)
+        return r.json() if r.status_code == 200 else None
     except: return None
 
-# =========================
-# Correção de Legendas com Groq
-# =========================
-def corrigir_legendas_com_groq(srt_content, roteiro_original):
-    """
-    Usa a API do Groq para corrigir erros de transcrição no SRT
-    baseando-se no roteiro original.
-    """
-    key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-    if not key or not Groq:
-        return srt_content # Retorna original se não tiver Groq
+# ==========================================
+# LÓGICA IA (GROQ)
+# ==========================================
+def generate_script_and_identify_chars(reading_text, reading_type):
+    client = get_groq_client()
+    regras = "Texto LIMPO."
+    if "1ª" in reading_type: regras = "1. INÍCIO: 'Leitura do Livro...'. 2. FIM: 'Palavra do Senhor!'."
+    if "2ª" in reading_type: regras = "1. INÍCIO: 'Leitura da Carta...'. 2. FIM: 'Palavra do Senhor!'."
+    if "Salmo" in reading_type: regras = "1. INÍCIO: 'Salmo Responsorial: '. 2. Sem números."
+    if "Evangelho" in reading_type: regras = "1. INÍCIO: 'Proclamação do Evangelho...'. 2. FIM: 'Palavra da Salvação...'. 3. NÃO duplicar."
     
+    prompt = f"""Assistente litúrgico. TAREFA: Roteiro curto ({reading_type}).
+    ESTRUTURA: 
+    1. hook (5-10s): Impactante. FIM: CTA "Comente sua cidade".
+    2. leitura: {regras}
+    3. reflexao (20-25s): Inicie "Reflexão:".
+    4. aplicacao (20-25s).
+    5. oracao (15-20s): Inicie "Vamos orar". FIM "Amém!".
+    EXTRA: Identifique PERSONAGENS (exceto Jesus/Deus). SAÍDA JSON: {{"roteiro": {{...}}, "personagens_identificados": [...]}}"""
     try:
-        client = Groq(api_key=key)
-        
-        # Monta o texto de referência do roteiro
-        texto_referencia = ""
-        if roteiro_original:
-            for k in ['hook', 'leitura', 'reflexao', 'aplicacao', 'oracao']:
-                block = roteiro_original.get(k, {})
-                if block and block.get('text'):
-                    texto_referencia += f"[{k.upper()}]: {block['text']}\n"
+        chat = client.chat.completions.create(messages=[{"role": "system", "content": prompt}, {"role": "user", "content": f"Texto:\n{reading_text}"}], model="llama-3.3-70b-versatile", response_format={"type": "json_object"}, temperature=0.7)
+        return json.loads(chat.choices[0].message.content)
+    except: return None
 
-        prompt = f"""
-        Você é um assistente especializado em correção de legendas SRT.
-        Sua tarefa é corrigir erros de transcrição no arquivo SRT fornecido,
-        usando o TEXTO ORIGINAL DO ROTEIRO como referência para a ortografia correta de nomes bíblicos e termos litúrgicos.
-        
-        MANTENHA EXATAMENTE O TIMECODE (tempos) original. Apenas corrija o texto das legendas.
-        Não altere a estrutura do SRT.
-        
-        TEXTO ORIGINAL DO ROTEIRO PARA REFERÊNCIA:
-        {texto_referencia}
-        
-        ARQUIVO SRT PARA CORRIGIR:
-        {srt_content}
-        
-        Responda APENAS com o conteúdo do SRT corrigido.
-        """
-        
-        chat_completion = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
-            temperature=0.3,
-        )
-        
-        return chat_completion.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"Erro na correção do Groq: {e}")
-        return srt_content # Retorna o original em caso de erro
-
-# =========================
-# Whisper Local (Tiny)
-# =========================
-def format_timestamp(seconds):
-    """Converte segundos para formato SRT (HH:MM:SS,mmm)"""
-    millis = int((seconds - int(seconds)) * 1000)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
-
-def gerar_legendas_whisper_tiny(audio_path):
-    """Gera legendas usando Whisper Tiny localmente."""
+def generate_character_description(name):
     try:
-        # Carrega o modelo tiny
-        model = whisper.load_model("tiny")
-        
-        # Transcreve
-        result = model.transcribe(audio_path, language="pt")
-        
-        # Formata para SRT
-        segments = result['segments']
-        srt_content = ""
-        for i, segment in enumerate(segments):
-            start = format_timestamp(segment['start'])
-            end = format_timestamp(segment['end'])
-            text = segment['text'].strip()
-            srt_content += f"{i+1}\n{start} --> {end}\n{text}\n\n"
-            
-        return srt_content
-    except Exception as e:
-        st.error(f"Erro no Whisper Tiny: {e}")
-        return None
+        chat = get_groq_client().chat.completions.create(messages=[{"role": "user", "content": f"Descrição visual detalhada personagem bíblico: {name}. Rosto, roupas. ~300 chars. Realista."}], model="llama-3.3-70b-versatile", temperature=0.7)
+        return chat.choices[0].message.content.strip()
+    except: return "Sem descrição."
 
-# =========================
-# APP MAIN
-# =========================
-if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "generated_srt_content": "", "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None})
-if "overlay_settings" not in st.session_state: st.session_state["overlay_settings"] = load_config()
+# --- FUNÇÃO AUXILIAR PARA CORRIGIR O ERRO ---
+def safe_get_text(data):
+    """Garante que retornamos uma string, mesmo que venha um dicionário."""
+    if isinstance(data, dict):
+        return data.get('text', '') or data.get('texto', '') or str(data)
+    return str(data) if data else ""
 
-res_choice = st.sidebar.selectbox("Resolução", ["9:16 (Stories)", "16:9 (YouTube)", "1:1 (Feed)"])
-
-# Upload de Fonte Persistente
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🅰️ Fonte Personalizada")
-
-font_up = st.sidebar.file_uploader("Upload de Fonte (.ttf)", type=["ttf"])
-if font_up:
-    if save_font_file(font_up.getvalue()):
-        st.sidebar.success("Fonte salva! Selecione 'Upload Personalizada' ou 'Alegreya Sans Black' no menu.")
-        
-# Verifica se existe fonte salva
-font_status = "✅ Fonte Salva Encontrada" if os.path.exists(SAVED_FONT_FILE) else "⚠️ Nenhuma fonte salva"
-st.sidebar.caption(font_status)
-
-if st.sidebar.button("Apagar Fonte Salva"):
-    if delete_font_file():
-        st.sidebar.info("Fonte removida.")
-        st.rerun()
-
-tab1, tab2, tab3 = st.tabs(["📥 Receber Job", "🎚️ Overlay", "🎥 Renderizar"])
-
-# TAB 1
-with tab1:
-    st.header("📥 Central de Recepção")
-    st.markdown(f"[Ir para AI Studio (Produção)]({FRONTEND_AI_STUDIO_URL})")
+def build_prompts(roteiro, chars, db, style):
+    desc_j = db.get("Jesus", FIXED_CHARACTERS["Jesus"])
+    desc_m = db.get("Pessoa Moderna", FIXED_CHARACTERS["Pessoa Moderna"])
+    desc_b = ("Chars: " + " | ".join([f"{n}: {db.get(n,'')}" for n in chars])) if chars else ""
     
-    c1, c2 = st.columns([1.5, 1])
-    with c1:
-        if st.button("🔄 Buscar Jobs Prontos no Drive"):
-            with st.spinner("Filtrando jobs 'COMPLETE'..."):
-                st.session_state['lista_jobs'] = list_recent_jobs(15)
+    # Usa a função segura para evitar o AttributeError
+    hook_txt = safe_get_text(roteiro.get('hook', '')).strip()
+    leitura_txt = safe_get_text(roteiro.get('leitura', '')).strip()
+    
+    return {
+        "hook": f"Cena Bíblica Realista: {hook_txt}. {desc_b} {style}",
+        "leitura": f"Cena Bíblica Realista. Contexto: {leitura_txt[:300]}... {desc_b} {style}",
+        "reflexao": f"Cena Moderna. Jesus e Pessoa Moderna (café). Jesus: {desc_j} Modern: {desc_m} {style}",
+        "aplicacao": f"Cena Moderna. Jesus e Pessoa Moderna caminhando. Jesus: {desc_j} Modern: {desc_m} {style}",
+        "oracao": f"Cena Moderna. Jesus e Pessoa Moderna orando. Jesus: {desc_j} Modern: {desc_m} {style}"
+    }
+
+def clean_text(text):
+    if not text: return ""
+    text = re.sub(r'\d{1,3}(?=[A-Za-zÀ-ÿ])', '', text)
+    return re.sub(r'\b\d{1,3}\s+(?=["\'A-Za-zÀ-ÿ])', '', text).strip()
+
+def extract(obj):
+    if not obj: return ""
+    if "content_psalm" in obj: return f"{obj.get('response', '')}\n" + ("\n".join(obj["content_psalm"]) if isinstance(obj["content_psalm"], list) else str(obj["content_psalm"]))
+    return clean_text(obj.get("text") or obj.get("texto"))
+
+def render_calendar(history):
+    today = date.today()
+    cal = calendar.monthcalendar(today.year, today.month)
+    html = f"<div style='font-size:12px; font-family:monospace; text-align:center; border:1px solid #ddd; padding:5px; border-radius:5px; background:white;'><strong>{calendar.month_name[today.month]}</strong><div style='display:grid; grid-template-columns:repeat(7, 1fr); gap:2px;'>"
+    for week in cal:
+        for day in week:
+            if day == 0: html += "<div></div>"
+            else:
+                d_str = f"{today.year}-{today.month:02d}-{day:02d}"
+                bg = "#d1fae5" if d_str in history else "transparent"
+                border = "1px solid blue" if d_str == today.strftime("%Y-%m-%d") else "none"
+                html += f"<div style='background:{bg}; border:{border}; border-radius:3px;'>{day}</div>"
+    st.sidebar.markdown(html + "</div></div>", unsafe_allow_html=True)
+
+# ==========================================
+# PROCESSAMENTO CENTRAL (SINGLE & MASS)
+# ==========================================
+def run_process_dashboard(mode_key, dt_ini, dt_fim):
+    k_daily = f"{mode_key}_daily"
+    k_scripts = f"{mode_key}_scripts"
+    k_missing = f"{mode_key}_missing"
+
+    if k_daily not in st.session_state: st.session_state[k_daily] = []
+    if k_scripts not in st.session_state: st.session_state[k_scripts] = []
+    if k_missing not in st.session_state: st.session_state[k_missing] = []
+
+    # 1. BUSCA
+    if st.button("🔎 Buscar Leituras", key=f"btn_fetch_{mode_key}"):
+        if dt_fim < dt_ini: st.error("Data final < inicial"); return
+        st.session_state[k_daily] = []
+        st.session_state[k_scripts] = []
+        st.session_state[k_missing] = []
         
-        if st.session_state['lista_jobs']:
-            opts = {j['display']: j['job_id'] for j in st.session_state['lista_jobs']}
-            sel = st.selectbox("Selecione um Job:", list(opts.keys()))
-            if st.button("📂 Carregar"):
-                st.session_state['drive_job_id_input'] = opts[sel]
-                st.rerun()
-        else: st.info("Nenhum job pronto encontrado.")
-
-    with c2:
-        jid_in = st.text_input("ID Manual:", key="drive_job_id_input")
-        if st.button("Baixar ID", disabled=not jid_in):
-            with st.status(f"Baixando {jid_in}...") as s:
-                if st.session_state.get("temp_assets_dir"): _shutil.rmtree(st.session_state["temp_assets_dir"])
-                tmp = tempfile.mkdtemp()
-                p = load_job_from_drive(jid_in)
-                if p and process_job_payload(p, tmp):
-                    st.session_state.update({"job_loaded_from_drive": True, "temp_assets_dir": tmp})
-                    s.update(label="Sucesso!", state="complete"); time.sleep(1); st.rerun()
-                else: s.update(label="Erro/Incompleto", state="error")
-
-    if st.session_state["job_loaded_from_drive"]:
-        st.success(f"Job Ativo")
-        c1, c2, c3 = st.columns(3)
-        with c1: 
-            val = st.text_input("Título (Linha 1)", st.session_state["title_display"])
-            if val != st.session_state["title_display"]: st.session_state["title_display"] = val
-        with c2: 
-            val = st.text_input("Data (Linha 2)", st.session_state["data_display"])
-            if val != st.session_state["data_display"]: st.session_state["data_display"] = val
-        with c3:
-            val = st.text_input("Referência (Linha 3)", st.session_state["ref_display"])
-            if val != st.session_state["ref_display"]: st.session_state["ref_display"] = val
-
-# TAB 2
-with tab2:
-    st.header("Editor Visual")
-    c1, c2 = st.columns(2)
-    sets = st.session_state["overlay_settings"]
-    
-    with c1:
-        with st.expander("Movimento"):
-            sets["effect_type"] = st.selectbox("Efeito", ["Zoom In (Ken Burns)", "Zoom Out", "Pan Esq", "Pan Dir", "Estático"], index=4) # Default Estático
-            sets["effect_speed"] = st.slider("Velocidade", 1, 10, 3)
-        with st.expander("Texto"):
-            # Adicionei 'Alegreya Sans Black' na lista
-            sets["line1_font"] = st.selectbox("Fonte L1", ["Padrão (Sans)", "Alegreya Sans Black", "Serif", "Upload Personalizada"], index=1)
-            sets["line1_size"] = st.slider("Tam L1", 10, 150, sets.get("line1_size", 70))
-            sets["line1_y"] = st.slider("Y L1", 0, 800, sets.get("line1_y", 150))
-            sets["line2_size"] = st.slider("Tam L2", 10, 100, sets.get("line2_size", 50))
-            sets["line2_y"] = st.slider("Y L2", 0, 800, sets.get("line2_y", 250))
-            sets["line3_size"] = st.slider("Tam L3", 10, 100, sets.get("line3_size", 50))
-            sets["line3_y"] = st.slider("Y L3", 0, 800, sets.get("line3_y", 350))
-            
-            # Atualiza fontes das outras linhas para Alegreya se for o padrão
-            if sets["line1_font"] == "Alegreya Sans Black":
-                sets["line2_font"] = "Alegreya Sans Black"
-                sets["line3_font"] = "Alegreya Sans Black"
-
-        with st.expander("Legendas"):
-            sets["sub_size"] = st.slider("Tam Legenda", 20, 100, 50)
-            sets["sub_y_pos"] = st.slider("Posição Y (px do fundo)", 0, 500, 150)
-            sets["sub_color"] = st.color_picker("Cor Texto", "#FFFF00")
-            sets["sub_outline_color"] = st.color_picker("Cor Borda", "#000000")
-        if st.button("Salvar Config"): save_config(sets); st.success("Salvo!")
-
-    with c2:
-        res = get_resolution_params(res_choice)
-        prev = criar_preview(int(res["w"]*0.4), int(res["h"]*0.4), [
-            {"text": st.session_state.get("title_display","EVANGELHO"), "size": int(sets["line1_size"]*0.4), "y": int(sets["line1_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
-            {"text": st.session_state.get("data_display","01.01.2025"), "size": int(sets["line2_size"]*0.4), "y": int(sets["line2_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
-            {"text": st.session_state.get("ref_display","Mt 1,1"), "size": int(sets["line3_size"]*0.4), "y": int(sets["line3_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
-        ], font_up)
-        st.image(prev, caption="Preview")
-
-# TAB 3
-with tab3:
-    st.header("Renderização")
-    if not st.session_state["job_loaded_from_drive"]: st.warning("Carregue um job primeiro."); st.stop()
-    
-    for bid in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]:
-        with st.expander(bid.upper()):
-            c1, c2 = st.columns([2, 1])
-            aud = st.session_state["generated_audios_blocks"].get(bid)
-            img = st.session_state["generated_images_blocks"].get(bid)
-            with c1: 
-                if aud: st.audio(aud)
-                else: st.info("Sem áudio")
-                aud_file = st.file_uploader(f"🎤 Enviar Áudio para {bid.upper()}", type=["mp3", "wav"], key=f"up_aud_{bid}")
-                if aud_file:
-                    if st.session_state.get("temp_assets_dir"):
-                        path = os.path.join(st.session_state["temp_assets_dir"], f"{bid}.wav")
-                        with open(path, "wb") as f: f.write(aud_file.read())
-                        st.session_state["generated_audios_blocks"][bid] = path
-                        st.success("Áudio atualizado!")
-                        st.rerun()
-
-            with c2: 
-                if img: st.image(img, width=150) # Reduzido para 150px como solicitado
-                else: st.info("Sem imagem")
-                img_file = st.file_uploader(f"🖼️ Enviar Imagem para {bid.upper()}", type=["png", "jpg", "jpeg"], key=f"up_img_{bid}")
-                if img_file:
-                    if st.session_state.get("temp_assets_dir"):
-                        path = os.path.join(st.session_state["temp_assets_dir"], f"{bid}.png")
-                        with open(path, "wb") as f: f.write(img_file.read())
-                        st.session_state["generated_images_blocks"][bid] = path
-                        st.success("Imagem atualizada!")
-                        st.rerun()
-
-    st.divider()
-    use_subs = st.checkbox("Queimar Legendas", value=True)
-    use_over = st.checkbox("Overlay Texto", value=True)
-    
-    if st.button("Gerar Legendas (Whisper Tiny Local + Correção Groq)"):
-        with st.status("Transcrevendo...") as s:
-            auds = [p for p in st.session_state["generated_audios_blocks"].values() if os.path.exists(p)]
-            if not auds: s.update(label="Sem áudios!", state="error"); st.stop()
-            
-            lst = os.path.join(st.session_state["temp_assets_dir"], "list_aud.txt")
-            mst = os.path.join(st.session_state["temp_assets_dir"], "master.wav")
-            with open(lst, "w") as f: 
-                for a in auds: f.write(f"file '{a}'\n")
-            run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", mst])
-            
-            srt = gerar_legendas_whisper_tiny(mst) # Usa a nova função local
-            if srt:
-                # Corrige com Groq
-                roteiro_original = st.session_state.get("roteiro_gerado", {})
-                srt_corrigido = corrigir_legendas_com_groq(srt, roteiro_original)
+        with st.status("Processando...", expanded=True) as status:
+            curr = dt_ini
+            while curr <= dt_fim:
+                st.write(f"🗓️ {curr.strftime('%d/%m')}")
+                data = fetch_liturgia(curr)
+                day_readings = []
+                has_gospel = False
                 
-                st.session_state["generated_srt_content"] = srt_corrigido
-                s.update(label="Legendas Geradas e Corrigidas!", state="complete"); st.rerun()
-            else: s.update(label="Erro Whisper", state="error")
-
-    if st.button("RENDERIZAR VÍDEO FINAL", type="primary"):
-        with st.status("Renderizando...", expanded=True) as s:
-            try:
-                tmp = tempfile.mkdtemp()
-                clips = []
-                res = get_resolution_params(res_choice)
-                w, h = res["w"], res["h"]
-                f1 = resolve_font(sets["line1_font"], font_up)
-                
-                for bid in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]:
-                    aud = st.session_state["generated_audios_blocks"].get(bid)
-                    img = st.session_state["generated_images_blocks"].get(bid)
-                    if not aud or not img: continue
+                if data:
+                    rds = data.get('readings') or data.get('today', {}).get('readings', {}) or data
                     
-                    dur = get_audio_duration(aud)
-                    out = os.path.join(tmp, f"{bid}.mp4")
-                    
-                    vf = f"scale={w}x{h}" 
-                    if sets["effect_type"] == "Zoom In (Ken Burns)":
-                        vf = f"zoompan=z='min(zoom+0.0015,1.5)':d={int(dur*25)}:s={w}x{h}:fps=25"
-                    elif sets["effect_type"] == "Zoom Out":
-                        vf = f"zoompan=z='max(1.5-0.0015*on,1)':d={int(dur*25)}:s={w}x{h}:fps=25"
-                    elif sets["effect_type"] == "Pan Esq":
-                        vf = f"zoompan=z=1.2:x='min(x+1,iw-iw/1.2)':y='(ih-ih/1.2)/2':d={int(dur*25)}:s={w}x{h}:fps=25"
-                    
-                    filters = [vf, f"fade=t=in:st=0:d=0.5,fade=t=out:st={dur-0.5}:d=0.5"]
-                    
-                    if use_over and f1:
-                        t1 = san(st.session_state.get("title_display", ""))
-                        # Adiciona borda preta de 3px (borderw=3:bordercolor=black)
-                        filters.append(f"drawtext=fontfile='{f1}':text='{t1}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}")
-                        t2 = san(st.session_state.get("data_display", ""))
-                        filters.append(f"drawtext=fontfile='{f1}':text='{t2}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}")
-                        t3 = san(st.session_state.get("ref_display", ""))
-                        filters.append(f"drawtext=fontfile='{f1}':text='{t3}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
+                    # Helper para limpar referência do Evangelho (CORREÇÃO ROBUSTA)
+                    def clean_gospel_ref(ref_raw, text_raw):
+                        if not ref_raw: return "Evangelho"
+                        
+                        # 1. Limpeza agressiva do prefixo "Proclamação... segundo"
+                        ref_clean = re.sub(r"^.*segundo\s+", "", ref_raw, flags=re.IGNORECASE)
+                        
+                        # 2. Limpeza de títulos religiosos e caracteres extras
+                        ref_clean = ref_clean.replace("São ", "").replace("Santo ", "").replace("+", "").strip()
+                        
+                        # 3. VERIFICAÇÃO DE NÚMEROS: Se não tiver números, tenta extrair do texto
+                        # Procura por padrão de número (ex: "1,39-56" ou "10, 21-24")
+                        if not re.search(r"\d", ref_clean) and text_raw:
+                             # Tenta achar a referência no início do texto bruto da leitura
+                             # Ex: "Lucas 1,39-56 - Naqueles dias..."
+                             match = re.match(r"([A-Za-z]+\s+\d+\s*[,:]\s*[\d\-\s]+)", text_raw)
+                             if match:
+                                 return match.group(1)
+                        
+                        return ref_clean
 
-                    run_cmd(["ffmpeg", "-y", "-loop", "1", "-i", img, "-i", aud, "-vf", ",".join(filters), "-c:v", "libx264", "-t", str(dur), "-pix_fmt", "yuv420p", "-crf", "28", "-preset", "fast", "-shortest", out])
-                    clips.append(out)
+                    def check_add(k, t):
+                        obj = rds.get(k)
+                        if not obj and k=='gospel': obj = rds.get('evangelho')
+                        if not obj and k=='first_reading': obj = rds.get('primeira_leitura') or rds.get('leitura_1')
+                        if not obj and k=='psalm': obj = rds.get('salmo') or rds.get('salmo_responsorial')
+                        if not obj and k=='second_reading': obj = rds.get('segunda_leitura') or rds.get('leitura_2')
+                        
+                        if obj:
+                            txt = extract(obj) # Passa o objeto completo para extract
+                            
+                            # Pega a referência bruta
+                            raw_ref = obj.get('title') or obj.get('referencia', t)
+                            
+                            # Limpa a referência
+                            if t == "Evangelho":
+                                ref = clean_gospel_ref(raw_ref, obj.get('text') or obj.get('texto') or "")
+                            else:
+                                ref = raw_ref
 
-                lst = os.path.join(tmp, "list.txt")
-                with open(lst, "w") as f:
-                    for c in clips: f.write(f"file '{c}'\n")
-                
-                conc = os.path.join(tmp, "concat.mp4")
-                run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", conc])
-                
-                final = os.path.join(tmp, "final.mp4")
-                mix_cmd = ["ffmpeg", "-y", "-i", conc]
-                filter_complex = []
-                
-                if os.path.exists(SAVED_MUSIC_FILE):
-                    mix_cmd.extend(["-stream_loop", "-1", "-i", SAVED_MUSIC_FILE])
-                    filter_complex.append(f"[1:a]volume={sets['music_vol']}[bg];[0:a][bg]amix=inputs=2:duration=first[a_out]")
-                    map_a = "[a_out]"
+                            if txt and len(txt)>20:
+                                return {"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")}
+                        return None
+
+                    r1 = check_add('first_reading', '1ª Leitura'); 
+                    if r1: day_readings.append(r1)
+                    
+                    sl = check_add('psalm', 'Salmo'); 
+                    if sl: day_readings.append(sl)
+                    
+                    r2 = check_add('second_reading', '2ª Leitura'); 
+                    if r2: day_readings.append(r2)
+                    
+                    ev = check_add('gospel', 'Evangelho'); 
+                    if ev: day_readings.append(ev); has_gospel = True
+
+                if has_gospel:
+                    st.session_state[k_daily].extend(day_readings)
                 else:
-                    map_a = "0:a"
+                    st.warning(f"⚠️ {curr.strftime('%d/%m')}: Dados insuficientes. Fila manual.")
+                    st.session_state[k_missing].append(curr)
+                
+                curr += timedelta(days=1)
+            status.update(label="Busca finalizada!", state="complete")
 
-                if use_subs and st.session_state.get("generated_srt_content"):
-                    srtp = os.path.join(tmp, "subs.srt")
-                    # CORREÇÃO: Usa o caminho ABSOLUTO para o filtro subtitles para evitar erros de path
-                    srtp_abs = os.path.abspath(srtp)
-                    
-                    with open(srtp_abs, "w") as f: f.write(st.session_state["generated_srt_content"])
-                    
-                    c = sets["sub_color"].lstrip("#")
-                    co = sets["sub_outline_color"].lstrip("#")
-                    ass_c = f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
-                    ass_co = f"&H00{co[4:6]}{co[2:4]}{co[0:2]}"
-                    margin_v = res['h'] - sets['sub_y_pos']
-                    style = f"FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
-                    
-                    # CORREÇÃO: Caminho escapado corretamente para Linux/Windows no filtro
-                    srtp_esc = srtp_abs.replace("\\", "/").replace(":", "\\:")
-                    
-                    # CORREÇÃO: Verificação de existência do arquivo SRT antes de adicionar o filtro
-                    if os.path.exists(srtp_abs) and os.path.getsize(srtp_abs) > 0:
-                         filter_complex.append(f"subtitles='{srtp_esc}':force_style='{style}'")
-                    else:
-                         st.warning("Arquivo de legenda não encontrado ou vazio. Pulando legendas.")
+    # 2. FILA MANUAL
+    if st.session_state[k_missing]:
+        curr_m = st.session_state[k_missing][0]
+        st.markdown("---")
+        st.error(f"✍️ **Entrada Manual: {curr_m.strftime('%d/%m/%Y')}**")
+        
+        with st.form(f"manual_{mode_key}_{curr_m}"):
+            c1, c2 = st.columns([1,3]); r1=c1.text_input("Ref. 1ª Leitura"); t1=c2.text_area("Texto 1ª Leitura")
+            c3, c4 = st.columns([1,3]); rsl=c3.text_input("Ref. Salmo"); tsl=c4.text_area("Texto Salmo")
+            c5, c6 = st.columns([1,3]); r2=c5.text_input("Ref. 2ª Leitura"); t2=c6.text_area("Texto 2ª Leitura")
+            c7, c8 = st.columns([1,3]); rev=c7.text_input("Ref. Evangelho"); tev=c8.text_area("Texto Evangelho (Obrigatório)")
+            
+            if st.form_submit_button("💾 Salvar"):
+                ds, di = curr_m.strftime("%d/%m/%Y"), curr_m.strftime("%Y-%m-%d")
+                if t1: st.session_state[k_daily].append({"type": "1ª Leitura", "text": t1, "ref": r1 or "1ª Leitura", "d_show": ds, "d_iso": di})
+                if tsl: st.session_state[k_daily].append({"type": "Salmo", "text": tsl, "ref": rsl or "Salmo", "d_show": ds, "d_iso": di})
+                if t2: st.session_state[k_daily].append({"type": "2ª Leitura", "text": t2, "ref": r2 or "2ª Leitura", "d_show": ds, "d_iso": di})
+                if tev: st.session_state[k_daily].append({"type": "Evangelho", "text": tev, "ref": rev or "Evangelho", "d_show": ds, "d_iso": di})
+                st.session_state[k_missing].pop(0); st.rerun()
 
+    # 3. LISTAGEM & GERAÇÃO
+    if st.session_state[k_daily] and not st.session_state[k_missing]:
+        st.session_state[k_daily].sort(key=lambda x: x['d_iso'])
+        st.divider(); st.write(f"📖 **{len(st.session_state[k_daily])} Leituras Prontas**")
+        
+        with st.expander("Ver Detalhes"):
+            for i in st.session_state[k_daily]: st.text(f"{i['d_show']} | {i['type']} | {i['ref']}")
 
-                if filter_complex:
-                    mix_cmd.extend(["-filter_complex", ",".join(filter_complex)])
-                    if "amix" in "".join(filter_complex):
-                        mix_cmd.extend(["-map", "0:v", "-map", map_a])
-                
-                # Redução de tamanho para o vídeo final também
-                mix_cmd.extend(["-crf", "28", "-preset", "fast"])
-                
-                mix_cmd.append(final)
-                run_cmd(mix_cmd)
-                
-                with open(final, "rb") as f:
-                    st.session_state["video_final_bytes"] = BytesIO(f.read())
-                
-                s.update(label="Pronto!", state="complete")
-                
-            except Exception as e:
-                st.error(f"Erro render: {e}")
-                st.error(traceback.format_exc())
-                s.update(label="Erro", state="error")
+        if st.button("✨ Gerar Roteiros", key=f"btn_gen_{mode_key}"):
+            st.session_state[k_scripts] = []
+            char_db = load_characters()
+            prog = st.progress(0)
+            for i, r in enumerate(st.session_state[k_daily]):
+                res = generate_script_and_identify_chars(r['text'], r['type'])
+                if res:
+                    chars = res.get('personagens_identificados', [])
+                    for c in chars:
+                        if c not in char_db: char_db[c] = generate_character_description(c)
+                    save_characters(char_db)
+                    st.session_state[k_scripts].append({"meta": r, "roteiro": res.get('roteiro', {}), "chars": chars})
+                prog.progress((i+1)/len(st.session_state[k_daily]))
+            st.rerun()
 
-    if st.session_state["video_final_bytes"]:
-        st.video(st.session_state["video_final_bytes"])
-        st.download_button("⬇️ Baixar Vídeo", st.session_state["video_final_bytes"], "video.mp4", "video/mp4")
+    # 4. PREVIEW & ENVIO
+    if st.session_state[k_scripts]:
+        st.divider(); st.write("🚀 **Envio**")
+        hist = load_history()
+        dates = sorted(list(set([s['meta']['d_iso'] for s in st.session_state[k_scripts]])))
+        dups = [d for d in dates if d in hist]
+        
+        if dups: st.warning(f"⚠️ Já enviados: {dups}")
+        force = st.checkbox("Confirmar duplicidade", key=f"chk_{mode_key}") if dups else True
+
+        for s in st.session_state[k_scripts]:
+            m, r = s['meta'], s['roteiro']
+            prompts = build_prompts(r, s['chars'], load_characters(), STYLE_SUFFIX)
+            
+            # Helper seguro para display
+            def get_disp(k):
+                val = r.get(k)
+                if isinstance(val, dict): return val.get('text', '')
+                return str(val) if val else ''
+
+            with st.expander(f"✅ {m['d_show']} - {m['type']} ({m['ref']})"):
+                st.subheader("📝 Texto do Roteiro")
+                st.markdown(f"**🎣 Hook:** {safe_get_text(r.get('hook'))}")
+                st.text_area("📖 Leitura", safe_get_text(r.get('leitura')), height=150, key=f"l_{m['ref']}_{mode_key}")
+                
+                c1, c2, c3 = st.columns(3)
+                with c1: 
+                    st.markdown("**💭 Reflexão:**")
+                    st.write(safe_get_text(r.get('reflexao')))
+                with c2:
+                    st.markdown("**🚀 Aplicação:**")
+                    st.write(safe_get_text(r.get('aplicacao')))
+                with c3:
+                    st.markdown("**🙏 Oração:**")
+                    st.write(safe_get_text(r.get('oracao')))
+                
+                st.divider()
+                st.subheader("🎨 Prompts de Imagem")
+                cp1, cp2 = st.columns(2)
+                with cp1:
+                    st.caption("1. Hook")
+                    st.code(prompts.get('hook', '---'), language="text")
+                    st.caption("2. Leitura")
+                    st.code(prompts.get('leitura', '---'), language="text")
+                    st.caption("3. Reflexão")
+                    st.code(prompts.get('reflexao', '---'), language="text")
+                with cp2:
+                    st.caption("4. Aplicação")
+                    st.code(prompts.get('aplicacao', '---'), language="text")
+                    st.caption("5. Oração")
+                    st.code(prompts.get('oracao', '---'), language="text")
+
+        if st.button("🚀 Enviar Lote", disabled=not force, key=f"snd_{mode_key}"):
+            prog = st.progress(0); sent = set(); cnt=0
+            char_db = load_characters()
+            for i, s in enumerate(st.session_state[k_scripts]):
+                m, r = s['meta'], s['roteiro']
+                prompts = build_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
+                
+                # Garante que o texto enviado seja string
+                def safe_txt(k):
+                    val = r.get(k)
+                    if isinstance(val, dict): return val.get('text', '')
+                    return str(val) if val else ''
+
+                pld = {
+                    "meta_dados": {"data": m['d_show'], "ref": f"{m['type']} - {m['ref']}"},
+                    "roteiro": {k: {"text": safe_txt(k), "prompt": prompts.get(k,'')} for k in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]},
+                    "assets": []
+                }
+                if send_to_gas(pld): cnt+=1; sent.add(m['d_iso'])
+                prog.progress((i+1)/len(st.session_state[k_scripts]))
+            
+            if cnt>0: update_history_bulk(list(sent)); st.balloons(); st.success(f"{cnt} enviados!"); st.rerun()
+            else: st.error("Falha.")
+
+# ==========================================
+# MAIN APP
+# ==========================================
+def main():
+    st.sidebar.title("⚙️ Config")
+    history = load_history()
+    render_calendar(history)
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Limpar Histórico"):
+        if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE); st.rerun()
+    if st.sidebar.button("Limpar Cache"): st.session_state.clear(); st.rerun()
+
+    tab1, tab2, tab3 = st.tabs(["📅 Roteiro Único", "📚 Roteiros em Massa", "👥 Personagens"])
+
+    with tab1:
+        st.header("Gerador Diário")
+        dt = st.date_input("Data", value=date.today(), key="dt1")
+        run_process_dashboard("single", dt, dt)
+
+    with tab2:
+        st.header("Gerador em Lote")
+        c1, c2 = st.columns(2)
+        with c1: d1 = st.date_input("Início", value=date.today(), key="dt2a")
+        with c2: d2 = st.date_input("Fim", value=date.today()+timedelta(days=6), key="dt2b")
+        run_process_dashboard("mass", d1, d2)
+
+    with tab3:
+        char_db = load_characters()
+        st.header("Banco de Personagens")
+        for n, d in char_db.items():
+            with st.expander(n):
+                new_d = st.text_area("Desc", d, key=f"ed_{n}")
+                if st.button("Salvar", key=f"sv_{n}"): char_db[n]=new_d; save_characters(char_db); st.rerun()
+        n = st.text_input("Novo"); d = st.text_area("Desc")
+        if st.button("Criar") and n: char_db[n]=d; save_characters(char_db); st.rerun()
+
+if __name__ == "__main__": main()
