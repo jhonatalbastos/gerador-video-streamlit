@@ -235,10 +235,16 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
                         # Procura por padrão de número (ex: "1,39-56" ou "10, 21-24")
                         if not re.search(r"\d", ref_clean) and text_raw:
                              # Tenta achar a referência no início do texto bruto da leitura
-                             # Ex: "Lucas 1,39-56 - Naqueles dias..."
+                             # Ex: "Lucas 1,39-56 - Naqueles dias..." ou "10, 21-24 Naquele tempo..."
                              match = re.match(r"([A-Za-z]+\s+\d+\s*[,:]\s*[\d\-\s]+)", text_raw)
                              if match:
                                  return match.group(1)
+                             
+                             # Tenta padrão só de números se o nome já estiver no título
+                             # Ex: Texto começa com "10, 21-24"
+                             match_num = re.match(r"^(\d+\s*[,:]\s*[\d\-\s]+)", text_raw)
+                             if match_num:
+                                 return f"{ref_clean} {match_num.group(1)}"
                         
                         return ref_clean
 
