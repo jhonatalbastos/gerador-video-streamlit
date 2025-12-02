@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Previews Menores e Vídeo Otimizado
+# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V5 (Fix Overlay em Branco)
 import os
 import re
 import json
@@ -20,7 +20,7 @@ import whisper  # Importação do Whisper Local
 # --- API Imports ---
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+from googleapiclient.errors import HttpError 
 try:
     from groq import Groq  # Importação do Groq para correção
 except ImportError:
@@ -238,20 +238,33 @@ def process_job_payload(payload: Dict, temp_dir: str):
             if "Salmo" in raw_ref: title = "SALMO"
             elif "Leitura" in raw_ref: title = "1ª LEITURA"
         
-        # Limpeza fina de prefixos
+        # Limpeza fina de prefixos (REGEX CORRIGIDO E SEGURO)
         patterns_to_remove = [
             r"^(Primeira|Segunda|1ª|2ª)\s*Leitura\s*:\s*",
-            r"^Leitura\s*(do|da)\s*.*:\s*",
+            r"^Leitura\s*(do|da)\s*.*:\s*",  # Cuidado: remove tudo até os dois pontos
             r"^Salmo\s*Responsorial\s*:\s*",
             r"^Salmo\s*:\s*",
             r"^Evangelho\s*:\s*",
-            r"^Proclamação\s*do\s*Evangelho.*:\s*"
+            r"^Proclamação\s*do\s*Evangelho\s*(de\s*Jesus\s*Cristo\s*)?segundo\s*" # Mantém o nome do evangelista
         ]
+        
+        temp_clean = clean_ref
         for pat in patterns_to_remove:
-            clean_ref = re.sub(pat, "", clean_ref, flags=re.IGNORECASE).strip()
+            # Usa regex non-greedy onde possível ou específico
+            temp_clean = re.sub(pat, "", temp_clean, flags=re.IGNORECASE).strip()
+
+        # Limpa dois pontos finais que podem sobrar (ex: "São Lucas:")
+        temp_clean = temp_clean.rstrip(":")
+        
+        # Fallback: Se limpou tudo (ficou vazio), restaura o original (após o traço)
+        if not temp_clean:
+             if " - " in raw_ref:
+                  temp_clean = raw_ref.split(" - ", 1)[1]
+             else:
+                  temp_clean = raw_ref # Último caso, mostra tudo
 
         st.session_state["title_display"] = title
-        st.session_state["ref_display"] = clean_ref
+        st.session_state["ref_display"] = temp_clean
 
         # --- 3. ASSETS ---
         st.session_state["generated_images_blocks"] = {}
@@ -359,6 +372,15 @@ def criar_preview(w, h, texts, upload):
     return bio
 
 def san(txt): return txt.replace(":", "\\:").replace("'", "") if txt else ""
+
+def whisper_srt(audio_path):
+    key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not key or not OpenAI: return None
+    try:
+        client = OpenAI(api_key=key)
+        with open(audio_path, "rb") as f:
+            return client.audio.transcriptions.create(model="whisper-1", file=f, response_format="srt", language="pt")
+    except: return None
 
 # =========================
 # Correção de Legendas com Groq
@@ -607,7 +629,7 @@ with tab3:
                 for a in auds: f.write(f"file '{a}'\n")
             run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", mst])
             
-            srt = whisper_srt(mst) # Correção da chamada da função
+            srt = gerar_legendas_whisper_tiny(mst) # Usa a nova função local
             if srt:
                 # Corrige com Groq
                 roteiro_original = st.session_state.get("roteiro_gerado", {})
@@ -653,7 +675,6 @@ with tab3:
                         t3 = san(st.session_state.get("ref_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t3}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
 
-                    # Parametro para reduzir tamanho: -crf 28 -preset fast
                     run_cmd(["ffmpeg", "-y", "-loop", "1", "-i", img, "-i", aud, "-vf", ",".join(filters), "-c:v", "libx264", "-t", str(dur), "-pix_fmt", "yuv420p", "-crf", "28", "-preset", "fast", "-shortest", out])
                     clips.append(out)
 
