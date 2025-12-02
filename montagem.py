@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO
+# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V2
 import os
 import re
 import json
@@ -137,20 +137,18 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
     jobs_list = []
     
     try:
-        # 1. Acha pasta
         q_f = f"name = '{MONETIZA_DRIVE_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         folders = service.files().list(q=q_f, fields="files(id)").execute().get('files', [])
         if not folders: return []
         folder_id = folders[0]['id']
 
-        # 2. CORREÇÃO: Remove 'description' do filtro 'q' (causa erro 400)
+        # Filtra arquivos JSON
         query_file = (
             f"mimeType = 'application/json' and "
             f"'{folder_id}' in parents and "
             f"trashed = false"
         )
         
-        # Busca mais arquivos (50) para ter margem de filtro, e pede o campo 'description'
         results = service.files().list(
             q=query_file, 
             orderBy="createdTime desc", 
@@ -161,8 +159,7 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
         files = results.get('files', [])
 
         for f in files:
-            # 3. Filtragem Client-Side (Python)
-            # Só aceita se a descrição for EXATAMENTE 'COMPLETE'
+            # Filtragem Client-Side: Apenas COMPLETE
             if f.get('description') != 'COMPLETE':
                 continue
 
@@ -171,7 +168,6 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
                 try:
                     data = json.loads(content)
                     meta = data.get("meta_dados", {})
-                    # Limpa ID
                     jid = f['name'].replace("job_data_", "").replace(".json", "")
                     jobs_list.append({
                         "display": f"✅ {meta.get('data','?')} | {meta.get('ref','?')}",
@@ -180,9 +176,7 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
                     })
                 except: continue
             
-            # Para assim que atingir o limite desejado de exibição
-            if len(jobs_list) >= limit:
-                break
+            if len(jobs_list) >= limit: break
                 
     except Exception as e:
         st.error(f"Erro ao listar: {e}")
@@ -203,14 +197,12 @@ def process_job_payload(payload: Dict, temp_dir: str):
         st.session_state["roteiro_gerado"] = payload.get("roteiro", {})
         meta = payload.get("meta_dados", {})
         
-        # Formata data para DD.MM.AAAA
         d_raw = meta.get("data", "")
         if re.match(r"\d{4}-\d{2}-\d{2}", d_raw):
             try:
                 d_obj = datetime.strptime(d_raw, '%Y-%m-%d')
                 st.session_state["data_display"] = d_obj.strftime('%d.%m.%Y')
-            except:
-                st.session_state["data_display"] = d_raw
+            except: st.session_state["data_display"] = d_raw
         else:
             st.session_state["data_display"] = d_raw
             
@@ -221,7 +213,7 @@ def process_job_payload(payload: Dict, temp_dir: str):
 
         assets = payload.get("assets", [])
         if not assets:
-            st.error("❌ Este Job não tem assets (imagens/audio). Verifique se foi processado no AI Studio.")
+            st.error("❌ Job sem assets.")
             return False
 
         for asset in assets:
@@ -240,9 +232,7 @@ def process_job_payload(payload: Dict, temp_dir: str):
                     st.session_state["generated_audios_blocks"][bid] = path
                 elif atype == "srt" and bid == "legendas":
                     st.session_state["generated_srt_content"] = raw.decode('utf-8')
-            except Exception as ex:
-                print(f"Erro decodificando asset {bid}: {ex}")
-                continue
+            except Exception as ex: continue
                 
         return True
     except Exception as e:
@@ -275,8 +265,16 @@ def resolve_font(choice, upload):
             tmp.write(upload.getvalue())
             return tmp.name
     sys_fonts = {"Padrão (Sans)": ["arial.ttf", "DejaVuSans.ttf"], "Serif": ["times.ttf"], "Monospace": ["courier.ttf"]}
-    for f in sys_fonts.get(choice, []): return f # Simplificado
-    return None # FFmpeg usará default se None
+    for f in sys_fonts.get(choice, []): return f
+    return None
+
+def get_main_title(ref_text: str) -> str:
+    """Determina o título principal (Linha 1) com base na referência."""
+    ref = ref_text.lower()
+    if "1ª leitura" in ref or "primeira leitura" in ref: return "1ª LEITURA"
+    if "2ª leitura" in ref or "segunda leitura" in ref: return "2ª LEITURA"
+    if "salmo" in ref: return "SALMO RESPONSORIAL"
+    return "EVANGELHO" # Padrão
 
 def criar_preview(w, h, texts, upload):
     img = Image.new("RGB", (w, h), "black")
@@ -319,7 +317,7 @@ tab1, tab2, tab3 = st.tabs(["📥 Receber Job", "🎚️ Overlay", "🎥 Renderi
 
 # TAB 1
 with tab1:
-    st.header("📥 Central de Recepção (Somente Prontos)")
+    st.header("📥 Central de Recepção")
     st.markdown(f"[Ir para AI Studio (Produção)]({FRONTEND_AI_STUDIO_URL})")
     
     c1, c2 = st.columns([1.5, 1])
@@ -364,6 +362,10 @@ with tab2:
     c1, c2 = st.columns(2)
     sets = st.session_state["overlay_settings"]
     
+    # Título Dinâmico
+    current_ref = st.session_state.get("ref_display", "")
+    dynamic_title = get_main_title(current_ref)
+    
     with c1:
         with st.expander("Movimento"):
             sets["effect_type"] = st.selectbox("Efeito", ["Zoom In (Ken Burns)", "Zoom Out", "Pan Esq", "Pan Dir", "Estático"], index=0)
@@ -387,9 +389,9 @@ with tab2:
     with c2:
         res = get_resolution_params(res_choice)
         prev = criar_preview(int(res["w"]*0.4), int(res["h"]*0.4), [
-            {"text": "EVANGELHO", "size": int(sets["line1_size"]*0.4), "y": int(sets["line1_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
+            {"text": dynamic_title, "size": int(sets["line1_size"]*0.4), "y": int(sets["line1_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
             {"text": st.session_state.get("data_display","01.01.2025"), "size": int(sets["line2_size"]*0.4), "y": int(sets["line2_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
-            {"text": st.session_state.get("ref_display","Mt 1,1"), "size": int(sets["line3_size"]*0.4), "y": int(sets["line3_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
+            {"text": current_ref, "size": int(sets["line3_size"]*0.4), "y": int(sets["line3_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
         ], font_up)
         st.image(prev, caption="Preview")
 
@@ -445,6 +447,9 @@ with tab3:
                 # Overlay Setup
                 f1 = resolve_font(sets["line1_font"], font_up)
                 
+                # TITULO DINAMICO PARA O VÍDEO
+                dynamic_title = get_main_title(st.session_state.get("ref_display", ""))
+                
                 for bid in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]:
                     aud = st.session_state["generated_audios_blocks"].get(bid)
                     img = st.session_state["generated_images_blocks"].get(bid)
@@ -454,7 +459,7 @@ with tab3:
                     out = os.path.join(tmp, f"{bid}.mp4")
                     
                     # Zoom Effect
-                    vf = f"scale={w}x{h}" # Default static
+                    vf = f"scale={w}x{h}" 
                     if sets["effect_type"] == "Zoom In (Ken Burns)":
                         vf = f"zoompan=z='min(zoom+0.0015,1.5)':d={int(dur*25)}:s={w}x{h}:fps=25"
                     elif sets["effect_type"] == "Zoom Out":
@@ -462,15 +467,17 @@ with tab3:
                     elif sets["effect_type"] == "Pan Esq":
                         vf = f"zoompan=z=1.2:x='min(x+1,iw-iw/1.2)':y='(ih-ih/1.2)/2':d={int(dur*25)}:s={w}x{h}:fps=25"
                     
-                    # Overlay Text Filters
                     filters = [vf, f"fade=t=in:st=0:d=0.5,fade=t=out:st={dur-0.5}:d=0.5"]
                     
                     if use_over and f1:
-                        # Drawtext - Simplificado (Título apenas)
-                        # Nota: ffmpeg drawtext é chato com escapes.
-                        txt_display = san(st.session_state.get("ref_display", ""))
-                        if txt_display:
-                            filters.append(f"drawtext=fontfile='{f1}':text='{txt_display}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
+                        # Título dinâmico (Line 1)
+                        filters.append(f"drawtext=fontfile='{f1}':text='{dynamic_title}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}")
+                        # Referência (Line 3 - ex: Is 26,1)
+                        t3 = san(st.session_state.get("ref_display", ""))
+                        if t3: filters.append(f"drawtext=fontfile='{f1}':text='{t3}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
+                        # Data (Line 2)
+                        t2 = san(st.session_state.get("data_display", ""))
+                        if t2: filters.append(f"drawtext=fontfile='{f1}':text='{t2}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}")
 
                     run_cmd(["ffmpeg", "-y", "-loop", "1", "-i", img, "-i", aud, "-vf", ",".join(filters), "-c:v", "libx264", "-t", str(dur), "-pix_fmt", "yuv420p", "-shortest", out])
                     clips.append(out)
@@ -489,7 +496,6 @@ with tab3:
                 mix_cmd = ["ffmpeg", "-y", "-i", conc]
                 filter_complex = []
                 
-                # Música
                 if os.path.exists(SAVED_MUSIC_FILE):
                     mix_cmd.extend(["-stream_loop", "-1", "-i", SAVED_MUSIC_FILE])
                     filter_complex.append(f"[1:a]volume={sets['music_vol']}[bg];[0:a][bg]amix=inputs=2:duration=first[a_out]")
@@ -497,30 +503,20 @@ with tab3:
                 else:
                     map_a = "0:a"
 
-                # Legendas (Burn-in)
                 if use_subs and st.session_state.get("generated_srt_content"):
                     srtp = os.path.join(tmp, "subs.srt")
                     with open(srtp, "w") as f: f.write(st.session_state["generated_srt_content"])
-                    
-                    # Style ASS
                     c = sets["sub_color"].lstrip("#")
                     co = sets["sub_outline_color"].lstrip("#")
-                    # BGR format for ASS
                     ass_c = f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
                     ass_co = f"&H00{co[4:6]}{co[2:4]}{co[0:2]}"
-                    
-                    # Calcula margem correta
                     margin_v = res['h'] - sets['sub_y_pos']
-                    
                     style = f"FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
-                    
-                    # Escape path for filter
                     srtp_esc = srtp.replace("\\", "/").replace(":", "\\:")
                     filter_complex.append(f"subtitles='{srtp_esc}':force_style='{style}'")
 
                 if filter_complex:
                     mix_cmd.extend(["-filter_complex", ",".join(filter_complex)])
-                    # Se tiver mapa de audio customizado, usa
                     if "amix" in "".join(filter_complex):
                         mix_cmd.extend(["-map", "0:v", "-map", map_a])
                 
