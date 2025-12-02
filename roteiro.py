@@ -53,14 +53,16 @@ def send_to_gas(payload):
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
     
-    # Lógica de regras condicionais para a Leitura
+    # Lógica de regras condicionais por tipo de leitura
     if reading_type == "1ª Leitura":
-        # Regra específica para 1ª Leitura
         regras_leitura_bloco = """O texto bíblico completo. 
-        1. INÍCIO OBRIGATÓRIO: Inicie com a fórmula litúrgica do livro (ex: 'Leitura do Livro do Profeta Isaías', 'Leitura do Livro do Gênesis') sem mencionar capítulos e versículos numéricos.
-        2. FINAL OBRIGATÓRIO: Termine o texto com a frase exata: 'Palavra do Senhor!'."""
+        1. INÍCIO OBRIGATÓRIO: Inicie com a fórmula litúrgica do livro (ex: 'Leitura do Livro do Profeta Isaías') sem mencionar capítulos/versículos.
+        2. FINAL OBRIGATÓRIO: Termine com a frase: 'Palavra do Senhor!'."""
+    elif reading_type == "Salmo":
+        regras_leitura_bloco = """O texto do Salmo completo (Refrão e Estrofes).
+        1. INÍCIO OBRIGATÓRIO: Inicie o texto com a frase exata: 'Salmo Responsorial: '.
+        2. Não mencione números de capítulos, livros ou versículos."""
     else:
-        # Regra padrão para outros tipos
         regras_leitura_bloco = "O texto bíblico fornecido, LIMPO (sem versículos/cabeçalhos)."
 
     system_prompt = f"""Você é um assistente litúrgico católico.
@@ -214,6 +216,7 @@ def main():
                 for idx, script_obj in enumerate(st.session_state['generated_scripts']):
                     meta = script_obj['meta']
                     rot = script_obj['roteiro']
+                    
                     prompts_finais = build_scene_prompts(rot, script_obj['chars'], char_db, STYLE_SUFFIX)
                     ref_final = f"{meta['type']} - {meta['ref']}"
                     
