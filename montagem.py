@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Editor de Legendas (SRT)
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Legendas Dinâmicas Curtas
 import os
 import re
 import json
@@ -55,7 +55,10 @@ def load_config():
         "effect_type": "Estático", "effect_speed": 3, # Movimento padrão agora é Estático
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
-        "sub_size": 50, "sub_color": "#FFFF00", "sub_outline_color": "#000000", "sub_y_pos": 150 
+        "sub_size": 70, # Aumentado para destaque em 1 linha
+        "sub_color": "#FFFF00", 
+        "sub_outline_color": "#000000", 
+        "sub_y_pos": 250 # Ajustado para ficar mais central/baixo (margem do fundo)
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -421,7 +424,7 @@ def corrigir_legendas_com_groq(srt_content, roteiro_original):
         return srt_content # Retorna o original em caso de erro
 
 # =========================
-# Whisper Local (Tiny)
+# Whisper Local (Tiny) - Dinâmico
 # =========================
 def format_timestamp(seconds):
     """Converte segundos para formato SRT (HH:MM:SS,mmm)"""
@@ -432,28 +435,75 @@ def format_timestamp(seconds):
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
 def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
-    """Gera legendas usando Whisper Tiny localmente, com progresso."""
+    """Gera legendas dinâmicas (curtas e rápidas) usando Whisper Tiny."""
     try:
         if progress_bar: progress_bar.progress(10, text="Carregando modelo Whisper (Tiny)...")
         
-        # Carrega o modelo tiny
         model = whisper.load_model("tiny")
         
         if progress_bar: progress_bar.progress(30, text="Transcrevendo áudio...")
         
-        # Transcreve
-        result = model.transcribe(audio_path, language="pt")
+        # Word timestamps = True para ter precisão palavra por palavra
+        # Mas a lib 'whisper' padrão não expõe 'word_timestamps' tão facilmente quanto 'faster-whisper'.
+        # Vamos usar o padrão e quebrar os segmentos longos manualmente.
+        result = model.transcribe(audio_path, language="pt", task="transcribe")
         
-        if progress_bar: progress_bar.progress(80, text="Formatando legendas...")
+        if progress_bar: progress_bar.progress(80, text="Formatando legendas dinâmicas...")
 
-        # Formata para SRT
         segments = result['segments']
         srt_content = ""
-        for i, segment in enumerate(segments):
-            start = format_timestamp(segment['start'])
-            end = format_timestamp(segment['end'])
-            text = segment['text'].strip()
-            srt_content += f"{i+1}\n{start} --> {end}\n{text}\n\n"
+        counter = 1
+        
+        # Lógica de quebra para legendas "TikTok Style" (máx 4-6 palavras por linha ou 25 chars)
+        MAX_CHARS = 25
+        
+        for segment in segments:
+            words = segment['text'].strip().split()
+            start_time = segment['start']
+            end_time = segment['end']
+            duration = end_time - start_time
+            
+            # Se o segmento for muito longo, tentamos dividir proporcionalmente
+            # (Nota: Isso é uma aproximação, pois whisper padrão sem word_level é bloco a bloco)
+            # Para ficar perfeito precisaria de 'faster-whisper' com word_timestamps, mas vamos aproximar.
+            
+            current_line = []
+            current_len = 0
+            
+            # Divisão simples baseada em caracteres para visualização
+            # O tempo será interpolado linearmente (não perfeito, mas melhor que blocão)
+            total_words = len(words)
+            if total_words == 0: continue
+            
+            time_per_word = duration / total_words
+            current_word_idx = 0
+            
+            # Reconstruindo em mini-blocos
+            chunks = []
+            temp_chunk = []
+            temp_char_count = 0
+            
+            for w in words:
+                if temp_char_count + len(w) + 1 > MAX_CHARS:
+                    chunks.append(temp_chunk)
+                    temp_chunk = [w]
+                    temp_char_count = len(w)
+                else:
+                    temp_chunk.append(w)
+                    temp_char_count += len(w) + 1
+            if temp_chunk: chunks.append(temp_chunk)
+
+            # Gerar SRT para os chunks
+            chunk_start = start_time
+            for chunk in chunks:
+                text_line = " ".join(chunk)
+                chunk_duration = len(chunk) * time_per_word
+                chunk_end = chunk_start + chunk_duration
+                
+                srt_content += f"{counter}\n{format_timestamp(chunk_start)} --> {format_timestamp(chunk_end)}\n{text_line}\n\n"
+                
+                chunk_start = chunk_end
+                counter += 1
             
         if progress_bar: progress_bar.progress(100, text="Legendas geradas!")
         return srt_content
@@ -596,8 +646,8 @@ with tab2:
                 sets["line3_font"] = "Alegreya Sans Black"
 
         with st.expander("Legendas"):
-            sets["sub_size"] = st.slider("Tam Legenda", 20, 100, 50)
-            sets["sub_y_pos"] = st.slider("Posição Y (px do fundo)", 0, 500, 150)
+            sets["sub_size"] = st.slider("Tam Legenda", 20, 100, sets.get("sub_size", 70))
+            sets["sub_y_pos"] = st.slider("Posição Y (px do fundo)", 0, 500, sets.get("sub_y_pos", 250))
             sets["sub_color"] = st.color_picker("Cor Texto", "#FFFF00")
             sets["sub_outline_color"] = st.color_picker("Cor Borda", "#000000")
         if st.button("Salvar Config"): save_config(sets); st.success("Salvo!")
