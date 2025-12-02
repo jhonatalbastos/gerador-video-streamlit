@@ -4,18 +4,27 @@ import json
 import os
 import re
 import calendar
-import shutil
 from datetime import date, timedelta
 from groq import Groq
+from bs4 import BeautifulSoup
+
+# ==========================================
+# CONFIGURAÇÕES E CONSTANTES
+# ==========================================
 
 st.set_page_config(page_title="Roteirista Litúrgico Multi-Job", layout="wide")
 CHARACTERS_FILE = "characters_db.json"
 HISTORY_FILE = "history_db.json"
 STYLE_SUFFIX = ". Style: Cinematic Realistic, 1080p resolution, highly detailed, masterpiece, cinematic lighting, detailed texture, photography style."
+
 FIXED_CHARACTERS = {
     "Jesus": "Homem de 33 anos, descendência do oriente médio, cabelos longos e escuros, barba, túnica branca, faixa vermelha, expressão serena.",
     "Pessoa Moderna": "Jovem adulto (homem ou mulher), roupas casuais modernas (jeans/camiseta), aparência cotidiana e identificável."
 }
+
+# ==========================================
+# FUNÇÕES DE PERSISTÊNCIA
+# ==========================================
 
 def load_json(file_path):
     if os.path.exists(file_path):
@@ -48,18 +57,93 @@ def update_history_bulk(dates_list):
         hist.sort()
         save_json(HISTORY_FILE, hist)
 
+# ==========================================
+# SERVIÇOS EXTERNOS (GROQ, API, SCRAPER)
+# ==========================================
+
 def get_groq_client():
     api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
     if not api_key: st.error("❌ GROQ_API_KEY não encontrada."); st.stop()
     return Groq(api_key=api_key)
 
-def fetch_liturgia(date_obj):
-    url = f"https://api-liturgia-diaria.vercel.app/?date={date_obj.strftime('%Y-%m-%d')}".strip()
+def fetch_liturgia_cancaonova(date_obj):
+    """Fallback: Busca liturgia no site da Canção Nova se a API principal falhar."""
+    date_str = date_obj.strftime("%d-%m-%Y") # Formato da URL CN
+    url = f"https://liturgia.cancaonova.com/pb/liturgia/{date_str}/"
+    
     try:
-        resp = requests.get(url)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e: st.error(f"Erro liturgia {date_obj}: {e}"); return None
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+        entry_content = soup.find('div', class_='entry-content')
+        
+        if not entry_content:
+            return None
+
+        # Estrutura de retorno compatível com a API Vercel
+        full_text = entry_content.get_text("\n")
+        
+        # Tentativa simples de separação por palavras-chave
+        readings = {}
+        
+        # Regex para encontrar blocos (Lógica aproximada)
+        # Tenta achar onde começa cada parte
+        idx_1a = re.search(r'(1ª Leitura|Primeira Leitura)', full_text, re.IGNORECASE)
+        idx_salmo = re.search(r'(Salmo|Salmo Responsorial)', full_text, re.IGNORECASE)
+        idx_2a = re.search(r'(2ª Leitura|Segunda Leitura)', full_text, re.IGNORECASE)
+        idx_evang = re.search(r'(Evangelho)', full_text, re.IGNORECASE)
+
+        # Helper para extrair texto entre índices
+        def get_chunk(start_match, end_match, text):
+            if not start_match: return ""
+            start = start_match.end()
+            end = end_match.start() if end_match else len(text)
+            return text[start:end].strip()
+
+        # Monta o objeto readings
+        if idx_1a:
+            readings['first_reading'] = {'text': get_chunk(idx_1a, idx_salmo, full_text), 'title': '1ª Leitura (Backup)'}
+        
+        if idx_salmo:
+            # O salmo vai até a 2ª leitura ou Evangelho
+            end_salmo = idx_2a if idx_2a else idx_evang
+            readings['psalm'] = {'text': get_chunk(idx_salmo, end_salmo, full_text), 'title': 'Salmo (Backup)'}
+            
+        if idx_2a:
+            readings['second_reading'] = {'text': get_chunk(idx_2a, idx_evang, full_text), 'title': '2ª Leitura (Backup)'}
+            
+        if idx_evang:
+            readings['gospel'] = {'text': full_text[idx_evang.end():].strip(), 'title': 'Evangelho (Backup)'}
+
+        if not readings:
+            # Se falhar a separação, retorna tudo no Evangelho para não perder o dia
+            readings['gospel'] = {'text': full_text[:2000], 'title': 'Leitura Completa (Backup - Falha na Separação)'}
+
+        return {'readings': readings, 'source': 'Backup Canção Nova'}
+
+    except Exception as e:
+        print(f"Erro no backup Canção Nova: {e}")
+        return None
+
+def fetch_liturgia(date_obj):
+    # 1. Tenta API Principal (Vercel)
+    url_vercel = f"https://api-liturgia-diaria.vercel.app/?date={date_obj.strftime('%Y-%m-%d')}".strip()
+    try:
+        resp = requests.get(url_vercel, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            print(f"Erro API Vercel ({resp.status_code}). Tentando backup...")
+    except Exception as e:
+        print(f"Exceção API Vercel: {e}. Tentando backup...")
+
+    # 2. Tenta Backup (Canção Nova)
+    st.toast(f"Usando fonte de backup para {date_obj.strftime('%d/%m')}...", icon="⚠️")
+    return fetch_liturgia_cancaonova(date_obj)
 
 def send_to_gas(payload):
     gas_url = st.secrets.get("GAS_SCRIPT_URL") or os.getenv("GAS_SCRIPT_URL")
@@ -68,6 +152,10 @@ def send_to_gas(payload):
         resp = requests.post(f"{gas_url}?action=generate_job", json=payload)
         return resp.json() if resp.status_code == 200 else None
     except Exception as e: st.error(f"Erro GAS: {e}"); return None
+
+# ==========================================
+# LÓGICA DE IA (GROQ) E PROCESSAMENTO
+# ==========================================
 
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
@@ -123,6 +211,10 @@ def extract(obj):
     if "content_psalm" in obj: return f"{obj.get('response', '')}\n" + ("\n".join(obj["content_psalm"]) if isinstance(obj["content_psalm"], list) else str(obj["content_psalm"]))
     return clean_text(obj.get("text") or obj.get("texto"))
 
+# ==========================================
+# INTERFACE GRÁFICA
+# ==========================================
+
 def render_calendar(history):
     today = date.today()
     cal = calendar.monthcalendar(today.year, today.month)
@@ -174,15 +266,24 @@ def main():
                 count = 0
                 while curr <= dt_fim:
                     st.write(f"Baixando: {curr.strftime('%d/%m/%Y')}")
+                    # Chama função que tem o fallback embutido
                     data = fetch_liturgia(curr)
                     if data:
+                        # Adaptação para estrutura da API Vercel OU do Backup Canção Nova
                         rds = data.get('today', {}).get('readings', {}) or data.get('readings', {})
+                        
                         def add(k, t):
                             if k in rds:
                                 txt, ref = extract(rds[k]), rds[k].get('title', t)
                                 if txt.strip(): st.session_state['daily'].append({"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")})
-                        add('first_reading', '1ª Leitura'); add('psalm', 'Salmo'); add('second_reading', '2ª Leitura'); add('gospel', 'Evangelho')
+                        
+                        add('first_reading', '1ª Leitura')
+                        add('psalm', 'Salmo')
+                        add('second_reading', '2ª Leitura')
+                        add('gospel', 'Evangelho')
                         count += 1
+                    else:
+                        st.error(f"Falha ao obter liturgia para {curr.strftime('%d/%m')}.")
                     curr += timedelta(days=1)
                 status.update(label=f"Concluído! {len(st.session_state['daily'])} leituras em {count} dias.", state="complete")
 
@@ -217,10 +318,8 @@ def main():
 
             st.write("▼ **Pré-visualização e Prompts:**")
             
-            # --- LOOP DE EXIBIÇÃO COMPLETO ---
             for s in st.session_state['scripts']:
                 m, r = s['meta'], s['roteiro']
-                # Gera prompts aqui para visualização
                 prompts_preview = build_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
                 
                 with st.expander(f"✅ {m['d_show']} - {m['type']} ({m['ref']})"):
@@ -240,7 +339,6 @@ def main():
                     st.code(f"REFLEXÃO: {prompts_preview.get('reflexao')}", language="text")
                     st.code(f"APLICAÇÃO: {prompts_preview.get('aplicacao')}", language="text")
                     st.code(f"ORAÇÃO: {prompts_preview.get('oracao')}", language="text")
-            # ---------------------------------------------
 
             if st.button("🚀 Enviar Lote para Drive", disabled=not force):
                 prog, cnt = st.progress(0), 0
