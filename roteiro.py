@@ -217,7 +217,7 @@ def main():
 
             st.write("▼ **Pré-visualização e Prompts:**")
             
-            # --- CORREÇÃO: LOOP DE EXIBIÇÃO DETALHADA ---
+            # --- LOOP DE EXIBIÇÃO COMPLETO ---
             for s in st.session_state['scripts']:
                 m, r = s['meta'], s['roteiro']
                 # Gera prompts aqui para visualização
@@ -235,8 +235,11 @@ def main():
                     
                     st.markdown("---")
                     st.caption("🎨 Prompts de Imagem Gerados:")
-                    st.code(f"Hook Prompt: {prompts_preview['hook']}", language="text")
-                    st.code(f"Leitura Prompt: {prompts_preview['leitura']}", language="text")
+                    st.code(f"HOOK: {prompts_preview.get('hook')}", language="text")
+                    st.code(f"LEITURA: {prompts_preview.get('leitura')}", language="text")
+                    st.code(f"REFLEXÃO: {prompts_preview.get('reflexao')}", language="text")
+                    st.code(f"APLICAÇÃO: {prompts_preview.get('aplicacao')}", language="text")
+                    st.code(f"ORAÇÃO: {prompts_preview.get('oracao')}", language="text")
             # ---------------------------------------------
 
             if st.button("🚀 Enviar Lote para Drive", disabled=not force):
