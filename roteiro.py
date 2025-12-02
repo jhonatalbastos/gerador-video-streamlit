@@ -86,6 +86,15 @@ def build_scene_prompts(roteiro_data, identified_chars, char_db, style_choice):
     prompts["oracao"] = f"Cena Moderna. Jesus e a Pessoa Moderna orando juntos, olhos fechados, paz. Jesus description: {desc_jesus} Modern Person description: {desc_moderna} {style_choice}"
     return prompts
 
+def extract_text(obj):
+    if not obj: return ""
+    if "content_psalm" in obj:
+        c = obj["content_psalm"]
+        text_part = "\n".join(c) if isinstance(c, list) else str(c)
+        refrain = obj.get("response", "")
+        return f"{refrain}\n{text_part}"
+    return obj.get("text") or obj.get("texto") or ""
+
 def main():
     st.sidebar.title("⚙️ Configurações")
     char_db = load_characters()
@@ -99,27 +108,23 @@ def main():
                 data = fetch_liturgia(date_sel)
                 if data:
                     readings_text = ""
-                    # CORREÇÃO: Acessar 'today' -> 'readings'
                     today_data = data.get('today', {})
                     readings = today_data.get('readings', {})
-                    
-                    if not readings: # Fallback simples
-                         readings = data.get('readings', {})
+                    if not readings: readings = data.get('readings', {})
 
-                    if 'first_reading' in readings: readings_text += f"1ª Leitura: {readings['first_reading'].get('text', '')}\n\n"
-                    if 'psalm' in readings: readings_text += f"Salmo: {readings['psalm'].get('text', '')}\n\n"
-                    if 'second_reading' in readings: readings_text += f"2ª Leitura: {readings['second_reading'].get('text', '')}\n\n"
-                    if 'gospel' in readings: readings_text += f"Evangelho: {readings['gospel'].get('text', '')}\n\n"
+                    if 'first_reading' in readings: readings_text += f"1ª Leitura: {extract_text(readings['first_reading'])}\n\n"
+                    if 'psalm' in readings: readings_text += f"Salmo: {extract_text(readings['psalm'])}\n\n"
+                    if 'second_reading' in readings: readings_text += f"2ª Leitura: {extract_text(readings['second_reading'])}\n\n"
+                    if 'gospel' in readings: readings_text += f"Evangelho: {extract_text(readings['gospel'])}\n\n"
                     
-                    if readings_text:
+                    if readings_text.strip():
                         st.session_state['raw_readings'] = readings_text
                         ref_title = today_data.get('entry_title', readings.get('gospel', {}).get('title', 'Evangelho do Dia'))
                         st.session_state['liturgy_meta'] = {"data": date_sel.strftime("%d/%m/%Y"), "ref": ref_title}
                         st.success("Leituras obtidas!")
-                        with st.expander("Ver texto"): st.text(readings_text)
-                    else:
-                        st.warning("API conectou, mas não encontrou leituras na estrutura esperada.")
-                        st.json(data) # Mostra o JSON para debug se falhar
+                    else: st.warning("API retornou dados vazios.")
+                    
+                    with st.expander("Ver Texto"): st.text(readings_text)
 
         st.markdown("---"); st.header("2. Gerar Roteiro")
         if 'raw_readings' in st.session_state:
