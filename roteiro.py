@@ -49,7 +49,7 @@ def update_history_bulk(dates):
     if updated: hist.sort(); save_json(HISTORY_FILE, hist)
 
 # ==========================================
-# FONTES DE DADOS (APIS)
+# FONTES DE DADOS
 # ==========================================
 def get_groq_client():
     api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
@@ -57,24 +57,25 @@ def get_groq_client():
     return Groq(api_key=api_key)
 
 def fetch_liturgia(date_obj):
-    # 1. Tenta Vercel
+    # 1. Tenta Vercel (Principal)
     try:
         url = f"https://api-liturgia-diaria.vercel.app/?date={date_obj.strftime('%Y-%m-%d')}".strip()
         r = requests.get(url, timeout=5)
         if r.status_code == 200: return r.json()
     except: pass
 
-    # 2. Tenta Railway
+    # 2. Tenta Railway (Backup)
     try:
         url = f"https://liturgia.up.railway.app/v2/{date_obj.strftime('%Y-%m-%d')}"
         r = requests.get(url, timeout=8)
         if r.status_code == 200:
             d = r.json()
+            # Normaliza Railway para padrão
             norm = {'readings': {}}
-            if d.get('evangelho'): norm['readings']['gospel'] = {'text': d['evangelho'].get('texto'), 'title': 'Evangelho'}
-            if d.get('primeira_leitura'): norm['readings']['first_reading'] = {'text': d['primeira_leitura'].get('texto'), 'title': '1ª Leitura'}
-            if d.get('salmo'): norm['readings']['psalm'] = {'text': d['salmo'].get('texto'), 'title': 'Salmo'}
-            if d.get('segunda_leitura'): norm['readings']['second_reading'] = {'text': d['segunda_leitura'].get('texto'), 'title': '2ª Leitura'}
+            if d.get('evangelho'): norm['readings']['gospel'] = {'text': d['evangelho'].get('texto'), 'title': d['evangelho'].get('referencia')}
+            if d.get('primeira_leitura'): norm['readings']['first_reading'] = {'text': d['primeira_leitura'].get('texto'), 'title': d['primeira_leitura'].get('referencia')}
+            if d.get('salmo'): norm['readings']['psalm'] = {'text': d['salmo'].get('texto'), 'title': d['salmo'].get('referencia')}
+            if d.get('segunda_leitura'): norm['readings']['second_reading'] = {'text': d['segunda_leitura'].get('texto'), 'title': d['segunda_leitura'].get('referencia')}
             return norm
     except: pass
     
@@ -89,8 +90,25 @@ def send_to_gas(payload):
     except: return None
 
 # ==========================================
-# LÓGICA IA (GROQ)
+# LÓGICA IA & EXTRAÇÃO
 # ==========================================
+def clean_text(text):
+    if not text: return ""
+    text = re.sub(r'\d{1,3}(?=[A-Za-zÀ-ÿ])', '', text)
+    return re.sub(r'\b\d{1,3}\s+(?=["\'A-Za-zÀ-ÿ])', '', text).strip()
+
+def extract(obj):
+    if not obj: return ""
+    # CORREÇÃO CRÍTICA: Verifica se o valor existe (Truthiness), não apenas se a chave existe
+    if obj.get("content_psalm"): 
+        c = obj["content_psalm"]
+        full_psalm = "\n".join(c) if isinstance(c, list) else str(c)
+        return f"{obj.get('response', '')}\n{full_psalm}"
+    
+    # Se não for Salmo, pega o texto normal
+    raw_text = obj.get("text") or obj.get("texto") or obj.get("conteudo") or ""
+    return clean_text(raw_text)
+
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
     regras = "Texto LIMPO."
@@ -130,16 +148,6 @@ def build_prompts(roteiro, chars, db, style):
         "oracao": f"Cena Moderna. Jesus e Pessoa Moderna orando. Jesus: {desc_j} Modern: {desc_m} {style}"
     }
 
-def clean_text(text):
-    if not text: return ""
-    text = re.sub(r'\d{1,3}(?=[A-Za-zÀ-ÿ])', '', text)
-    return re.sub(r'\b\d{1,3}\s+(?=["\'A-Za-zÀ-ÿ])', '', text).strip()
-
-def extract(obj):
-    if not obj: return ""
-    if "content_psalm" in obj: return f"{obj.get('response', '')}\n" + ("\n".join(obj["content_psalm"]) if isinstance(obj["content_psalm"], list) else str(obj["content_psalm"]))
-    return clean_text(obj.get("text") or obj.get("texto"))
-
 def render_calendar(history):
     today = date.today()
     cal = calendar.monthcalendar(today.year, today.month)
@@ -155,258 +163,188 @@ def render_calendar(history):
     st.sidebar.markdown(html + "</div></div>", unsafe_allow_html=True)
 
 # ==========================================
-# INTERFACE PRINCIPAL
+# PROCESSAMENTO CENTRAL (SINGLE & MASS)
 # ==========================================
-def main():
-    st.sidebar.title("⚙️ Config")
-    char_db = load_characters()
-    history = load_history()
-    render_calendar(history)
-    
-    st.sidebar.markdown("---")
-    if st.sidebar.button("Limpar Histórico"):
-        if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE); st.rerun()
-    if st.sidebar.button("Limpar Cache"): st.session_state.clear(); st.rerun()
+def run_process_dashboard(mode_key, dt_ini, dt_fim):
+    k_daily = f"{mode_key}_daily"
+    k_scripts = f"{mode_key}_scripts"
+    k_missing = f"{mode_key}_missing"
 
-    # --- ABAS DE NAVEGAÇÃO ---
-    tab1, tab2, tab3 = st.tabs(["📅 Roteiro Único", "📚 Roteiros em Massa", "👥 Personagens"])
+    if k_daily not in st.session_state: st.session_state[k_daily] = []
+    if k_scripts not in st.session_state: st.session_state[k_scripts] = []
+    if k_missing not in st.session_state: st.session_state[k_missing] = []
 
-    # Inicialização de Estado Global
-    if 'daily' not in st.session_state: st.session_state['daily'] = []
-    if 'scripts' not in st.session_state: st.session_state['scripts'] = []
-    if 'manual_queue' not in st.session_state: st.session_state['manual_queue'] = [] # Fila de dias sem dados
-
-    # ==========================================
-    # ABA 1: ROTEIRO ÚNICO
-    # ==========================================
-    with tab1:
-        st.header("Gerar Roteiro de Um Dia")
-        dt_single = st.date_input("Selecione a Data", value=date.today())
+    # 1. BUSCA
+    if st.button("🔎 Buscar Leituras", key=f"btn_fetch_{mode_key}"):
+        if dt_fim < dt_ini: st.error("Data final < inicial"); return
+        st.session_state[k_daily] = []
+        st.session_state[k_scripts] = []
+        st.session_state[k_missing] = []
         
-        if st.button("Buscar Leituras (Dia Único)"):
-            st.session_state['daily'] = [] # Limpa anterior
-            st.session_state['scripts'] = []
-            st.session_state['manual_queue'] = []
-            
-            with st.spinner("Buscando..."):
-                data = fetch_liturgia(dt_single)
-                found = False
+        with st.status("Processando...", expanded=True) as status:
+            curr = dt_ini
+            while curr <= dt_fim:
+                st.write(f"🗓️ {curr.strftime('%d/%m')}")
+                data = fetch_liturgia(curr)
+                day_readings = []
+                has_gospel = False
+                
                 if data:
                     rds = data.get('readings') or data.get('today', {}).get('readings', {}) or data
-                    # Verifica se tem Evangelho (mínimo necessário)
-                    if rds.get('gospel') or rds.get('evangelho'):
-                        # Processa normalmente
-                        def add(k, t):
-                            obj = rds.get(k)
-                            # Fallbacks
-                            if not obj and k=='gospel': obj = rds.get('evangelho')
-                            if not obj and k=='first_reading': obj = rds.get('primeira_leitura') or rds.get('leitura_1')
-                            if not obj and k=='psalm': obj = rds.get('salmo') or rds.get('salmo_responsorial')
-                            if not obj and k=='second_reading': obj = rds.get('segunda_leitura') or rds.get('leitura_2')
-                            
-                            if obj:
-                                txt = extract({'text': obj.get('text') or obj.get('texto') or obj.get('conteudo'), 'content_psalm': obj.get('content_psalm'), 'response': obj.get('response')})
-                                ref = obj.get('title') or obj.get('referencia', t)
-                                if txt and len(txt) > 20:
-                                    st.session_state['daily'].append({"type": t, "text": txt, "ref": ref, "d_show": dt_single.strftime("%d/%m/%Y"), "d_iso": dt_single.strftime("%Y-%m-%d")})
+                    def check_add(k, t):
+                        obj = rds.get(k)
+                        if not obj and k=='gospel': obj = rds.get('evangelho')
+                        if not obj and k=='first_reading': obj = rds.get('primeira_leitura') or rds.get('leitura_1')
+                        if not obj and k=='psalm': obj = rds.get('salmo') or rds.get('salmo_responsorial')
+                        if not obj and k=='second_reading': obj = rds.get('segunda_leitura') or rds.get('leitura_2')
                         
-                        add('first_reading', '1ª Leitura'); add('psalm', 'Salmo'); add('second_reading', '2ª Leitura'); add('gospel', 'Evangelho')
-                        found = True
+                        if obj:
+                            # Passa o objeto ORIGINAL para extract, sem criar dict intermediário
+                            txt = extract(obj)
+                            ref = obj.get('title') or obj.get('referencia', t)
+                            if txt and len(txt)>20:
+                                return {"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")}
+                        return None
+
+                    r1 = check_add('first_reading', '1ª Leitura'); 
+                    if r1: day_readings.append(r1)
+                    
+                    sl = check_add('psalm', 'Salmo'); 
+                    if sl: day_readings.append(sl)
+                    
+                    r2 = check_add('second_reading', '2ª Leitura'); 
+                    if r2: day_readings.append(r2)
+                    
+                    ev = check_add('gospel', 'Evangelho'); 
+                    if ev: day_readings.append(ev); has_gospel = True
+
+                if has_gospel:
+                    st.session_state[k_daily].extend(day_readings)
+                else:
+                    st.warning(f"⚠️ {curr.strftime('%d/%m')}: Dados insuficientes. Fila manual.")
+                    st.session_state[k_missing].append(curr)
                 
-                if not found:
-                    st.warning(f"Dados não encontrados para {dt_single.strftime('%d/%m')}. Ativando modo manual.")
-                    st.session_state['manual_queue'].append(dt_single)
+                curr += timedelta(days=1)
+            status.update(label="Busca finalizada!", state="complete")
 
-    # ==========================================
-    # ABA 2: ROTEIROS EM MASSA
-    # ==========================================
-    with tab2:
-        st.header("Gerar Roteiros em Lote")
-        c1, c2 = st.columns(2)
-        with c1: dt_ini = st.date_input("Data Inicial", value=date.today(), key="mass_ini")
-        with c2: dt_fim = st.date_input("Data Final", value=date.today() + timedelta(days=6), key="mass_fim")
-        
-        if st.button("Buscar Leituras (Intervalo)"):
-            if dt_fim < dt_ini: st.error("Data final menor que inicial"); st.stop()
-            st.session_state['daily'] = []
-            st.session_state['scripts'] = []
-            st.session_state['manual_queue'] = []
-            
-            with st.status("Processando intervalo...", expanded=True) as status:
-                curr = dt_ini
-                while curr <= dt_fim:
-                    st.write(f"🗓️ Verificando {curr.strftime('%d/%m')}...")
-                    data = fetch_liturgia(curr)
-                    has_gospel = False
-                    
-                    if data:
-                        rds = data.get('readings') or data.get('today', {}).get('readings', {}) or data
-                        
-                        # Verifica Evangelho antes de adicionar qualquer coisa
-                        g_obj = rds.get('gospel') or rds.get('evangelho')
-                        if g_obj:
-                            has_gospel = True
-                            # Função Add local
-                            def add_m(k, t):
-                                obj = rds.get(k)
-                                if not obj and k=='gospel': obj = rds.get('evangelho')
-                                if not obj and k=='first_reading': obj = rds.get('primeira_leitura') or rds.get('leitura_1')
-                                if not obj and k=='psalm': obj = rds.get('salmo') or rds.get('salmo_responsorial')
-                                if not obj and k=='second_reading': obj = rds.get('segunda_leitura') or rds.get('leitura_2')
-                                
-                                if obj:
-                                    txt = extract({'text': obj.get('text') or obj.get('texto') or obj.get('conteudo'), 'content_psalm': obj.get('content_psalm'), 'response': obj.get('response')})
-                                    ref = obj.get('title') or obj.get('referencia', t)
-                                    if txt and len(txt) > 20:
-                                        st.session_state['daily'].append({"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")})
-                            
-                            add_m('first_reading', '1ª Leitura')
-                            add_m('psalm', 'Salmo')
-                            add_m('second_reading', '2ª Leitura')
-                            add_m('gospel', 'Evangelho')
-
-                    if not has_gospel:
-                        st.warning(f"⚠️ {curr.strftime('%d/%m')}: Falha na API. Adicionado à fila manual.")
-                        st.session_state['manual_queue'].append(curr)
-                    
-                    curr += timedelta(days=1)
-                status.update(label="Busca concluída!", state="complete")
-
-    # ==========================================
-    # ÁREA COMUM: MANUAL, GERAÇÃO E ENVIO
-    # ==========================================
-    
-    # 1. PROCESSAMENTO MANUAL (FILA)
-    if st.session_state['manual_queue']:
-        curr_manual = st.session_state['manual_queue'][0]
+    # 2. FILA MANUAL
+    if st.session_state[k_missing]:
+        curr_m = st.session_state[k_missing][0]
         st.markdown("---")
-        st.error(f"✍️ **Entrada Manual Necessária: {curr_manual.strftime('%d/%m/%Y')}**")
-        st.info(f"Restam {len(st.session_state['manual_queue'])} dias para preencher.")
+        st.error(f"✍️ **Entrada Manual: {curr_m.strftime('%d/%m/%Y')}**")
         
-        with st.form(f"manual_form_{curr_manual}"):
-            c1, c2 = st.columns([1,3])
-            r1 = c1.text_input("Ref. 1ª Leitura (ex: Is 26,1-6)")
-            t1 = c2.text_area("Texto 1ª Leitura", height=100)
+        with st.form(f"manual_{mode_key}_{curr_m}"):
+            c1, c2 = st.columns([1,3]); r1=c1.text_input("Ref. 1ª Leitura"); t1=c2.text_area("Texto 1ª Leitura")
+            c3, c4 = st.columns([1,3]); rsl=c3.text_input("Ref. Salmo"); tsl=c4.text_area("Texto Salmo")
+            c5, c6 = st.columns([1,3]); r2=c5.text_input("Ref. 2ª Leitura"); t2=c6.text_area("Texto 2ª Leitura")
+            c7, c8 = st.columns([1,3]); rev=c7.text_input("Ref. Evangelho"); tev=c8.text_area("Texto Evangelho (Obrigatório)")
             
-            c3, c4 = st.columns([1,3])
-            rsl = c3.text_input("Ref. Salmo (ex: Sl 118)")
-            tsl = c4.text_area("Texto Salmo", height=100)
-            
-            c5, c6 = st.columns([1,3])
-            r2 = c5.text_input("Ref. 2ª Leitura (Opcional)")
-            t2 = c6.text_area("Texto 2ª Leitura", height=100)
-            
-            c7, c8 = st.columns([1,3])
-            rev = c7.text_input("Ref. Evangelho (Obrigatório)")
-            tev = c8.text_area("Texto Evangelho", height=150)
-            
-            if st.form_submit_button("💾 Salvar e Próximo"):
-                d_show = curr_manual.strftime("%d/%m/%Y")
-                d_iso = curr_manual.strftime("%Y-%m-%d")
-                
-                if t1: st.session_state['daily'].append({"type": "1ª Leitura", "text": t1, "ref": r1 or "1ª Leitura", "d_show": d_show, "d_iso": d_iso})
-                if tsl: st.session_state['daily'].append({"type": "Salmo", "text": tsl, "ref": rsl or "Salmo", "d_show": d_show, "d_iso": d_iso})
-                if t2: st.session_state['daily'].append({"type": "2ª Leitura", "text": t2, "ref": r2 or "2ª Leitura", "d_show": d_show, "d_iso": d_iso})
-                if tev: st.session_state['daily'].append({"type": "Evangelho", "text": tev, "ref": rev or "Evangelho", "d_show": d_show, "d_iso": d_iso})
-                
-                st.session_state['manual_queue'].pop(0)
-                st.rerun()
+            if st.form_submit_button("💾 Salvar"):
+                ds, di = curr_m.strftime("%d/%m/%Y"), curr_m.strftime("%Y-%m-%d")
+                if t1: st.session_state[k_daily].append({"type": "1ª Leitura", "text": t1, "ref": r1 or "1ª Leitura", "d_show": ds, "d_iso": di})
+                if tsl: st.session_state[k_daily].append({"type": "Salmo", "text": tsl, "ref": rsl or "Salmo", "d_show": ds, "d_iso": di})
+                if t2: st.session_state[k_daily].append({"type": "2ª Leitura", "text": t2, "ref": r2 or "2ª Leitura", "d_show": ds, "d_iso": di})
+                if tev: st.session_state[k_daily].append({"type": "Evangelho", "text": tev, "ref": rev or "Evangelho", "d_show": ds, "d_iso": di})
+                st.session_state[k_missing].pop(0); st.rerun()
 
-    # 2. LISTAGEM E BOTÃO GERAR
-    if st.session_state['daily'] and not st.session_state['manual_queue']:
-        st.divider()
-        st.session_state['daily'].sort(key=lambda x: x['d_iso']) # Ordena por data
-        st.write(f"📖 **{len(st.session_state['daily'])} Leituras na Fila de Processamento**")
+    # 3. LISTAGEM & GERAÇÃO
+    if st.session_state[k_daily] and not st.session_state[k_missing]:
+        st.session_state[k_daily].sort(key=lambda x: x['d_iso'])
+        st.divider(); st.write(f"📖 **{len(st.session_state[k_daily])} Leituras Prontas**")
         
-        with st.expander("Ver lista detalhada"):
-            for item in st.session_state['daily']:
-                st.text(f"{item['d_show']} | {item['type']} | {item['ref']}")
+        with st.expander("Ver Detalhes"):
+            for i in st.session_state[k_daily]: st.text(f"{i['d_show']} | {i['type']}")
 
-        if st.button("✨ Gerar Roteiros com IA"):
-            st.session_state['scripts'] = []
+        if st.button("✨ Gerar Roteiros", key=f"btn_gen_{mode_key}"):
+            st.session_state[k_scripts] = []
             char_db = load_characters()
             prog = st.progress(0)
-            
-            for i, r in enumerate(st.session_state['daily']):
+            for i, r in enumerate(st.session_state[k_daily]):
                 res = generate_script_and_identify_chars(r['text'], r['type'])
                 if res:
                     chars = res.get('personagens_identificados', [])
                     for c in chars:
                         if c not in char_db: char_db[c] = generate_character_description(c)
                     save_characters(char_db)
-                    st.session_state['scripts'].append({"meta": r, "roteiro": res.get('roteiro', {}), "chars": chars})
-                prog.progress((i+1)/len(st.session_state['daily']))
+                    st.session_state[k_scripts].append({"meta": r, "roteiro": res.get('roteiro', {}), "chars": chars})
+                prog.progress((i+1)/len(st.session_state[k_daily]))
             st.rerun()
 
-    # 3. PREVIEW E ENVIO
-    if st.session_state['scripts']:
-        st.divider()
-        st.write("🚀 **Revisão e Envio**")
-        
-        # Verifica duplicidade no histórico
+    # 4. PREVIEW & ENVIO
+    if st.session_state[k_scripts]:
+        st.divider(); st.write("🚀 **Envio**")
         hist = load_history()
-        dates = sorted(list(set([s['meta']['d_iso'] for s in st.session_state['scripts']])))
+        dates = sorted(list(set([s['meta']['d_iso'] for s in st.session_state[k_scripts]])))
         dups = [d for d in dates if d in hist]
         
-        if dups: st.warning(f"⚠️ Datas já enviadas anteriormente: {', '.join(dups)}")
-        force = st.checkbox("Forçar envio duplicado") if dups else True
+        if dups: st.warning(f"⚠️ Já enviados: {dups}")
+        force = st.checkbox("Confirmar duplicidade", key=f"chk_{mode_key}") if dups else True
 
-        # Preview detalhado
-        for s in st.session_state['scripts']:
+        for s in st.session_state[k_scripts]:
             m, r = s['meta'], s['roteiro']
             prompts = build_prompts(r, s['chars'], load_characters(), STYLE_SUFFIX)
             with st.expander(f"✅ {m['d_show']} - {m['type']} ({m['ref']})"):
                 c1, c2 = st.columns(2)
                 with c1: 
                     st.info(f"**Hook:** {r.get('hook')}")
-                    st.text_area("Leitura", r.get('leitura'), height=100, key=f"view_{m['d_iso']}_{m['type']}")
+                    st.text_area("Leitura", r.get('leitura'), height=100, key=f"l_{m['ref']}_{mode_key}")
                 with c2:
                     st.write(f"Reflexão: {r.get('reflexao')[:100]}...")
                     st.write(f"Oração: {r.get('oracao')}")
                 st.caption("🎨 Prompts:")
                 st.code(f"HOOK: {prompts['hook']}\nLEITURA: {prompts['leitura']}", language="text")
 
-        if st.button("🚀 Enviar para Drive", disabled=not force):
-            prog = st.progress(0)
-            sent_dates = set()
+        if st.button("🚀 Enviar Lote", disabled=not force, key=f"snd_{mode_key}"):
+            prog = st.progress(0); sent = set(); cnt=0
             char_db = load_characters()
-            
-            for i, s in enumerate(st.session_state['scripts']):
+            for i, s in enumerate(st.session_state[k_scripts]):
                 m, r = s['meta'], s['roteiro']
                 prompts = build_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
-                payload = {
+                pld = {
                     "meta_dados": {"data": m['d_show'], "ref": f"{m['type']} - {m['ref']}"},
                     "roteiro": {k: {"text": r.get(k,''), "prompt": prompts.get(k,'')} for k in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]},
                     "assets": []
                 }
-                if send_to_gas(payload): sent_dates.add(m['d_iso'])
-                prog.progress((i+1)/len(st.session_state['scripts']))
+                if send_to_gas(pld): cnt+=1; sent.add(m['d_iso'])
+                prog.progress((i+1)/len(st.session_state[k_scripts]))
             
-            if sent_dates:
-                update_history_bulk(list(sent_dates))
-                st.balloons()
-                st.success("Envio concluído!")
-                st.session_state['daily'] = []
-                st.session_state['scripts'] = []
-                st.rerun()
-            else:
-                st.error("Nenhum roteiro enviado.")
+            if cnt>0: update_history_bulk(list(sent)); st.balloons(); st.success(f"{cnt} enviados!"); st.rerun()
+            else: st.error("Falha.")
 
-    # ==========================================
-    # ABA 3: PERSONAGENS
-    # ==========================================
+# ==========================================
+# MAIN APP
+# ==========================================
+def main():
+    st.sidebar.title("⚙️ Config")
+    history = load_history()
+    render_calendar(history)
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Limpar Histórico"):
+        if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE); st.rerun()
+    if st.sidebar.button("Limpar Cache"): st.session_state.clear(); st.rerun()
+
+    tab1, tab2, tab3 = st.tabs(["📅 Roteiro Único", "📚 Roteiros em Massa", "👥 Personagens"])
+
+    with tab1:
+        st.header("Gerador Diário")
+        dt = st.date_input("Data", value=date.today(), key="dt1")
+        run_process_dashboard("single", dt, dt)
+
+    with tab2:
+        st.header("Gerador em Lote")
+        c1, c2 = st.columns(2)
+        with c1: d1 = st.date_input("Início", value=date.today(), key="dt2a")
+        with c2: d2 = st.date_input("Fim", value=date.today()+timedelta(days=6), key="dt2b")
+        run_process_dashboard("mass", d1, d2)
+
     with tab3:
-        st.header("Banco de Personagens")
         char_db = load_characters()
+        st.header("Banco de Personagens")
         for n, d in char_db.items():
             with st.expander(n):
-                new_d = st.text_area("Desc", d, key=f"desc_{n}")
-                if st.button("Salvar", key=f"save_{n}"): char_db[n]=new_d; save_characters(char_db); st.rerun()
-                if n not in FIXED_CHARACTERS and st.button("Excluir", key=f"del_{n}"): del char_db[n]; save_characters(char_db); st.rerun()
-        
-        st.divider()
-        n = st.text_input("Novo Personagem")
-        d = st.text_area("Descrição Visual")
-        if st.button("Criar Personagem") and n: char_db[n]=d; save_characters(char_db); st.rerun()
+                new_d = st.text_area("Desc", d, key=f"ed_{n}")
+                if st.button("Salvar", key=f"sv_{n}"): char_db[n]=new_d; save_characters(char_db); st.rerun()
+        n = st.text_input("Novo"); d = st.text_area("Desc")
+        if st.button("Criar") and n: char_db[n]=d; save_characters(char_db); st.rerun()
 
 if __name__ == "__main__": main()
