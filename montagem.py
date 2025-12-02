@@ -256,7 +256,7 @@ def list_recent_jobs(limit: int = 10) -> List[Dict]:
         if not files:
             return []
 
-        # 3. Ler cada arquivo para extrair metadados (Data e Ref)
+        # 3. Leer cada arquivo para extrair metadados (Data e Ref)
         with st.spinner(f"Lendo os {len(files)} jobs mais recentes..."):
             for f in files:
                 content = download_file_content(service, f['id'], silent=True)
@@ -359,7 +359,7 @@ def process_job_payload_and_update_state(payload: Dict[str, Any], temp_dir: str)
 
         st.session_state["generated_images_blocks"] = {} # Stores file paths to temp files
         st.session_state["generated_audios_blocks"] = {} # Stores file paths to temp files
-        st.session_state["generated_srt_content"] = "" # Stores raw SRT string
+        st.session_state["generated_srt_content"] = "" # Inicializa vazio.
 
         assets = payload.get("assets", [])
         for asset in assets:
@@ -391,11 +391,11 @@ def process_job_payload_and_update_state(payload: Dict[str, Any], temp_dir: str)
                     f.write(decoded_data)
                 st.session_state["generated_audios_blocks"][block_id] = file_path # Store path
 
-            elif asset_type == "srt" and block_id == "legendas":
-                srt_content = decoded_data.decode('utf-8')
-                st.session_state["generated_srt_content"] = srt_content
+            # IGNORANDO SRT DO JOB POR ENQUANTO (FOCAR APENAS NO WHISPER)
+            # elif asset_type == "srt" and block_id == "legendas":
+            #     st.session_state["generated_srt_content"] = decoded_data.decode('utf-8')
 
-        st.success("✅ Assets decodificados (Audio como WAV) e estado atualizado!")
+        st.success("✅ Assets decodificados (Audio como WAV) e estado atualizado! (SRT do Job ignorado)")
         return True
     except Exception as e:
         st.error(f"❌ Erro ao processar payload do job: {e}")
@@ -864,8 +864,9 @@ with tab3:
     st.header("🎬 Finalização")
     usar_overlay = st.checkbox("Adicionar Cabeçalho (Overlay Personalizado)", value=True)
     
-    # Checkbox para Legendas (NOVO)
-    usar_legendas = st.checkbox("Adicionar Legendas (SRT)", value=False, disabled=(not st.session_state.get("generated_srt_content")))
+    # Checkbox para Legendas (REMOVIDO): Agora o único controle é o botão Whisper
+    usar_legendas = st.session_state.get("generated_srt_content") is not None 
+    # O uso da legenda é determinado se o conteúdo SRT existe ou se o Whisper for chamado.
 
 
     st.subheader("🎵 Música de Fundo (Opcional)")
@@ -893,64 +894,64 @@ with tab3:
                     st.rerun()
     music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, load_config().get("music_vol", 0.15))
 
+    # Área de visualização/geração de legendas
+    st.markdown("---")
+    st.subheader("🎤 Legendas de Narração (Whisper)")
+
     if st.session_state.get("generated_srt_content"):
-        st.subheader("📄 Legendas (SRT)")
+        st.success("✅ Legendas prontas para uso!")
         st.code(st.session_state["generated_srt_content"], language="srt")
         if st.download_button("⬇️ Baixar SRT", st.session_state["generated_srt_content"], "legendas.srt", "text/plain"):
             pass
+    else:
+        st.info("Nenhuma legenda SRT disponível. Gere abaixo para sincronismo preciso.")
             
-    # NOVO: Botão para gerar legendas via Whisper
-    col_whisper, col_info = st.columns([1, 2])
-    with col_whisper:
-        if st.button("🎤 Gerar Legendas (Whisper API)", disabled=not st.session_state.get("job_loaded_from_drive")):
+    # Botão para gerar legendas via Whisper
+    if st.button("🎤 Gerar Legendas (Whisper API)"):
+        if st.session_state.get("job_loaded_from_drive"):
             
-            # Requisito: Precisamos do áudio final concatenado (temp_video.mp4) para o Whisper
-            if st.session_state.get("temp_assets_dir"):
+            # 1. Concatena os áudios individuais em um WAV mestre para o Whisper (mais estável)
+            with st.status("Combinando áudios para o Whisper...", expanded=True) as status_whisper: # Cria um novo bloco de status
                 
-                # 1. Concatena os áudios individuais em um WAV mestre para o Whisper (mais estável)
-                with st.status("Combinando áudios para o Whisper...", expanded=True) as status_whisper: # Cria um novo bloco de status
-                    
-                    audio_paths = [path for path in st.session_state["generated_audios_blocks"].values() if os.path.exists(path)]
-                    
-                    if not audio_paths:
-                        status_whisper.update(label="❌ Nenhum arquivo de áudio válido encontrado para transcrever.", state="error")
-                        st.stop()
+                audio_paths = [path for path in st.session_state["generated_audios_blocks"].values() if os.path.exists(path)]
+                
+                if not audio_paths:
+                    status_whisper.update(label="❌ Nenhum arquivo de áudio válido encontrado para transcrever.", state="error")
+                    st.stop()
                         
-                    # Cria um arquivo de lista para concatenação dos WAVs
-                    concat_list_audio = os.path.join(st.session_state["temp_assets_dir"], "list_audio.txt")
-                    with open(concat_list_audio, "w") as f:
-                        for p in audio_paths:
-                            f.write(f"file '{p}'\n")
+                # Cria um arquivo de lista para concatenação dos WAVs
+                concat_list_audio = os.path.join(st.session_state["temp_assets_dir"], "list_audio.txt")
+                with open(concat_list_audio, "w") as f:
+                    for p in audio_paths:
+                        f.write(f"file '{p}'\n")
 
-                    master_audio_path = os.path.join(st.session_state["temp_assets_dir"], "master_audio.wav")
+                master_audio_path = os.path.join(st.session_state["temp_assets_dir"], "master_audio.wav")
+                
+                # Concatena os streams de áudio em um único arquivo WAV de referência
+                cmd_concat_audio = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_audio, "-c:a", "pcm_s16le", master_audio_path]
+                
+                try:
+                    run_cmd(cmd_concat_audio)
+                    status_whisper.update(label="Áudio mestre concatenado com sucesso.", expanded=False)
                     
-                    # Concatena os streams de áudio em um único arquivo WAV de referência
-                    cmd_concat_audio = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_audio, "-c:a", "pcm_s16le", master_audio_path]
+                    # 2. Chama a API Whisper
+                    status_whisper.update(label="Transcrevendo áudio com Whisper API (pode levar tempo)...", expanded=True)
+                    new_srt_content = gerar_legendas_whisper(master_audio_path)
                     
-                    try:
-                        run_cmd(cmd_concat_audio)
-                        status_whisper.update(label="Áudio mestre concatenado com sucesso.", expanded=False)
-                        
-                        # 2. Chama a API Whisper
-                        status_whisper.update(label="Transcrevendo áudio com Whisper API (pode levar tempo)...", expanded=True)
-                        new_srt_content = gerar_legendas_whisper(master_audio_path)
-                        
-                        if new_srt_content:
-                            st.session_state["generated_srt_content"] = new_srt_content
-                            status_whisper.update(label="✅ Legendas geradas com sucesso via Whisper!", state="complete")
-                            st.rerun()
-                        else:
-                            status_whisper.update(label="❌ Falha na transcrição do Whisper.", state="error")
-                        
-                    except Exception as e:
-                        status_whisper.update(label="❌ Erro na Concatenação de Áudio para Whisper.", state="error")
-                        st.error(f"Detalhes: {e}")
+                    if new_srt_content:
+                        st.session_state["generated_srt_content"] = new_srt_content
+                        status_whisper.update(label="✅ Legendas geradas com sucesso via Whisper!", state="complete")
+                        st.rerun()
+                    else:
+                        status_whisper.update(label="❌ Falha na transcrição do Whisper.", state="error")
                     
+                except Exception as e:
+                    status_whisper.update(label="❌ Erro na Concatenação de Áudio para Whisper.", state="error")
+                    st.error(f"Detalhes: {e}")
+                
             else:
                 st.warning("Carregue um Job ID primeiro para ter os áudios disponíveis.")
-    with col_info:
-        if st.session_state.get("generated_srt_content"):
-            st.info("SRT carregado. O Whisper API é recomendado para máxima precisão de sincronismo, superando o cálculo de duração por bloco.")
+    
 
     st.markdown("---")
     if st.button("Renderizar Vídeo Completo (Unir tudo)", type="primary"):
@@ -969,13 +970,13 @@ with tab3:
                 if usar_overlay and not font_path:
                     st.warning("⚠️ Fonte não encontrada. O overlay pode falhar.")
                 
-                # Prepara o arquivo SRT se a opção for marcada
-                if usar_legendas and st.session_state.get("generated_srt_content"):
+                # Prepara o arquivo SRT se o conteúdo estiver disponível (whisper foi chamado)
+                if st.session_state.get("generated_srt_content"):
                     srt_path_final = os.path.join(temp_dir_render, "legendas.srt")
-                    # Usando 'utf-8' para garantir que caracteres especiais funcionem no FFmpeg (assumes font support)
                     with open(srt_path_final, "w", encoding="utf-8") as f: 
                         f.write(st.session_state["generated_srt_content"])
                     st.write("✅ Arquivo SRT criado para renderização.")
+
 
                 # Usa os dados de display que podem ter sido editados
                 txt_dt = st.session_state.get("data_display", "")
@@ -993,7 +994,6 @@ with tab3:
 
                 # Expressões de movimento Ken Burns e Panorâmica
                 if sets["effect_type"] == "Zoom In (Ken Burns)":
-                    # Expressão FFmpeg: z='min(1 + speed*on, 1.5)':x='...':y='...':d=frames:s=size:fps=25
                     zoom_expr_content = f"min(zoom+{speed_val},1.5):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 elif sets["effect_type"] == "Zoom Out":
                     zoom_expr_content = f"max(1,1.5-{speed_val}*on):x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
@@ -1025,7 +1025,7 @@ with tab3:
                     if sets["effect_type"] != "Estático (Sem movimento)":
                         # Injeta zoom_expr_content e garante o FPS e Size para saída suave
                         # Usando a sintaxe limpa do zoom_expr_content, sem aspas extras na injeção.
-                        zoom_pan_params = f"z={zoom_expr_content},d={frames},s={s_out},fps=25" 
+                        zoom_pan_params = f"z='{zoom_expr_content}':d={frames}:s={s_out}:fps=25" 
                         vf_filters.append(f"zoompan={zoom_pan_params}")
                     else:
                         vf_filters.append(f"scale={s_out}")
@@ -1095,7 +1095,7 @@ with tab3:
                         filter_complex_parts.append(filter_audio_mix) # Garantir que [a_out] é definido
                         
                     # Adiciona legendas (subtitles)
-                    if usar_legendas and srt_path_final and os.path.exists(srt_path_final):
+                    if st.session_state.get("generated_srt_content"):
                         
                         # --- CONFIGURAÇÃO DE ESTILO ASS/SRT NO FFmpeg ---
                         # Converte cores Hex para BGR (formato libass/FFmpeg)
@@ -1172,4 +1172,4 @@ with tab3:
         st.download_button("⬇️ Baixar MP4", st.session_state["video_final_bytes"], "video_jhonata.mp4", "video/mp4")
 
 st.markdown("---")
-st.caption("Studio Jhonata v22.7 - Suavização de Ken Burns")
+st.caption("Studio Jhonata v22.9 - Syntax Fix")
