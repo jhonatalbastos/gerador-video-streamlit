@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Borda Preta e Novos Padrões
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Persistência de Fonte
 import os
 import re
 import json
@@ -30,6 +30,7 @@ FRONTEND_AI_STUDIO_URL = "https://ai.studio/apps/drive/1gfrdHffzH67cCcZBJWPe6JfE
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 CONFIG_FILE = "overlay_config.json"
 SAVED_MUSIC_FILE = "saved_bg_music.mp3"
+SAVED_FONT_FILE = "saved_custom_font.ttf" # Arquivo de fonte persistente
 MONETIZA_DRIVE_FOLDER_NAME = "Monetiza_Studio_Jobs"
 
 # =========================
@@ -76,8 +77,19 @@ def save_music_file(file_bytes):
         return True
     except: return False
 
+def save_font_file(file_bytes):
+    """Salva a fonte enviada no disco para persistência."""
+    try:
+        with open(SAVED_FONT_FILE, "wb") as f: f.write(file_bytes)
+        return True
+    except: return False
+
 def delete_music_file():
     if os.path.exists(SAVED_MUSIC_FILE): os.remove(SAVED_MUSIC_FILE); return True
+    return False
+
+def delete_font_file():
+    if os.path.exists(SAVED_FONT_FILE): os.remove(SAVED_FONT_FILE); return True
     return False
 
 # =========================
@@ -292,15 +304,26 @@ def get_audio_duration(path):
     except: return 5.0
 
 def resolve_font(choice, upload):
+    # 1. Prioridade: Upload Temporário (na sessão atual)
     if choice == "Upload Personalizada" and upload:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp:
             tmp.write(upload.getvalue())
             return tmp.name
+            
+    # 2. Prioridade: Fonte Salva/Persistente (no disco)
+    if choice == "Upload Personalizada" and os.path.exists(SAVED_FONT_FILE):
+        return SAVED_FONT_FILE
+        
+    # 3. Prioridade: Fontes do Sistema ou Específicas
+    # Se a escolha for a "Alegreya", e tivermos o arquivo salvo, usamos ele.
+    # Caso contrário, tenta achar no sistema ou fallback.
+    if choice == "Alegreya Sans Black" and os.path.exists(SAVED_FONT_FILE):
+         return SAVED_FONT_FILE
+
     sys_fonts = {
         "Padrão (Sans)": ["arial.ttf", "DejaVuSans.ttf"], 
         "Serif": ["times.ttf"], 
         "Monospace": ["courier.ttf"],
-        "Alegreya Sans Black": [] # Tenta buscar no sistema ou fallback para sans
     }
     
     # Tenta encontrar a fonte específica ou fallback
@@ -350,7 +373,24 @@ if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_g
 if "overlay_settings" not in st.session_state: st.session_state["overlay_settings"] = load_config()
 
 res_choice = st.sidebar.selectbox("Resolução", ["9:16 (Stories)", "16:9 (YouTube)", "1:1 (Feed)"])
-font_up = st.sidebar.file_uploader("Fonte .ttf", type=["ttf"])
+
+# Upload de Fonte Persistente
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🅰️ Fonte Personalizada")
+
+font_up = st.sidebar.file_uploader("Upload de Fonte (.ttf)", type=["ttf"])
+if font_up:
+    if save_font_file(font_up.getvalue()):
+        st.sidebar.success("Fonte salva! Selecione 'Upload Personalizada' ou 'Alegreya Sans Black' no menu.")
+        
+# Verifica se existe fonte salva
+font_status = "✅ Fonte Salva Encontrada" if os.path.exists(SAVED_FONT_FILE) else "⚠️ Nenhuma fonte salva"
+st.sidebar.caption(font_status)
+
+if st.sidebar.button("Apagar Fonte Salva"):
+    if delete_font_file():
+        st.sidebar.info("Fonte removida.")
+        st.rerun()
 
 tab1, tab2, tab3 = st.tabs(["📥 Receber Job", "🎚️ Overlay", "🎥 Renderizar"])
 
@@ -409,6 +449,7 @@ with tab2:
             sets["effect_type"] = st.selectbox("Efeito", ["Zoom In (Ken Burns)", "Zoom Out", "Pan Esq", "Pan Dir", "Estático"], index=4) # Default Estático
             sets["effect_speed"] = st.slider("Velocidade", 1, 10, 3)
         with st.expander("Texto"):
+            # Adicionei 'Alegreya Sans Black' na lista
             sets["line1_font"] = st.selectbox("Fonte L1", ["Padrão (Sans)", "Alegreya Sans Black", "Serif", "Upload Personalizada"], index=1)
             sets["line1_size"] = st.slider("Tam L1", 10, 150, sets.get("line1_size", 70))
             sets["line1_y"] = st.slider("Y L1", 0, 800, sets.get("line1_y", 150))
