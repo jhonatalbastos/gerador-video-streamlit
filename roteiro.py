@@ -115,7 +115,8 @@ def generate_script_and_identify_chars(reading_text, reading_type):
 def generate_character_description(name):
     try:
         chat = get_groq_client().chat.completions.create(messages=[{"role": "user", "content": f"Descrição visual detalhada personagem bíblico: {name}. Rosto, roupas. ~300 chars. Realista."}], model="llama-3.3-70b-versatile", temperature=0.7)
-        return chat.choices[0.message.content.strip()
+        # CORREÇÃO AQUI: Adicionado o fechamento do colchete [0]
+        return chat.choices[0].message.content.strip()
     except: return "Sem descrição."
 
 def build_prompts(roteiro, chars, db, style):
@@ -227,11 +228,11 @@ def main():
                 
                 status.update(label=f"Fim! {len(st.session_state['daily'])} leituras encontradas.", state="complete")
 
-        # --- ÁREA MANUAL ATUALIZADA ---
+        # --- ÁREA MANUAL ---
         if st.session_state.get('manual_mode'):
             st.markdown("---")
             st.error(f"✍️ **Modo Manual Ativado para {st.session_state['manual_date'].strftime('%d/%m/%Y')}**")
-            st.info("As APIs não retornaram dados. Por favor, insira as referências e os textos manualmente.")
+            st.info("As APIs não retornaram dados. Insira referências e textos manualmente.")
             
             with st.form("manual_input_form"):
                 c1, c2 = st.columns([1, 3])
@@ -262,7 +263,6 @@ def main():
                     st.success("Dados manuais registrados! Clique em 'Gerar Tudo' abaixo.")
                     st.session_state['manual_mode'] = False
                     st.rerun()
-        # -----------------------------
 
         if st.session_state['daily']:
             st.divider(); st.write(f"📖 **{len(st.session_state['daily'])} Leituras na Fila**")
