@@ -4,9 +4,28 @@ import json
 import os
 import re
 import calendar
+import logging
+import io
 from datetime import date, timedelta, datetime
 from groq import Groq
 from bs4 import BeautifulSoup
+
+# ==========================================
+# CONFIGURAÇÃO DE LOGS
+# ==========================================
+if 'system_logs' not in st.session_state:
+    st.session_state['system_logs'] = []
+
+def add_log(message, level="INFO"):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    entry = f"[{timestamp}] [{level}] {message}"
+    st.session_state['system_logs'].append(entry)
+    if len(st.session_state['system_logs']) > 500:
+        st.session_state['system_logs'].pop(0)
+    print(entry)
+
+def get_logs_as_text():
+    return "\n".join(st.session_state['system_logs'])
 
 # ==========================================
 # CONFIGURAÇÕES GERAIS
@@ -23,27 +42,7 @@ FIXED_CHARACTERS = {
 }
 
 # ==========================================
-# SISTEMA DE LOGS (SIMPLIFICADO)
-# ==========================================
-
-if 'system_logs' not in st.session_state:
-    st.session_state['system_logs'] = []
-
-def add_log(message, level="INFO"):
-    """Adiciona log na memória da sessão para exibição."""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    entry = f"[{timestamp}] [{level}] {message}"
-    st.session_state['system_logs'].append(entry)
-    # Mantém apenas os últimos 500 logs para não pesar
-    if len(st.session_state['system_logs']) > 500:
-        st.session_state['system_logs'].pop(0)
-    print(entry) # Também imprime no console do Cloud para redundância
-
-def get_logs_as_text():
-    return "\n".join(st.session_state['system_logs'])
-
-# ==========================================
-# FUNÇÕES DE PERSISTÊNCIA
+# PERSISTÊNCIA
 # ==========================================
 
 def load_json(file_path):
@@ -51,235 +50,181 @@ def load_json(file_path):
         try:
             with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
         except Exception as e:
-            add_log(f"Erro ao ler JSON {file_path}: {e}", "ERROR")
-            return {} if "char" in file_path else []
+            add_log(f"Erro JSON {file_path}: {e}", "ERROR"); return {} if "char" in file_path else []
     return {} if "char" in file_path else []
 
 def save_json(file_path, data):
     try:
         with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        add_log(f"Erro ao salvar JSON {file_path}: {e}", "ERROR")
+    except Exception as e: add_log(f"Erro salvar JSON: {e}", "ERROR")
 
 def load_characters():
-    custom = load_json(CHARACTERS_FILE)
     all_chars = FIXED_CHARACTERS.copy()
-    all_chars.update(custom)
+    all_chars.update(load_json(CHARACTERS_FILE))
     return all_chars
 
 def save_characters(data): save_json(CHARACTERS_FILE, data)
-
 def load_history(): return load_json(HISTORY_FILE)
 
-def update_history_bulk(dates_list):
+def update_history_bulk(dates):
     hist = load_history()
     updated = False
-    for d in dates_list:
-        if d not in hist:
-            hist.append(d)
-            updated = True
-    if updated:
-        hist.sort()
-        save_json(HISTORY_FILE, hist)
+    for d in dates:
+        if d not in hist: hist.append(d); updated = True
+    if updated: hist.sort(); save_json(HISTORY_FILE, hist)
 
 # ==========================================
-# SERVIÇOS EXTERNOS
+# FONTES DE DADOS (SCRAPERS E APIS)
 # ==========================================
 
 def get_groq_client():
     api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
     if not api_key:
-        add_log("GROQ_API_KEY não encontrada.", "CRITICAL")
-        st.error("❌ GROQ_API_KEY não encontrada."); st.stop()
+        add_log("GROQ_API_KEY ausente.", "CRITICAL")
+        st.error("Configure GROQ_API_KEY."); st.stop()
     return Groq(api_key=api_key)
 
-# --- BACKUP 1: API RAILWAY ---
+# --- FONTE 2: API RAILWAY ---
 def fetch_liturgia_railway(date_obj):
-    """Backup 1: API alternativa hospedada no Railway."""
-    # CORREÇÃO: Railway usa YYYY-MM-DD
-    date_str = date_obj.strftime("%Y-%m-%d")
-    url = f"https://liturgia.up.railway.app/v2/{date_str}"
-    
+    url = f"https://liturgia.up.railway.app/v2/{date_obj.strftime('%Y-%m-%d')}"
     add_log(f"Tentando Backup 1 (Railway): {url}")
     try:
-        response = requests.get(url, timeout=15)
-        if response.status_code == 200:
-            add_log("Sucesso na Railway API.")
-            data = response.json()
-            
-            # Normalização dos dados para estrutura padrão
-            normalized = {'readings': {}}
-            
-            # Mapeamento de campos Railway -> Padrão
-            # A Railway pode retornar 'liturgia' no topo ou campos diretos
-            base = data.get('liturgia', data) # Tenta pegar chave 'liturgia' se existir
-            
-            # Evangelho
-            ev = base.get('evangelho') or base.get('evangelho_do_dia')
-            if ev:
-                normalized['readings']['gospel'] = {
-                    'text': ev.get('texto', '') or ev.get('conteudo', ''), 
-                    'title': ev.get('titulo', 'Evangelho')
-                }
-            
-            # 1ª Leitura
-            pl = base.get('primeira_leitura')
-            if pl:
-                normalized['readings']['first_reading'] = {
-                    'text': pl.get('texto', '') or pl.get('conteudo', ''), 
-                    'title': pl.get('titulo', '1ª Leitura')
-                }
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            add_log("Sucesso Railway.")
+            d = r.json()
+            norm = {'readings': {}}
+            # Normalização simples
+            if 'evangelho' in d: norm['readings']['gospel'] = {'text': d['evangelho'].get('texto',''), 'title': d['evangelho'].get('referencia','Evangelho')}
+            if 'primeira_leitura' in d: norm['readings']['first_reading'] = {'text': d['primeira_leitura'].get('texto',''), 'title': d['primeira_leitura'].get('referencia','1ª Leitura')}
+            if 'salmo' in d: norm['readings']['psalm'] = {'text': d['salmo'].get('texto','') or d['salmo'].get('refrao',''), 'title': d['salmo'].get('referencia','Salmo')}
+            if 'segunda_leitura' in d: norm['readings']['second_reading'] = {'text': d['segunda_leitura'].get('texto',''), 'title': d['segunda_leitura'].get('referencia','2ª Leitura')}
+            return norm
+        add_log(f"Falha Railway: {r.status_code}", "WARNING")
+    except Exception as e: add_log(f"Erro Railway: {e}", "ERROR")
+    return None
 
-            # Salmo
-            sl = base.get('salmo')
-            if sl:
-                normalized['readings']['psalm'] = {
-                    'text': sl.get('texto', '') or sl.get('refrao', '') or sl.get('conteudo', ''), 
-                    'title': sl.get('titulo', 'Salmo')
-                }
-
-            # 2ª Leitura (opcional)
-            sl2 = base.get('segunda_leitura')
-            if sl2:
-                normalized['readings']['second_reading'] = {
-                    'text': sl2.get('texto', '') or sl2.get('conteudo', ''), 
-                    'title': sl2.get('titulo', '2ª Leitura')
-                }
-                
-            normalized['source'] = 'Backup Railway'
-            return normalized
-        else:
-            add_log(f"Falha Railway. Status: {response.status_code}", "WARNING")
-            return None
-    except Exception as e:
-        add_log(f"Erro conexão Railway: {e}", "ERROR")
-        return None
-
-# --- BACKUP 2: SCRAPER CANÇÃO NOVA ---
-def fetch_liturgia_cancaonova(date_obj):
-    """Backup 2: Scraper direto da Canção Nova."""
-    date_str = date_obj.strftime("%d-%m-%Y")
-    url = f"https://liturgia.cancaonova.com/pb/liturgia/{date_str}/"
-    
-    add_log(f"Tentando Backup 2 (Scraper CN): {url}")
+# --- FONTE 3: SCRAPER ARAUTOS (NOVO) ---
+def fetch_liturgia_arautos(date_obj):
+    """Scraper robusto para datas futuras."""
+    url = f"https://www.arautos.org/liturgia-diaria?date={date_obj.strftime('%Y-%m-%d')}"
+    add_log(f"Tentando Backup 2 (Arautos): {url}")
     
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=20)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            add_log(f"Falha Arautos: {r.status_code}", "WARNING"); return None
+            
+        soup = BeautifulSoup(r.content, 'html.parser')
+        # Arautos não tem classes fixas fáceis, vamos pegar o texto bruto e separar com Regex
+        full_text = soup.get_text("\n")
         
-        if response.status_code != 200:
-            add_log(f"Falha Scraper CN. Status: {response.status_code}", "WARNING")
-            return None
-
-        soup = BeautifulSoup(response.content, 'html.parser')
-        entry_content = soup.find('div', class_='entry-content')
-        
-        if not entry_content:
-            add_log("Div 'entry-content' não encontrada no HTML.", "ERROR")
-            return None
-
-        full_text = entry_content.get_text("\n")
-        add_log(f"Texto extraído via Scraper. Tamanho: {len(full_text)}")
-        
+        # Lógica de separação (similar ao CN mas adaptada)
         readings = {}
-        idx_1a = re.search(r'(1ª Leitura|Primeira Leitura)', full_text, re.IGNORECASE)
-        idx_salmo = re.search(r'(Salmo|Salmo Responsorial)', full_text, re.IGNORECASE)
-        idx_2a = re.search(r'(2ª Leitura|Segunda Leitura)', full_text, re.IGNORECASE)
-        idx_evang = re.search(r'(Evangelho)', full_text, re.IGNORECASE)
+        
+        # Regex flexível
+        idx_1a = re.search(r'(Primeira Leitura|Leitura do Livro)', full_text, re.IGNORECASE)
+        idx_salmo = re.search(r'(Salmo Responsorial|Salmo)', full_text, re.IGNORECASE)
+        idx_2a = re.search(r'(Segunda Leitura)', full_text, re.IGNORECASE)
+        idx_evang = re.search(r'(Evangelho|Proclamação do Evangelho)', full_text, re.IGNORECASE)
+        
+        def get_chunk(start, end, text):
+            if not start: return ""
+            s = start.end()
+            e = end.start() if end else len(text)
+            # Limita tamanho para evitar pegar rodapé
+            chunk = text[s:e].strip()
+            return chunk[:3500] 
 
-        def get_chunk(start_match, end_match, text):
-            if not start_match: return ""
-            start = start_match.end()
-            end = end_match.start() if end_match else len(text)
-            return text[start:end].strip()
+        if idx_1a: readings['first_reading'] = {'text': get_chunk(idx_1a, idx_salmo, full_text), 'title': '1ª Leitura (Arautos)'}
+        if idx_salmo: readings['psalm'] = {'text': get_chunk(idx_salmo, idx_2a if idx_2a else idx_evang, full_text), 'title': 'Salmo (Arautos)'}
+        if idx_2a: readings['second_reading'] = {'text': get_chunk(idx_2a, idx_evang, full_text), 'title': '2ª Leitura (Arautos)'}
+        if idx_evang: readings['gospel'] = {'text': full_text[idx_evang.end():].split("Outros santos")[0].strip()[:3500], 'title': 'Evangelho (Arautos)'} # Tenta cortar antes do rodapé
 
-        if idx_1a: readings['first_reading'] = {'text': get_chunk(idx_1a, idx_salmo, full_text), 'title': '1ª Leitura (Backup)'}
-        if idx_salmo: readings['psalm'] = {'text': get_chunk(idx_salmo, idx_2a if idx_2a else idx_evang, full_text), 'title': 'Salmo (Backup)'}
-        if idx_2a: readings['second_reading'] = {'text': get_chunk(idx_2a, idx_evang, full_text), 'title': '2ª Leitura (Backup)'}
-        if idx_evang: readings['gospel'] = {'text': full_text[idx_evang.end():].strip(), 'title': 'Evangelho (Backup)'}
-
-        if not readings:
-            add_log("Scraper não conseguiu separar os blocos. Retornando bruto.", "WARNING")
-            readings['gospel'] = {'text': full_text[:3000], 'title': 'Leitura Completa (Bruto)'}
-
-        return {'readings': readings, 'source': 'Backup Scraper CN'}
-
+        if readings:
+            add_log("Sucesso Arautos Scraper.")
+            return {'readings': readings, 'source': 'Backup Arautos'}
+        add_log("Arautos: Estrutura não reconhecida.", "WARNING")
     except Exception as e:
-        add_log(f"Exceção Scraper CN: {e}", "ERROR")
-        return None
+        add_log(f"Erro Arautos: {e}", "ERROR")
+    return None
+
+# --- FONTE 4: SCRAPER CANÇÃO NOVA ---
+def fetch_liturgia_cn(date_obj):
+    url = f"https://liturgia.cancaonova.com/pb/liturgia/{date_obj.strftime('%d-%m-%Y')}/"
+    add_log(f"Tentando Backup 3 (CN): {url}")
+    try:
+        r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.content, 'html.parser')
+            entry = soup.find('div', class_='entry-content')
+            if entry:
+                txt = entry.get_text("\n")
+                # Retorna como 'gospel' genérico para o Groq separar se precisar
+                return {'readings': {'gospel': {'text': txt[:4000], 'title': 'Leitura Completa (CN)'}}, 'source': 'Backup CN'}
+        add_log(f"Falha CN: {r.status_code}", "WARNING")
+    except: pass
+    return None
 
 def fetch_liturgia(date_obj):
-    # 1. Tenta API Principal (Vercel)
+    # Ordem de prioridade
     url_vercel = f"https://api-liturgia-diaria.vercel.app/?date={date_obj.strftime('%Y-%m-%d')}".strip()
-    add_log(f"Tentando API Principal (Vercel): {url_vercel}")
+    add_log(f"Tentando Principal (Vercel): {url_vercel}")
     try:
-        resp = requests.get(url_vercel, timeout=8)
-        if resp.status_code == 200:
-            add_log("Sucesso API Vercel.")
-            return resp.json()
-        add_log(f"Falha Vercel ({resp.status_code}).")
-    except Exception as e: add_log(f"Erro Vercel: {e}", "WARNING")
+        r = requests.get(url_vercel, timeout=8)
+        if r.status_code == 200: return r.json()
+        add_log(f"Vercel falhou ({r.status_code}).")
+    except: add_log("Vercel offline.")
 
-    # 2. Tenta API Railway (Correção de Formato aplicada)
-    res_railway = fetch_liturgia_railway(date_obj)
-    if res_railway: return res_railway
-
-    # 3. Tenta Scraper Canção Nova
-    return fetch_liturgia_cancaonova(date_obj)
+    # Tentativas de Backup
+    res = fetch_liturgia_railway(date_obj)
+    if res: return res
+    
+    res = fetch_liturgia_arautos(date_obj)
+    if res: return res
+    
+    return fetch_liturgia_cn(date_obj)
 
 def send_to_gas(payload):
     gas_url = st.secrets.get("GAS_SCRIPT_URL") or os.getenv("GAS_SCRIPT_URL")
-    if not gas_url:
-        add_log("URL do GAS não configurada.", "ERROR")
-        st.error("❌ GAS_SCRIPT_URL não encontrada."); return None
-    
-    add_log(f"Enviando job para GAS: {payload.get('meta_dados', {}).get('ref')}")
+    if not gas_url: st.error("❌ Configure GAS_SCRIPT_URL."); return None
     try:
-        resp = requests.post(f"{gas_url}?action=generate_job", json=payload)
-        if resp.status_code == 200:
-            add_log("Envio GAS com sucesso.")
-            return resp.json()
-        else:
-            add_log(f"Erro GAS: {resp.status_code} - {resp.text}", "ERROR")
-            return None
-    except Exception as e:
-        add_log(f"Exceção GAS: {e}", "ERROR"); return None
+        add_log(f"Enviando GAS: {payload.get('meta_dados',{}).get('ref')}")
+        r = requests.post(f"{gas_url}?action=generate_job", json=payload)
+        if r.status_code == 200: return r.json()
+        add_log(f"Erro GAS: {r.text}", "ERROR")
+    except Exception as e: add_log(f"Exceção GAS: {e}", "ERROR")
+    return None
 
 # ==========================================
-# LÓGICA DE IA E UTILS
+# LÓGICA IA
 # ==========================================
 
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
-    if reading_type == "1ª Leitura":
-        regras = "1. INÍCIO: 'Leitura do Livro do [Nome]' (sem caps/vers). 2. FIM: 'Palavra do Senhor!'."
-    elif reading_type == "2ª Leitura":
-        regras = "1. INÍCIO: 'Leitura da [Nome da Carta]' (sem caps/vers). 2. FIM: 'Palavra do Senhor!'."
-    elif reading_type == "Salmo":
-        regras = "1. INÍCIO: 'Salmo Responsorial: '. 2. Sem números."
-    elif reading_type == "Evangelho":
-        regras = "1. INÍCIO: 'Proclamação do Evangelho de Jesus Cristo segundo [AUTOR]. Glória a Vós, Senhor!'. 2. FIM: 'Palavra da Salvação. Glória a Vós, Senhor!'. 3. NÃO duplicar frases."
+    if reading_type == "1ª Leitura": regras = "1. INÍCIO: 'Leitura do Livro do [Nome]' (sem caps/vers). 2. FIM: 'Palavra do Senhor!'."
+    elif reading_type == "2ª Leitura": regras = "1. INÍCIO: 'Leitura da [Nome da Carta]' (sem caps/vers). 2. FIM: 'Palavra do Senhor!'."
+    elif reading_type == "Salmo": regras = "1. INÍCIO: 'Salmo Responsorial: '. 2. Sem números."
+    elif reading_type == "Evangelho": regras = "1. INÍCIO: 'Proclamação do Evangelho de Jesus Cristo segundo [AUTOR]. Glória a Vós, Senhor!'. 2. FIM: 'Palavra da Salvação. Glória a Vós, Senhor!'. 3. NÃO duplicar."
     else: regras = "Texto LIMPO."
 
     prompt = f"""Assistente litúrgico. TAREFA: Roteiro curto ({reading_type}).
     ESTRUTURA: 
-    1. hook (5-10s): Frase impactante (20-30 palavras). FINAL OBRIGATÓRIO: Adicione um breve CTA pedindo para comentar de qual cidade a pessoa está assistindo.
+    1. hook (5-10s): Impactante. FIM OBRIGATÓRIO: CTA pedindo para comentar a cidade.
     2. leitura: {regras}
     3. reflexao (20-25s): Inicie com "Reflexão:".
     4. aplicacao (20-25s).
-    5. oracao (15-20s): Inicie com "Vamos orar"/"Oremos"/"Ore comigo". FIM: "Amém!".
+    5. oracao (15-20s): Inicie "Vamos orar". FIM "Amém!".
     EXTRA: Identifique PERSONAGENS (exceto Jesus/Deus). SAÍDA JSON: {{"roteiro": {{...}}, "personagens_identificados": [...]}}"""
     try:
-        add_log(f"Gerando roteiro Groq para {reading_type}...")
+        add_log(f"Gerando roteiro ({reading_type})...")
         chat = client.chat.completions.create(messages=[{"role": "system", "content": prompt}, {"role": "user", "content": f"Texto:\n{reading_text}"}], model="llama-3.3-70b-versatile", response_format={"type": "json_object"}, temperature=0.7)
         return json.loads(chat.choices[0].message.content)
-    except Exception as e:
-        add_log(f"Erro Groq: {e}", "ERROR")
-        return None
+    except Exception as e: add_log(f"Erro Groq: {e}", "ERROR"); return None
 
 def generate_character_description(name):
     try:
-        add_log(f"Criando prompt visual para: {name}")
         chat = get_groq_client().chat.completions.create(messages=[{"role": "user", "content": f"Descrição visual detalhada personagem bíblico: {name}. Rosto, roupas. ~300 chars. Realista."}], model="llama-3.3-70b-versatile", temperature=0.7)
         return chat.choices[0].message.content.strip()
     except: return "Sem descrição."
@@ -289,11 +234,11 @@ def build_prompts(roteiro, chars, db, style):
     desc_m = db.get("Pessoa Moderna", FIXED_CHARACTERS["Pessoa Moderna"])
     desc_b = ("Chars: " + " | ".join([f"{n}: {db.get(n,'')}" for n in chars])) if chars else ""
     return {
-        "hook": f"Cena Bíblica Cinematográfica realista: {roteiro.get('hook','')}. {desc_b} {style}",
-        "leitura": f"Cena Bíblica Cinematográfica realista. Contexto: {roteiro.get('leitura','').strip()[:300]}... {desc_b} {style}",
+        "hook": f"Cena Bíblica Realista: {roteiro.get('hook','')}. {desc_b} {style}",
+        "leitura": f"Cena Bíblica Realista. Contexto: {roteiro.get('leitura','').strip()[:300]}... {desc_b} {style}",
         "reflexao": f"Cena Moderna. Jesus conversando com Pessoa Moderna (café/sala). Jesus: {desc_j} Modern: {desc_m} {style}",
-        "aplicacao": f"Cena Moderna. Jesus e Pessoa Moderna caminhando/ensinando. Jesus: {desc_j} Modern: {desc_m} {style}",
-        "oracao": f"Cena Moderna. Jesus e Pessoa Moderna orando juntos, paz. Jesus: {desc_j} Modern: {desc_m} {style}"
+        "aplicacao": f"Cena Moderna. Jesus e Pessoa Moderna caminhando. Jesus: {desc_j} Modern: {desc_m} {style}",
+        "oracao": f"Cena Moderna. Jesus e Pessoa Moderna orando. Jesus: {desc_j} Modern: {desc_m} {style}"
     }
 
 def clean_text(text):
@@ -327,7 +272,7 @@ def render_calendar(history):
     st.sidebar.markdown(html, unsafe_allow_html=True)
 
 # ==========================================
-# INTERFACE PRINCIPAL
+# INTERFACE
 # ==========================================
 
 def main():
@@ -338,16 +283,12 @@ def main():
     
     st.sidebar.markdown("---")
     with st.sidebar.expander("📝 Logs do Sistema"):
-        # Mostra os logs da sessão (agora funcionais)
         log_text = get_logs_as_text()
-        st.text_area("Log Output", value=log_text, height=200)
-        st.download_button("Baixar Logs", log_text, file_name="logs.txt")
-        if st.button("Limpar Logs"):
-            st.session_state['system_logs'] = []
-            st.rerun()
+        st.text_area("Logs", value=log_text, height=200)
+        if st.button("Limpar Logs"): st.session_state['system_logs'] = []; st.rerun()
 
     with st.sidebar.expander("🧹 Manutenção"):
-        if st.button("Limpar Histórico de Envios"):
+        if st.button("Limpar Histórico"):
             if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE); st.rerun()
         if st.button("Limpar Cache"): st.session_state.clear(); st.rerun()
 
@@ -361,39 +302,40 @@ def main():
         with c1: dt_ini = st.date_input("Data Inicial", value=date.today())
         with c2: dt_fim = st.date_input("Data Final", value=date.today())
         
-        if st.button("Buscar Leituras (Intervalo)"):
+        if st.button("Buscar Leituras"):
             if dt_fim < dt_ini: st.error("Data final menor que inicial"); st.stop()
             st.session_state['daily'] = []
             st.session_state['scripts'] = []
-            st.session_state['system_logs'] = [] # Limpa logs ao iniciar nova busca
+            st.session_state['system_logs'] = []
             
-            with st.status("Baixando liturgias...", expanded=True) as status:
+            with st.status("Baixando...", expanded=True) as status:
                 curr = dt_ini
                 count = 0
                 while curr <= dt_fim:
-                    st.write(f"Baixando: {curr.strftime('%d/%m/%Y')}")
+                    st.write(f"📅 Processando: {curr.strftime('%d/%m/%Y')}")
                     data = fetch_liturgia(curr)
                     if data:
-                        # Extrai 'readings' de qualquer estrutura
+                        # Adaptação Universal de Estrutura
                         rds = {}
-                        if 'readings' in data: # Vercel, Railway normalizado ou Backup
-                            # Se for Vercel, 'readings' pode estar dentro de 'today'
-                            if 'today' in data and 'readings' in data['today']:
-                                rds = data['today']['readings']
-                            else:
-                                rds = data['readings']
-                        elif 'primeira_leitura' in data: # Railway puro (caso falhe normalização)
-                             rds = {'first_reading': data['primeira_leitura'], 'psalm': data['salmo'], 'second_reading': data.get('segunda_leitura'), 'gospel': data['evangelho']}
+                        if 'readings' in data: 
+                            if 'today' in data and 'readings' in data['today']: rds = data['today']['readings']
+                            else: rds = data['readings']
+                        else: # Estrutura plana (alguns scrapers)
+                            rds = data
 
                         def add(k, t):
-                            if k in rds and rds[k]:
-                                txt_raw = rds[k].get('text') or rds[k].get('texto') or rds[k].get('conteudo')
-                                ref = rds[k].get('title') or rds[k].get('referencia', t)
-                                
-                                # Tratamento Salmo
-                                txt = extract({'text': txt_raw, 'content_psalm': rds[k].get('content_psalm'), 'response': rds[k].get('response')})
-                                
-                                if txt and txt.strip(): 
+                            # Busca chaves comuns ou tenta mapear direto
+                            obj = rds.get(k)
+                            # Se não achar pela chave padrão, tenta achar no dicionário plano
+                            if not obj and k == 'gospel' and 'evangelho' in rds: obj = rds['evangelho']
+                            if not obj and k == 'first_reading' and 'primeira_leitura' in rds: obj = rds['primeira_leitura']
+                            if not obj and k == 'psalm' and 'salmo' in rds: obj = rds['salmo']
+                            
+                            if obj:
+                                txt_raw = obj.get('text') or obj.get('texto') or obj.get('conteudo')
+                                ref = obj.get('title') or obj.get('referencia', t)
+                                txt = extract({'text': txt_raw, 'content_psalm': obj.get('content_psalm'), 'response': obj.get('response')})
+                                if txt and len(txt) > 20: # Filtra leituras vazias
                                     st.session_state['daily'].append({"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")})
                         
                         add('first_reading', '1ª Leitura')
@@ -403,17 +345,16 @@ def main():
                         count += 1
                     else:
                         add_log(f"Falha total para {curr.strftime('%d/%m')}", "ERROR")
-                        st.error(f"Falha ao obter liturgia para {curr.strftime('%d/%m')}.")
                     curr += timedelta(days=1)
-                status.update(label=f"Concluído! {len(st.session_state['daily'])} leituras em {count} dias.", state="complete")
+                status.update(label=f"Fim! {len(st.session_state['daily'])} leituras encontradas.", state="complete")
 
         if st.session_state['daily']:
-            st.divider(); st.write(f"📖 **{len(st.session_state['daily'])} Leituras Encontradas**")
-            with st.expander("Ver lista de leituras"):
-                for r in st.session_state['daily']: st.text(f"{r['d_show']} - {r['type']}: {r['ref']}")
+            st.divider(); st.write(f"📖 **{len(st.session_state['daily'])} Leituras**")
+            with st.expander("Ver lista"):
+                for r in st.session_state['daily']: st.text(f"{r['d_show']} - {r['type']}")
             
             st.divider(); st.header("2. Gerar Roteiros")
-            if st.button("✨ Gerar Tudo (Massa)"):
+            if st.button("✨ Gerar Tudo"):
                 st.session_state['scripts'] = []
                 prog = st.progress(0)
                 for i, r in enumerate(st.session_state['daily']):
@@ -432,37 +373,29 @@ def main():
             already_sent = [d for d in unique_dates if d in history]
             
             if already_sent:
-                st.warning(f"⚠️ Datas já enviadas: {', '.join(already_sent)}")
-                force = st.checkbox("Confirmar envio duplicado")
+                st.warning(f"⚠️ Já enviados: {', '.join(already_sent)}")
+                force = st.checkbox("Confirmar duplicidade")
             else: force = True
 
-            st.write("▼ **Pré-visualização e Prompts:**")
-            
+            st.write("▼ **Preview:**")
             for s in st.session_state['scripts']:
                 m, r = s['meta'], s['roteiro']
-                prompts_preview = build_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
-                
-                with st.expander(f"✅ {m['d_show']} - {m['type']} ({m['ref']})"):
+                prompts = build_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
+                with st.expander(f"✅ {m['d_show']} - {m['type']}"):
                     c1, c2 = st.columns(2)
                     with c1: 
                         st.info(f"**Hook:** {r.get('hook')}")
-                        st.text_area("Leitura", r.get('leitura'), height=150, key=f"lei_{m['d_iso']}_{m['type']}")
+                        st.text_area("Leitura", r.get('leitura'), height=100, key=f"l_{m['d_iso']}_{m['type']}")
                     with c2:
-                        st.write(f"**Reflexão:** {r.get('reflexao')}")
-                        st.write(f"**Aplicação:** {r.get('aplicacao')}")
-                        st.write(f"**Oração:** {r.get('oracao')}")
-                    
-                    st.markdown("---")
-                    st.caption("🎨 Prompts de Imagem Gerados:")
-                    st.code(f"HOOK: {prompts_preview.get('hook')}", language="text")
-                    st.code(f"LEITURA: {prompts_preview.get('leitura')}", language="text")
-                    st.code(f"REFLEXÃO: {prompts_preview.get('reflexao')}", language="text")
-                    st.code(f"APLICAÇÃO: {prompts_preview.get('aplicacao')}", language="text")
-                    st.code(f"ORAÇÃO: {prompts_preview.get('oracao')}", language="text")
+                        st.write(f"Reflexão: {r.get('reflexao')}")
+                        st.write(f"Aplicação: {r.get('aplicacao')}")
+                        st.write(f"Oração: {r.get('oracao')}")
+                    st.caption("🎨 Prompts:")
+                    st.code(f"HOOK: {prompts['hook']}\nLEITURA: {prompts['leitura']}\nREFLEXÃO: {prompts['reflexao']}\nAPLICAÇÃO: {prompts['aplicacao']}\nORAÇÃO: {prompts['oracao']}", language="text")
 
-            if st.button("🚀 Enviar Lote para Drive", disabled=not force):
+            if st.button("🚀 Enviar", disabled=not force):
                 prog, cnt = st.progress(0), 0
-                sent_dates = set()
+                sent = set()
                 for i, s in enumerate(st.session_state['scripts']):
                     m, r = s['meta'], s['roteiro']
                     prompts = build_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
@@ -471,15 +404,11 @@ def main():
                         "roteiro": {k: {"text": r.get(k,''), "prompt": prompts.get(k,'')} for k in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]},
                         "assets": []
                     }
-                    if send_to_gas(pld): 
-                        cnt += 1
-                        sent_dates.add(m['d_iso'])
+                    if send_to_gas(pld): cnt += 1; sent.add(m['d_iso'])
                     prog.progress((i+1)/len(st.session_state['scripts']))
                 
-                if cnt > 0:
-                    update_history_bulk(list(sent_dates))
-                    st.balloons(); st.success(f"{cnt} jobs enviados! Histórico atualizado."); st.rerun()
-                else: st.error("Nenhum job enviado.")
+                if cnt > 0: update_history_bulk(list(sent)); st.balloons(); st.success(f"{cnt} enviados!"); st.rerun()
+                else: st.error("Falha no envio.")
 
     with tab2:
         st.header("Personagens")
@@ -487,7 +416,6 @@ def main():
             with st.expander(n):
                 new_d = st.text_area("Desc", d, key=f"d_{n}")
                 if st.button("Salvar", key=f"s_{n}"): char_db[n]=new_d; save_characters(char_db); st.rerun()
-                if n not in FIXED_CHARACTERS and st.button("Excluir", key=f"x_{n}"): del char_db[n]; save_characters(char_db); st.rerun()
         n = st.text_input("Novo"); d = st.text_area("Desc")
         if st.button("Criar") and n: char_db[n]=d; save_characters(char_db); st.rerun()
 
