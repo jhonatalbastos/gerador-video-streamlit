@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V5 (Upload Manual)
+# montagem.py — Fábrica de Vídeos (Renderizador) - VERSÃO FINAL V6 (Envio de Vídeo + Metadados)
 import os
 import re
 import json
@@ -27,6 +27,9 @@ except ImportError:
 
 # --- CONFIGURAÇÃO ---
 FRONTEND_AI_STUDIO_URL = "https://ai.studio/apps/drive/1gfrdHffzH67cCcZBJWPe6JfE1ZEttn6u"
+# URL do GAS (Deve ser a mesma usada no roteiro.py e no AI Studio)
+GAS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhHJejuPBx1Ud6B10Ag_xfnJVzGpE83n7gHdUHnk4yAgrpuidw/exec" 
+
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 CONFIG_FILE = "overlay_config.json"
 SAVED_MUSIC_FILE = "saved_bg_music.mp3"
@@ -110,7 +113,7 @@ def get_resolution_params(choice: str) -> dict:
     else: return {"w": 1024, "h": 1024, "ratio": "1:1"}
 
 # =========================
-# Drive Operations
+# Drive Operations (Leitura)
 # =========================
 def find_file_in_drive_folder(service, file_name: str, folder_name: str) -> Optional[str]:
     try:
@@ -131,7 +134,6 @@ def download_file_content(service, file_id: str) -> Optional[str]:
     except: return None
 
 def list_recent_jobs(limit: int = 15) -> List[Dict]:
-    """Lista Jobs CONCLUÍDOS (com descrição 'COMPLETE') na pasta."""
     service = get_drive_service()
     if not service: return []
     jobs_list = []
@@ -142,7 +144,6 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
         if not folders: return []
         folder_id = folders[0]['id']
 
-        # Filtra arquivos JSON
         query_file = (
             f"mimeType = 'application/json' and "
             f"'{folder_id}' in parents and "
@@ -195,27 +196,25 @@ def process_job_payload(payload: Dict, temp_dir: str):
         st.session_state["roteiro_gerado"] = payload.get("roteiro", {})
         meta = payload.get("meta_dados", {})
         
-        # --- 1. DATA (Formatação com Ponto) ---
+        # --- 1. DATA ---
         d_raw = meta.get("data", "")
         if re.match(r"\d{4}-\d{2}-\d{2}", d_raw):
             try:
                 d_obj = datetime.strptime(d_raw, '%Y-%m-%d')
                 st.session_state["data_display"] = d_obj.strftime('%d.%m.%Y')
-            except:
-                st.session_state["data_display"] = d_raw.replace('/', '.')
+            except: st.session_state["data_display"] = d_raw.replace('/', '.')
         else:
             st.session_state["data_display"] = d_raw.replace('/', '.')
             
         # --- 2. TÍTULO E REFERÊNCIA ---
         raw_ref = meta.get("ref", "")
-        title = "EVANGELHO" # Padrão
+        title = "EVANGELHO"
         clean_ref = raw_ref
 
         if " - " in raw_ref:
             parts = raw_ref.split(" - ", 1)
             tipo_raw = parts[0]
             clean_ref = parts[1]
-            
             if "1ª" in tipo_raw or "Primeira" in tipo_raw: title = "1ª LEITURA"
             elif "2ª" in tipo_raw or "Segunda" in tipo_raw: title = "2ª LEITURA"
             elif "Salmo" in tipo_raw: title = "SALMO"
@@ -223,7 +222,6 @@ def process_job_payload(payload: Dict, temp_dir: str):
             if "Salmo" in raw_ref: title = "SALMO"
             elif "Leitura" in raw_ref: title = "1ª LEITURA"
         
-        # Limpeza fina de prefixos
         patterns_to_remove = [
             r"^(Primeira|Segunda|1ª|2ª)\s*Leitura\s*:\s*",
             r"^Leitura\s*(do|da)\s*.*:\s*",
@@ -244,14 +242,11 @@ def process_job_payload(payload: Dict, temp_dir: str):
         st.session_state["generated_srt_content"] = ""
 
         assets = payload.get("assets", [])
-        # Permitimos continuar mesmo sem assets, para o usuário fazer upload manual se quiser
-        if not assets:
-            st.warning("⚠️ Job sem assets. Use os botões de upload abaixo para adicionar mídia manual.")
+        if not assets: st.warning("⚠️ Job sem assets. Use upload manual.")
 
         for asset in assets:
             bid, atype, b64 = asset.get("block_id"), asset.get("type"), asset.get("data_b64")
             if not bid or not atype or not b64: continue
-            
             try:
                 raw = base64.b64decode(b64)
                 if atype == "image":
@@ -264,12 +259,59 @@ def process_job_payload(payload: Dict, temp_dir: str):
                     st.session_state["generated_audios_blocks"][bid] = path
                 elif atype == "srt" and bid == "legendas":
                     st.session_state["generated_srt_content"] = raw.decode('utf-8')
-            except Exception as ex: continue
-                
+            except: continue
         return True
     except Exception as e:
         st.error(f"Erro processando payload: {e}")
         return False
+
+# =========================
+# Função de Envio para Drive (NOVO)
+# =========================
+def upload_final_video_to_drive(video_path: str, job_id: str):
+    """
+    Lê o vídeo gerado e envia para o Google Drive via GAS.
+    Envia também metadados ricos para futura automação.
+    """
+    try:
+        # Lê o arquivo de vídeo como Base64
+        with open(video_path, "rb") as video_file:
+            video_base64 = base64.b64encode(video_file.read()).decode('utf-8')
+        
+        # Prepara o payload completo com metadados
+        payload = {
+            "action": "upload_video",
+            "job_id": job_id,
+            "video_data": video_base64,
+            "filename": f"video_final_{job_id}.mp4",
+            "meta_data": {
+                "data_liturgia": st.session_state.get("data_display", ""),
+                "tipo_leitura": st.session_state.get("title_display", ""),
+                "referencia": st.session_state.get("ref_display", ""),
+                "resolucao": st.session_state.get("video_final_res_choice", ""), # Armazenar escolha do usuário
+                "criado_em": datetime.now().isoformat(),
+                "status": "READY_FOR_PUBLISH" 
+            }
+        }
+
+        # Envia para o GAS
+        # Nota: GAS tem limite de tamanho de payload (~50MB). Vídeos longos podem falhar aqui.
+        # Para vídeos curtos (TikTok/Reels) geralmente funciona.
+        response = requests.post(GAS_SCRIPT_URL, json=payload)
+        
+        if response.status_code == 200:
+            res_json = response.json()
+            if res_json.get("status") == "success":
+                st.success(f"✅ Vídeo enviado para o Drive! ID: {res_json.get('file_id')}")
+                return True
+            else:
+                st.error(f"Erro no GAS: {res_json.get('message')}")
+        else:
+            st.error(f"Erro HTTP ao enviar vídeo: {response.status_code}")
+            
+    except Exception as e:
+        st.error(f"Falha ao enviar vídeo para o Drive: {e}")
+    return False
 
 # =========================
 # Utils & FFmpeg
@@ -300,6 +342,13 @@ def resolve_font(choice, upload):
     for f in sys_fonts.get(choice, []): return f
     return None
 
+def get_main_title(ref_text: str) -> str:
+    ref = ref_text.lower()
+    if "1ª leitura" in ref or "primeira leitura" in ref: return "1ª LEITURA"
+    if "2ª leitura" in ref or "segunda leitura" in ref: return "2ª LEITURA"
+    if "salmo" in ref: return "SALMO"
+    return "EVANGELHO" 
+
 def criar_preview(w, h, texts, upload):
     img = Image.new("RGB", (w, h), "black")
     draw = ImageDraw.Draw(img)
@@ -313,11 +362,6 @@ def criar_preview(w, h, texts, upload):
         draw.text((x, t["y"]), t["text"], fill=t["color"], font=font)
     bio = BytesIO(); img.save(bio, "PNG"); bio.seek(0)
     return bio
-
-def get_alpha(anim, dur):
-    if anim == "Fade In": return "alpha='min(1,t/1)'"
-    if anim == "Fade In/Out": return f"alpha='min(1,t/1)*min(1,({dur}-t)/1)'"
-    return "alpha=1"
 
 def san(txt): return txt.replace(":", "\\:").replace("'", "") if txt else ""
 
@@ -333,10 +377,11 @@ def whisper_srt(audio_path):
 # =========================
 # APP MAIN
 # =========================
-if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "generated_srt_content": "", "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None})
+if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "generated_srt_content": "", "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None, "current_job_id_loaded": None})
 if "overlay_settings" not in st.session_state: st.session_state["overlay_settings"] = load_config()
 
 res_choice = st.sidebar.selectbox("Resolução", ["9:16 (Stories)", "16:9 (YouTube)", "1:1 (Feed)"])
+st.session_state["video_final_res_choice"] = res_choice # Salva escolha para metadado
 font_up = st.sidebar.file_uploader("Fonte .ttf", type=["ttf"])
 
 tab1, tab2, tab3 = st.tabs(["📥 Receber Job", "🎚️ Overlay", "🎥 Renderizar"])
@@ -368,7 +413,7 @@ with tab1:
                 tmp = tempfile.mkdtemp()
                 p = load_job_from_drive(jid_in)
                 if p and process_job_payload(p, tmp):
-                    st.session_state.update({"job_loaded_from_drive": True, "temp_assets_dir": tmp})
+                    st.session_state.update({"job_loaded_from_drive": True, "temp_assets_dir": tmp, "current_job_id_loaded": jid_in})
                     s.update(label="Sucesso!", state="complete"); time.sleep(1); st.rerun()
                 else: s.update(label="Erro/Incompleto", state="error")
 
@@ -424,7 +469,6 @@ with tab3:
     st.header("Renderização")
     if not st.session_state["job_loaded_from_drive"]: st.warning("Carregue um job primeiro."); st.stop()
     
-    # Review e Upload Manual de Assets
     for bid in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]:
         with st.expander(bid.upper()):
             c1, c2 = st.columns([2, 1])
@@ -433,8 +477,6 @@ with tab3:
             with c1: 
                 if aud: st.audio(aud)
                 else: st.info("Sem áudio")
-                
-                # Uploader de Áudio Manual
                 aud_file = st.file_uploader(f"🎤 Enviar Áudio para {bid.upper()}", type=["mp3", "wav"], key=f"up_aud_{bid}")
                 if aud_file:
                     if st.session_state.get("temp_assets_dir"):
@@ -447,8 +489,6 @@ with tab3:
             with c2: 
                 if img: st.image(img)
                 else: st.info("Sem imagem")
-                
-                # Uploader de Imagem Manual
                 img_file = st.file_uploader(f"🖼️ Enviar Imagem para {bid.upper()}", type=["png", "jpg", "jpeg"], key=f"up_img_{bid}")
                 if img_file:
                     if st.session_state.get("temp_assets_dir"):
@@ -557,6 +597,7 @@ with tab3:
                 
                 with open(final, "rb") as f:
                     st.session_state["video_final_bytes"] = BytesIO(f.read())
+                    st.session_state["video_final_path"] = final # Guarda caminho para upload
                 
                 s.update(label="Pronto!", state="complete")
                 
@@ -566,5 +607,19 @@ with tab3:
                 s.update(label="Erro", state="error")
 
     if st.session_state["video_final_bytes"]:
-        st.video(st.session_state["video_final_bytes"])
-        st.download_button("⬇️ Baixar Vídeo", st.session_state["video_final_bytes"], "video.mp4", "video/mp4")
+        col_v1, col_v2 = st.columns(2)
+        with col_v1:
+            st.video(st.session_state["video_final_bytes"])
+            st.download_button("⬇️ Baixar Vídeo", st.session_state["video_final_bytes"], "video.mp4", "video/mp4")
+        
+        with col_v2:
+            # BOTÃO DE UPLOAD DO VÍDEO FINAL
+            if st.button("☁️ Enviar Vídeo Final para o Drive"):
+                if st.session_state.get("video_final_path") and st.session_state.get("current_job_id_loaded"):
+                    with st.spinner("Enviando vídeo e metadados para o Drive..."):
+                        success = upload_final_video_to_drive(st.session_state["video_final_path"], st.session_state["current_job_id_loaded"])
+                        if success:
+                            st.balloons()
+                            st.success("Vídeo arquivado com sucesso! Pronto para publicação futura.")
+                else:
+                    st.warning("Erro: Caminho do vídeo ou ID do job perdidos. Renderize novamente.")
