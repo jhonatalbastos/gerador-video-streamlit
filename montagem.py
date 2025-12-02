@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Persistência de Fonte
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Whisper Tiny + Correção Groq
 import os
 import re
 import json
@@ -15,15 +15,16 @@ import shutil as _shutil
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
+import whisper  # Importação do Whisper Local
 
 # --- API Imports ---
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError 
+from googleapiclient.errors import HttpError
 try:
-    from openai import OpenAI
+    from groq import Groq  # Importação do Groq para correção
 except ImportError:
-    OpenAI = None 
+    Groq = None
 
 # --- CONFIGURAÇÃO ---
 FRONTEND_AI_STUDIO_URL = "https://ai.studio/apps/drive/1gfrdHffzH67cCcZBJWPe6JfE1ZEttn6u"
@@ -357,14 +358,90 @@ def criar_preview(w, h, texts, upload):
 
 def san(txt): return txt.replace(":", "\\:").replace("'", "") if txt else ""
 
-def whisper_srt(audio_path):
-    key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not key or not OpenAI: return None
+# =========================
+# Correção de Legendas com Groq
+# =========================
+def corrigir_legendas_com_groq(srt_content, roteiro_original):
+    """
+    Usa a API do Groq para corrigir erros de transcrição no SRT
+    baseando-se no roteiro original.
+    """
+    key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+    if not key or not Groq:
+        return srt_content # Retorna original se não tiver Groq
+    
     try:
-        client = OpenAI(api_key=key)
-        with open(audio_path, "rb") as f:
-            return client.audio.transcriptions.create(model="whisper-1", file=f, response_format="srt", language="pt")
-    except: return None
+        client = Groq(api_key=key)
+        
+        # Monta o texto de referência do roteiro
+        texto_referencia = ""
+        if roteiro_original:
+            for k in ['hook', 'leitura', 'reflexao', 'aplicacao', 'oracao']:
+                block = roteiro_original.get(k, {})
+                if block and block.get('text'):
+                    texto_referencia += f"[{k.upper()}]: {block['text']}\n"
+
+        prompt = f"""
+        Você é um assistente especializado em correção de legendas SRT.
+        Sua tarefa é corrigir erros de transcrição no arquivo SRT fornecido,
+        usando o TEXTO ORIGINAL DO ROTEIRO como referência para a ortografia correta de nomes bíblicos e termos litúrgicos.
+        
+        MANTENHA EXATAMENTE O TIMECODE (tempos) original. Apenas corrija o texto das legendas.
+        Não altere a estrutura do SRT.
+        
+        TEXTO ORIGINAL DO ROTEIRO PARA REFERÊNCIA:
+        {texto_referencia}
+        
+        ARQUIVO SRT PARA CORRIGIR:
+        {srt_content}
+        
+        Responda APENAS com o conteúdo do SRT corrigido.
+        """
+        
+        chat_completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0.3,
+        )
+        
+        return chat_completion.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Erro na correção do Groq: {e}")
+        return srt_content # Retorna o original em caso de erro
+
+# =========================
+# Whisper Local (Tiny)
+# =========================
+def gerar_legendas_whisper_tiny(audio_path):
+    """Gera legendas usando Whisper Tiny localmente."""
+    try:
+        # Carrega o modelo tiny
+        model = whisper.load_model("tiny")
+        
+        # Transcreve
+        result = model.transcribe(audio_path, language="pt")
+        
+        # Formata para SRT
+        segments = result['segments']
+        srt_content = ""
+        for i, segment in enumerate(segments):
+            start = format_timestamp(segment['start'])
+            end = format_timestamp(segment['end'])
+            text = segment['text'].strip()
+            srt_content += f"{i+1}\n{start} --> {end}\n{text}\n\n"
+            
+        return srt_content
+    except Exception as e:
+        st.error(f"Erro no Whisper Tiny: {e}")
+        return None
+
+def format_timestamp(seconds):
+    """Converte segundos para formato SRT (HH:MM:SS,mmm)"""
+    millis = int((seconds - int(seconds)) * 1000)
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
 # =========================
 # APP MAIN
@@ -517,8 +594,8 @@ with tab3:
     use_subs = st.checkbox("Queimar Legendas", value=True)
     use_over = st.checkbox("Overlay Texto", value=True)
     
-    if st.button("Gerar Legendas (Whisper)"):
-        with st.status("Transcrevendo...") as s:
+    if st.button("Gerar Legendas (Whisper Tiny Local + Correção Groq)"):
+        with st.status("Gerando legendas...") as s:
             auds = [p for p in st.session_state["generated_audios_blocks"].values() if os.path.exists(p)]
             if not auds: s.update(label="Sem áudios!", state="error"); st.stop()
             
@@ -528,10 +605,17 @@ with tab3:
                 for a in auds: f.write(f"file '{a}'\n")
             run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", mst])
             
-            srt = whisper_srt(mst)
+            # 1. Gera SRT com Whisper Local (Tiny)
+            srt = gerar_legendas_whisper_tiny(mst)
+            
             if srt:
-                st.session_state["generated_srt_content"] = srt
-                s.update(label="Legendas Geradas!", state="complete"); st.rerun()
+                s.update(label="Revisando legendas com Groq...")
+                # 2. Corrige com Groq usando o roteiro original como referência
+                roteiro_original = st.session_state.get("roteiro_gerado", {})
+                srt_corrigido = corrigir_legendas_com_groq(srt, roteiro_original)
+                
+                st.session_state["generated_srt_content"] = srt_corrigido
+                s.update(label="Legendas Geradas e Corrigidas!", state="complete"); st.rerun()
             else: s.update(label="Erro Whisper", state="error")
 
     if st.button("RENDERIZAR VÍDEO FINAL", type="primary"):
