@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador)
+# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO
 import os
 import re
 import json
@@ -143,19 +143,29 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
         if not folders: return []
         folder_id = folders[0]['id']
 
-        # 2. Lista arquivos filtrando por DESCRIPTION = 'COMPLETE'
-        # Isso garante que só vejamos arquivos que o AI Studio já processou
+        # 2. CORREÇÃO: Remove 'description' do filtro 'q' (causa erro 400)
         query_file = (
             f"mimeType = 'application/json' and "
             f"'{folder_id}' in parents and "
-            f"trashed = false and "
-            f"description = 'COMPLETE'"
+            f"trashed = false"
         )
         
-        results = service.files().list(q=query_file, orderBy="createdTime desc", pageSize=limit, fields="files(id, name, createdTime)").execute()
+        # Busca mais arquivos (50) para ter margem de filtro, e pede o campo 'description'
+        results = service.files().list(
+            q=query_file, 
+            orderBy="createdTime desc", 
+            pageSize=50, 
+            fields="files(id, name, createdTime, description)"
+        ).execute()
+        
         files = results.get('files', [])
 
         for f in files:
+            # 3. Filtragem Client-Side (Python)
+            # Só aceita se a descrição for EXATAMENTE 'COMPLETE'
+            if f.get('description') != 'COMPLETE':
+                continue
+
             content = download_file_content(service, f['id'])
             if content:
                 try:
@@ -169,6 +179,11 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
                         "file_id": f['id']
                     })
                 except: continue
+            
+            # Para assim que atingir o limite desejado de exibição
+            if len(jobs_list) >= limit:
+                break
+                
     except Exception as e:
         st.error(f"Erro ao listar: {e}")
         return []
@@ -191,8 +206,11 @@ def process_job_payload(payload: Dict, temp_dir: str):
         # Formata data para DD.MM.AAAA
         d_raw = meta.get("data", "")
         if re.match(r"\d{4}-\d{2}-\d{2}", d_raw):
-            d_obj = datetime.strptime(d_raw, '%Y-%m-%d')
-            st.session_state["data_display"] = d_obj.strftime('%d.%m.%Y')
+            try:
+                d_obj = datetime.strptime(d_raw, '%Y-%m-%d')
+                st.session_state["data_display"] = d_obj.strftime('%d.%m.%Y')
+            except:
+                st.session_state["data_display"] = d_raw
         else:
             st.session_state["data_display"] = d_raw
             
@@ -210,17 +228,22 @@ def process_job_payload(payload: Dict, temp_dir: str):
             bid, atype, b64 = asset.get("block_id"), asset.get("type"), asset.get("data_b64")
             if not bid or not atype or not b64: continue
             
-            raw = base64.b64decode(b64)
-            if atype == "image":
-                path = os.path.join(temp_dir, f"{bid}.png")
-                with open(path, "wb") as f: f.write(raw)
-                st.session_state["generated_images_blocks"][bid] = path
-            elif atype == "audio":
-                path = os.path.join(temp_dir, f"{bid}.wav")
-                with open(path, "wb") as f: f.write(raw)
-                st.session_state["generated_audios_blocks"][bid] = path
-            elif atype == "srt" and bid == "legendas":
-                st.session_state["generated_srt_content"] = raw.decode('utf-8')
+            try:
+                raw = base64.b64decode(b64)
+                if atype == "image":
+                    path = os.path.join(temp_dir, f"{bid}.png")
+                    with open(path, "wb") as f: f.write(raw)
+                    st.session_state["generated_images_blocks"][bid] = path
+                elif atype == "audio":
+                    path = os.path.join(temp_dir, f"{bid}.wav")
+                    with open(path, "wb") as f: f.write(raw)
+                    st.session_state["generated_audios_blocks"][bid] = path
+                elif atype == "srt" and bid == "legendas":
+                    st.session_state["generated_srt_content"] = raw.decode('utf-8')
+            except Exception as ex:
+                print(f"Erro decodificando asset {bid}: {ex}")
+                continue
+                
         return True
     except Exception as e:
         st.error(f"Erro processando payload: {e}")
@@ -303,7 +326,7 @@ with tab1:
     with c1:
         if st.button("🔄 Buscar Jobs Prontos no Drive"):
             with st.spinner("Filtrando jobs 'COMPLETE'..."):
-                st.session_state['lista_jobs'] = list_recent_jobs(20)
+                st.session_state['lista_jobs'] = list_recent_jobs(15)
         
         if st.session_state['lista_jobs']:
             opts = {j['display']: j['job_id'] for j in st.session_state['lista_jobs']}
@@ -434,13 +457,20 @@ with tab3:
                     vf = f"scale={w}x{h}" # Default static
                     if sets["effect_type"] == "Zoom In (Ken Burns)":
                         vf = f"zoompan=z='min(zoom+0.0015,1.5)':d={int(dur*25)}:s={w}x{h}:fps=25"
+                    elif sets["effect_type"] == "Zoom Out":
+                        vf = f"zoompan=z='max(1.5-0.0015*on,1)':d={int(dur*25)}:s={w}x{h}:fps=25"
+                    elif sets["effect_type"] == "Pan Esq":
+                        vf = f"zoompan=z=1.2:x='min(x+1,iw-iw/1.2)':y='(ih-ih/1.2)/2':d={int(dur*25)}:s={w}x{h}:fps=25"
                     
                     # Overlay Text Filters
                     filters = [vf, f"fade=t=in:st=0:d=0.5,fade=t=out:st={dur-0.5}:d=0.5"]
+                    
                     if use_over and f1:
-                        # Simplificado: apenas linha 1 para exemplo, adicione as outras se precisar
-                        t1 = san(st.session_state.get("ref_display", ""))
-                        filters.append(f"drawtext=fontfile='{f1}':text='{t1}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
+                        # Drawtext - Simplificado (Título apenas)
+                        # Nota: ffmpeg drawtext é chato com escapes.
+                        txt_display = san(st.session_state.get("ref_display", ""))
+                        if txt_display:
+                            filters.append(f"drawtext=fontfile='{f1}':text='{txt_display}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
 
                     run_cmd(["ffmpeg", "-y", "-loop", "1", "-i", img, "-i", aud, "-vf", ",".join(filters), "-c:v", "libx264", "-t", str(dur), "-pix_fmt", "yuv420p", "-shortest", out])
                     clips.append(out)
@@ -456,21 +486,43 @@ with tab3:
                 final = os.path.join(tmp, "final.mp4")
                 
                 # Subtitles & Music
-                # (Lógica simplificada de mixagem)
                 mix_cmd = ["ffmpeg", "-y", "-i", conc]
-                fc = []
+                filter_complex = []
                 
-                # Legendas
+                # Música
+                if os.path.exists(SAVED_MUSIC_FILE):
+                    mix_cmd.extend(["-stream_loop", "-1", "-i", SAVED_MUSIC_FILE])
+                    filter_complex.append(f"[1:a]volume={sets['music_vol']}[bg];[0:a][bg]amix=inputs=2:duration=first[a_out]")
+                    map_a = "[a_out]"
+                else:
+                    map_a = "0:a"
+
+                # Legendas (Burn-in)
                 if use_subs and st.session_state.get("generated_srt_content"):
                     srtp = os.path.join(tmp, "subs.srt")
                     with open(srtp, "w") as f: f.write(st.session_state["generated_srt_content"])
-                    # Convert Hex color to ASS BGR (AABBGGRR) approx
+                    
+                    # Style ASS
                     c = sets["sub_color"].lstrip("#")
+                    co = sets["sub_outline_color"].lstrip("#")
+                    # BGR format for ASS
                     ass_c = f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
-                    style = f"FontSize={sets['sub_size']},PrimaryColour={ass_c},Alignment=2,MarginV={sets['sub_y_pos']}"
-                    fc.append(f"subtitles={srtp}:force_style='{style}'")
-                
-                if fc: mix_cmd.extend(["-vf", ",".join(fc)])
+                    ass_co = f"&H00{co[4:6]}{co[2:4]}{co[0:2]}"
+                    
+                    # Calcula margem correta
+                    margin_v = res['h'] - sets['sub_y_pos']
+                    
+                    style = f"FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
+                    
+                    # Escape path for filter
+                    srtp_esc = srtp.replace("\\", "/").replace(":", "\\:")
+                    filter_complex.append(f"subtitles='{srtp_esc}':force_style='{style}'")
+
+                if filter_complex:
+                    mix_cmd.extend(["-filter_complex", ",".join(filter_complex)])
+                    # Se tiver mapa de audio customizado, usa
+                    if "amix" in "".join(filter_complex):
+                        mix_cmd.extend(["-map", "0:v", "-map", map_a])
                 
                 mix_cmd.append(final)
                 run_cmd(mix_cmd)
@@ -482,6 +534,7 @@ with tab3:
                 
             except Exception as e:
                 st.error(f"Erro render: {e}")
+                st.error(traceback.format_exc())
                 s.update(label="Erro", state="error")
 
     if st.session_state["video_final_bytes"]:
