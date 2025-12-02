@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Borda Preta no Overlay
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Borda Preta e Novos Padrões
 import os
 import re
 import json
@@ -45,11 +45,12 @@ st.set_page_config(
 # Persistência
 # =========================
 def load_config():
+    # NOVOS PADRÕES SOLICITADOS
     default = {
-        "line1_y": 40, "line1_size": 40, "line1_font": "Padrão (Sans)", "line1_anim": "Estático",
-        "line2_y": 90, "line2_size": 28, "line2_font": "Padrão (Sans)", "line2_anim": "Estático",
-        "line3_y": 130, "line3_size": 24, "line3_font": "Padrão (Sans)", "line3_anim": "Estático",
-        "effect_type": "Zoom In (Ken Burns)", "effect_speed": 3,
+        "line1_y": 150, "line1_size": 70, "line1_font": "Alegreya Sans Black", "line1_anim": "Estático",
+        "line2_y": 250, "line2_size": 50, "line2_font": "Alegreya Sans Black", "line2_anim": "Estático",
+        "line3_y": 350, "line3_size": 50, "line3_font": "Alegreya Sans Black", "line3_anim": "Estático",
+        "effect_type": "Estático", "effect_speed": 3, # Movimento padrão agora é Estático
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
         "sub_size": 50, "sub_color": "#FFFF00", "sub_outline_color": "#000000", "sub_y_pos": 900 
@@ -58,6 +59,7 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r") as f:
                 saved = json.load(f)
+                # Atualiza apenas chaves que já existem no salvo, mas garante novos defaults se faltar
                 default.update(saved)
         except: pass
     return default
@@ -294,8 +296,16 @@ def resolve_font(choice, upload):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp:
             tmp.write(upload.getvalue())
             return tmp.name
-    sys_fonts = {"Padrão (Sans)": ["arial.ttf", "DejaVuSans.ttf"], "Serif": ["times.ttf"], "Monospace": ["courier.ttf"]}
-    for f in sys_fonts.get(choice, []): return f
+    sys_fonts = {
+        "Padrão (Sans)": ["arial.ttf", "DejaVuSans.ttf"], 
+        "Serif": ["times.ttf"], 
+        "Monospace": ["courier.ttf"],
+        "Alegreya Sans Black": [] # Tenta buscar no sistema ou fallback para sans
+    }
+    
+    # Tenta encontrar a fonte específica ou fallback
+    font_list = sys_fonts.get(choice, [])
+    for f in font_list: return f
     return None
 
 def get_main_title(ref_text: str) -> str:
@@ -317,7 +327,6 @@ def criar_preview(w, h, texts, upload):
         x = (w - length) / 2
         
         # Adiciona borda preta (stroke)
-        # stroke_width = 2 para preview pequeno
         draw.text((x, t["y"]), t["text"], fill=t["color"], font=font, stroke_width=2, stroke_fill="black")
         
     bio = BytesIO(); img.save(bio, "PNG"); bio.seek(0)
@@ -397,16 +406,22 @@ with tab2:
     
     with c1:
         with st.expander("Movimento"):
-            sets["effect_type"] = st.selectbox("Efeito", ["Zoom In (Ken Burns)", "Zoom Out", "Pan Esq", "Pan Dir", "Estático"], index=0)
+            sets["effect_type"] = st.selectbox("Efeito", ["Zoom In (Ken Burns)", "Zoom Out", "Pan Esq", "Pan Dir", "Estático"], index=4) # Default Estático
             sets["effect_speed"] = st.slider("Velocidade", 1, 10, 3)
         with st.expander("Texto"):
-            sets["line1_font"] = st.selectbox("Fonte L1", ["Padrão (Sans)", "Serif", "Upload Personalizada"])
-            sets["line1_size"] = st.slider("Tam L1", 10, 150, 40)
-            sets["line1_y"] = st.slider("Y L1", 0, 800, 40)
-            sets["line2_size"] = st.slider("Tam L2", 10, 100, 28)
-            sets["line2_y"] = st.slider("Y L2", 0, 800, 90)
-            sets["line3_size"] = st.slider("Tam L3", 10, 100, 24)
-            sets["line3_y"] = st.slider("Y L3", 0, 800, 130)
+            sets["line1_font"] = st.selectbox("Fonte L1", ["Padrão (Sans)", "Alegreya Sans Black", "Serif", "Upload Personalizada"], index=1)
+            sets["line1_size"] = st.slider("Tam L1", 10, 150, sets.get("line1_size", 70))
+            sets["line1_y"] = st.slider("Y L1", 0, 800, sets.get("line1_y", 150))
+            sets["line2_size"] = st.slider("Tam L2", 10, 100, sets.get("line2_size", 50))
+            sets["line2_y"] = st.slider("Y L2", 0, 800, sets.get("line2_y", 250))
+            sets["line3_size"] = st.slider("Tam L3", 10, 100, sets.get("line3_size", 50))
+            sets["line3_y"] = st.slider("Y L3", 0, 800, sets.get("line3_y", 350))
+            
+            # Atualiza fontes das outras linhas para Alegreya se for o padrão
+            if sets["line1_font"] == "Alegreya Sans Black":
+                sets["line2_font"] = "Alegreya Sans Black"
+                sets["line3_font"] = "Alegreya Sans Black"
+
         with st.expander("Legendas"):
             sets["sub_size"] = st.slider("Tam Legenda", 20, 100, 50)
             sets["sub_y_pos"] = st.slider("Posição Y (px do fundo)", 0, 500, 150)
