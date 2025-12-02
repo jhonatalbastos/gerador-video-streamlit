@@ -115,7 +115,7 @@ def generate_script_and_identify_chars(reading_text, reading_type):
 def generate_character_description(name):
     try:
         chat = get_groq_client().chat.completions.create(messages=[{"role": "user", "content": f"Descrição visual detalhada personagem bíblico: {name}. Rosto, roupas. ~300 chars. Realista."}], model="llama-3.3-70b-versatile", temperature=0.7)
-        return chat.choices[0].message.content.strip()
+        return chat.choices[0.message.content.strip()
     except: return "Sem descrição."
 
 def build_prompts(roteiro, chars, db, style):
@@ -202,7 +202,6 @@ def main():
 
                         def add(k, t):
                             obj = rds.get(k)
-                            # Mapeamento flexível
                             if not obj and k == 'gospel': obj = rds.get('evangelho')
                             if not obj and k == 'first_reading': obj = rds.get('primeira_leitura') or rds.get('leitura_1')
                             if not obj and k == 'psalm': obj = rds.get('salmo') or rds.get('salmo_responsorial')
@@ -228,37 +227,47 @@ def main():
                 
                 status.update(label=f"Fim! {len(st.session_state['daily'])} leituras encontradas.", state="complete")
 
-        # --- ÁREA MANUAL ---
+        # --- ÁREA MANUAL ATUALIZADA ---
         if st.session_state.get('manual_mode'):
             st.markdown("---")
             st.error(f"✍️ **Modo Manual Ativado para {st.session_state['manual_date'].strftime('%d/%m/%Y')}**")
-            st.info("Cole o texto completo das leituras abaixo para processamento.")
+            st.info("As APIs não retornaram dados. Por favor, insira as referências e os textos manualmente.")
             
             with st.form("manual_input_form"):
-                t1 = st.text_area("1ª Leitura (Texto Completo)")
-                t_sl = st.text_area("Salmo (Texto Completo)")
-                t2 = st.text_area("2ª Leitura (Opcional)")
-                t_ev = st.text_area("Evangelho (Texto Completo)")
+                c1, c2 = st.columns([1, 3])
+                with c1: ref1 = st.text_input("Ref. 1ª Leitura (Ex: Is 26,1-6)")
+                with c2: t1 = st.text_area("Texto 1ª Leitura", height=100)
+                
+                c3, c4 = st.columns([1, 3])
+                with c3: ref_sl = st.text_input("Ref. Salmo (Ex: Sl 117)")
+                with c4: t_sl = st.text_area("Texto Salmo", height=100)
+                
+                c5, c6 = st.columns([1, 3])
+                with c5: ref2 = st.text_input("Ref. 2ª Leitura (Opcional)")
+                with c6: t2 = st.text_area("Texto 2ª Leitura", height=100)
+                
+                c7, c8 = st.columns([1, 3])
+                with c7: ref_ev = st.text_input("Ref. Evangelho (Ex: Mt 7,21)")
+                with c8: t_ev = st.text_area("Texto Evangelho", height=100)
                 
                 if st.form_submit_button("Processar Texto Manual"):
                     d_iso = st.session_state['manual_date'].strftime("%Y-%m-%d")
                     d_show = st.session_state['manual_date'].strftime("%d/%m/%Y")
                     
-                    if t1: st.session_state['daily'].append({"type": "1ª Leitura", "text": t1, "ref": "Manual", "d_show": d_show, "d_iso": d_iso})
-                    if t_sl: st.session_state['daily'].append({"type": "Salmo", "text": t_sl, "ref": "Manual", "d_show": d_show, "d_iso": d_iso})
-                    if t2: st.session_state['daily'].append({"type": "2ª Leitura", "text": t2, "ref": "Manual", "d_show": d_show, "d_iso": d_iso})
-                    if t_ev: st.session_state['daily'].append({"type": "Evangelho", "text": t_ev, "ref": "Manual", "d_show": d_show, "d_iso": d_iso})
+                    if t1: st.session_state['daily'].append({"type": "1ª Leitura", "text": t1, "ref": ref1 if ref1 else "1ª Leitura", "d_show": d_show, "d_iso": d_iso})
+                    if t_sl: st.session_state['daily'].append({"type": "Salmo", "text": t_sl, "ref": ref_sl if ref_sl else "Salmo", "d_show": d_show, "d_iso": d_iso})
+                    if t2: st.session_state['daily'].append({"type": "2ª Leitura", "text": t2, "ref": ref2 if ref2 else "2ª Leitura", "d_show": d_show, "d_iso": d_iso})
+                    if t_ev: st.session_state['daily'].append({"type": "Evangelho", "text": t_ev, "ref": ref_ev if ref_ev else "Evangelho", "d_show": d_show, "d_iso": d_iso})
                     
-                    st.success("Textos manuais adicionados à fila! Agora clique em 'Gerar Tudo'.")
-                    st.session_state['manual_mode'] = False # Fecha o modo manual
+                    st.success("Dados manuais registrados! Clique em 'Gerar Tudo' abaixo.")
+                    st.session_state['manual_mode'] = False
                     st.rerun()
-
-        # --- FIM ÁREA MANUAL ---
+        # -----------------------------
 
         if st.session_state['daily']:
             st.divider(); st.write(f"📖 **{len(st.session_state['daily'])} Leituras na Fila**")
             with st.expander("Ver lista"):
-                for r in st.session_state['daily']: st.text(f"{r['d_show']} - {r['type']}")
+                for r in st.session_state['daily']: st.text(f"{r['d_show']} - {r['type']} ({r['ref']})")
             
             st.divider(); st.header("2. Gerar Roteiros")
             if st.button("✨ Gerar Tudo"):
@@ -288,7 +297,7 @@ def main():
             for s in st.session_state['scripts']:
                 m, r = s['meta'], s['roteiro']
                 prompts = build_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
-                with st.expander(f"✅ {m['d_show']} - {m['type']}"):
+                with st.expander(f"✅ {m['d_show']} - {m['type']} ({m['ref']})"):
                     c1, c2 = st.columns(2)
                     with c1: 
                         st.info(f"**Hook:** {r.get('hook')}")
