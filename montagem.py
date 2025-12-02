@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Whisper Tiny + Correção Groq
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Correção de Legendas Burn-in
 import os
 import re
 import json
@@ -55,7 +55,7 @@ def load_config():
         "effect_type": "Estático", "effect_speed": 3, # Movimento padrão agora é Estático
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
-        "sub_size": 50, "sub_color": "#FFFF00", "sub_outline_color": "#000000", "sub_y_pos": 900 
+        "sub_size": 50, "sub_color": "#FFFF00", "sub_outline_color": "#000000", "sub_y_pos": 150 
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -291,6 +291,8 @@ def shutil_which(name): return _shutil.which(name)
 
 def run_cmd(cmd):
     clean = [arg.replace('\u00a0', ' ').strip() if isinstance(arg, str) else arg for arg in cmd if arg]
+    # Debug: Imprime comando para verificar caminhos
+    print(f"Executando: {' '.join(clean)}")
     try:
         subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
@@ -595,7 +597,7 @@ with tab3:
     use_over = st.checkbox("Overlay Texto", value=True)
     
     if st.button("Gerar Legendas (Whisper Tiny Local + Correção Groq)"):
-        with st.status("Gerando legendas...") as s:
+        with st.status("Transcrevendo...") as s:
             auds = [p for p in st.session_state["generated_audios_blocks"].values() if os.path.exists(p)]
             if not auds: s.update(label="Sem áudios!", state="error"); st.stop()
             
@@ -605,17 +607,10 @@ with tab3:
                 for a in auds: f.write(f"file '{a}'\n")
             run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", mst])
             
-            # 1. Gera SRT com Whisper Local (Tiny)
-            srt = gerar_legendas_whisper_tiny(mst)
-            
+            srt = whisper_srt(mst)
             if srt:
-                s.update(label="Revisando legendas com Groq...")
-                # 2. Corrige com Groq usando o roteiro original como referência
-                roteiro_original = st.session_state.get("roteiro_gerado", {})
-                srt_corrigido = corrigir_legendas_com_groq(srt, roteiro_original)
-                
-                st.session_state["generated_srt_content"] = srt_corrigido
-                s.update(label="Legendas Geradas e Corrigidas!", state="complete"); st.rerun()
+                st.session_state["generated_srt_content"] = srt
+                s.update(label="Legendas Geradas!", state="complete"); st.rerun()
             else: s.update(label="Erro Whisper", state="error")
 
     if st.button("RENDERIZAR VÍDEO FINAL", type="primary"):
@@ -677,15 +672,27 @@ with tab3:
 
                 if use_subs and st.session_state.get("generated_srt_content"):
                     srtp = os.path.join(tmp, "subs.srt")
-                    with open(srtp, "w") as f: f.write(st.session_state["generated_srt_content"])
+                    # CORREÇÃO: Usa o caminho ABSOLUTO para o filtro subtitles para evitar erros de path
+                    srtp_abs = os.path.abspath(srtp)
+                    
+                    with open(srtp_abs, "w") as f: f.write(st.session_state["generated_srt_content"])
+                    
                     c = sets["sub_color"].lstrip("#")
                     co = sets["sub_outline_color"].lstrip("#")
                     ass_c = f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
                     ass_co = f"&H00{co[4:6]}{co[2:4]}{co[0:2]}"
                     margin_v = res['h'] - sets['sub_y_pos']
                     style = f"FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
-                    srtp_esc = srtp.replace("\\", "/").replace(":", "\\:")
-                    filter_complex.append(f"subtitles='{srtp_esc}':force_style='{style}'")
+                    
+                    # CORREÇÃO: Caminho escapado corretamente para Linux/Windows no filtro
+                    srtp_esc = srtp_abs.replace("\\", "/").replace(":", "\\:")
+                    
+                    # CORREÇÃO: Verificação de existência do arquivo SRT antes de adicionar o filtro
+                    if os.path.exists(srtp_abs) and os.path.getsize(srtp_abs) > 0:
+                         filter_complex.append(f"subtitles='{srtp_esc}':force_style='{style}'")
+                    else:
+                         st.warning("Arquivo de legenda não encontrado ou vazio. Pulando legendas.")
+
 
                 if filter_complex:
                     mix_cmd.extend(["-filter_complex", ",".join(filter_complex)])
