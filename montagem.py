@@ -854,7 +854,9 @@ with tab3:
                     if "amix" in "".join(filter_complex):
                         mix_cmd.extend(["-map", "0:v", "-map", map_a])
                 
+                # Redução de tamanho para o vídeo final também
                 mix_cmd.extend(["-crf", "28", "-preset", "fast"])
+                
                 mix_cmd.append("final.mp4") # Saída relativa
                 
                 # Executa o FFmpeg dentro do diretório temporário (cwd=tmp)
