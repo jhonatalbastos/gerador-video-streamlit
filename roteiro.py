@@ -79,7 +79,7 @@ def generate_script_and_identify_chars(reading_text, reading_type):
     2. leitura: {regras}
     3. reflexao (20-25s): Ensinamento. INÍCIO: "Reflexão:".
     4. aplicacao (20-25s): Ação prática.
-    5. oracao (15-20s): Oração. INÍCIO: "Vamos orar", "Oremos" ou "Ore comigo".
+    5. oracao (15-20s): Oração. INÍCIO: "Vamos orar", "Oremos" ou "Ore comigo". FINAL: "Amém!".
     EXTRA: Identifique PERSONAGENS (exceto Jesus/Deus).
     SAÍDA JSON: {{"roteiro": {{"hook": "...", "leitura": "...", "reflexao": "...", "aplicacao": "...", "oracao": "..."}}, "personagens_identificados": ["Nome"]}}"""
     try:
