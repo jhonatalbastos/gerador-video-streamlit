@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V6 (Fix blocos_config scope)
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão Otimizada (Auto-Carregamento)
 import os
 import re
 import json
@@ -462,6 +462,38 @@ def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
         return None
 
 # =========================
+# Helper Function for Auto-Load and Process
+# =========================
+def auto_load_and_process_job(job_id: str):
+    """Carrega e processa um job automaticamente dado o ID."""
+    if not job_id: return
+    
+    # Define o ID na sessão
+    st.session_state['drive_job_id_input'] = job_id
+
+    with st.status(f"Carregando automaticamente job '{job_id}'...", expanded=True) as status_box:
+        # Limpa diretório temporário anterior
+        if st.session_state.get("temp_assets_dir") and os.path.exists(st.session_state["temp_assets_dir"]):
+            try:
+                _shutil.rmtree(st.session_state["temp_assets_dir"])
+            except: pass
+        
+        temp_assets_dir = tempfile.mkdtemp()
+        payload = load_job_from_drive(job_id)
+        
+        if payload and process_job_payload(payload, temp_assets_dir):
+            st.session_state.update({"job_loaded_from_drive": True, "temp_assets_dir": temp_assets_dir})
+            status_box.update(label=f"✅ Job carregado com sucesso!", state="complete")
+            time.sleep(0.5)
+            st.rerun()
+        else:
+            status_box.update(label="❌ Erro ao carregar job.", state="error")
+            if os.path.exists(temp_assets_dir):
+                try: _shutil.rmtree(temp_assets_dir)
+                except: pass
+            st.session_state["temp_assets_dir"] = None
+
+# =========================
 # APP MAIN
 # =========================
 if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "generated_srt_content": "", "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None})
@@ -502,23 +534,28 @@ with tab1:
         
         if st.session_state['lista_jobs']:
             opts = {j['display']: j['job_id'] for j in st.session_state['lista_jobs']}
-            sel = st.selectbox("Selecione um Job:", list(opts.keys()))
-            if st.button("📂 Carregar"):
-                st.session_state['drive_job_id_input'] = opts[sel]
-                st.rerun()
+            
+            # Callback para auto-load quando mudar a seleção
+            selected_display = st.selectbox(
+                "Selecione um Job:", 
+                options=list(opts.keys()),
+                index=None, # Começa sem seleção para forçar evento de mudança
+                placeholder="Escolha um job para carregar..."
+            )
+            
+            # Dispara auto-load se houver seleção
+            if selected_display:
+                selected_id = opts[selected_display]
+                # Verifica se é um novo job para não recarregar em loop
+                if selected_id != st.session_state.get('drive_job_id_input'):
+                     auto_load_and_process_job(selected_id)
         else: st.info("Nenhum job pronto encontrado.")
 
     with c2:
-        jid_in = st.text_input("ID Manual:", key="drive_job_id_input")
-        if st.button("Baixar ID", disabled=not jid_in):
-            with st.status(f"Baixando {jid_in}...") as s:
-                if st.session_state.get("temp_assets_dir"): _shutil.rmtree(st.session_state["temp_assets_dir"])
-                tmp = tempfile.mkdtemp()
-                p = load_job_from_drive(jid_in)
-                if p and process_job_payload(p, tmp):
-                    st.session_state.update({"job_loaded_from_drive": True, "temp_assets_dir": tmp})
-                    s.update(label="Sucesso!", state="complete"); time.sleep(1); st.rerun()
-                else: s.update(label="Erro/Incompleto", state="error")
+        # Mantém opção manual caso o usuário queira colar um ID direto
+        jid_in = st.text_input("ID Manual:", key="drive_job_id_input_manual") 
+        if st.button("Baixar ID Manual", disabled=not jid_in):
+             auto_load_and_process_job(jid_in)
 
     if st.session_state["job_loaded_from_drive"]:
         st.success(f"Job Ativo")
