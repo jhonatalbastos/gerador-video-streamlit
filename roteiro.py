@@ -4,12 +4,38 @@ import json
 import os
 import re
 import calendar
+import shutil
+import logging
+import io
 from datetime import date, timedelta
 from groq import Groq
 from bs4 import BeautifulSoup
 
 # ==========================================
-# CONFIGURAÇÕES E CONSTANTES
+# CONFIGURAÇÃO DE LOGS (DEBUG)
+# ==========================================
+if 'log_capture_string' not in st.session_state:
+    st.session_state.log_capture_string = io.StringIO()
+
+def setup_logging():
+    """Configura o logger para gravar na memória e exibir na tela."""
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
+    # Limpa handlers anteriores para evitar duplicação no Streamlit
+    if logger.hasHandlers():
+        logger.handlers.clear()
+        
+    # Handler para nossa string na memória
+    handler = logging.StreamHandler(st.session_state.log_capture_string)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
+    return logger
+
+logger = setup_logging()
+
+# ==========================================
+# CONFIGURAÇÕES GERAIS
 # ==========================================
 
 st.set_page_config(page_title="Roteirista Litúrgico Multi-Job", layout="wide")
@@ -30,11 +56,16 @@ def load_json(file_path):
     if os.path.exists(file_path):
         try:
             with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
-        except: return {} if "char" in file_path else []
+        except Exception as e:
+            logger.error(f"Erro ao ler JSON {file_path}: {e}")
+            return {} if "char" in file_path else []
     return {} if "char" in file_path else []
 
 def save_json(file_path, data):
-    with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Erro ao salvar JSON {file_path}: {e}")
 
 def load_characters():
     custom = load_json(CHARACTERS_FILE)
@@ -58,103 +89,127 @@ def update_history_bulk(dates_list):
         save_json(HISTORY_FILE, hist)
 
 # ==========================================
-# SERVIÇOS EXTERNOS (GROQ, API, SCRAPER)
+# SERVIÇOS EXTERNOS
 # ==========================================
 
 def get_groq_client():
     api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-    if not api_key: st.error("❌ GROQ_API_KEY não encontrada."); st.stop()
+    if not api_key:
+        logger.critical("GROQ_API_KEY não encontrada.")
+        st.error("❌ GROQ_API_KEY não encontrada."); st.stop()
     return Groq(api_key=api_key)
 
 def fetch_liturgia_cancaonova(date_obj):
-    """Fallback: Busca liturgia no site da Canção Nova se a API principal falhar."""
-    date_str = date_obj.strftime("%d-%m-%Y") # Formato da URL CN
+    """Fallback: Busca liturgia no site da Canção Nova com logs detalhados."""
+    date_str = date_obj.strftime("%d-%m-%Y")
     url = f"https://liturgia.cancaonova.com/pb/liturgia/{date_str}/"
+    
+    logger.info(f"[BACKUP] Iniciando tentativa de backup na Canção Nova: {url}")
     
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, timeout=20)
+        
+        logger.info(f"[BACKUP] Status Code: {response.status_code}")
         
         if response.status_code != 200:
+            logger.error(f"[BACKUP] Falha na requisição. Código: {response.status_code}")
             return None
 
         soup = BeautifulSoup(response.content, 'html.parser')
         entry_content = soup.find('div', class_='entry-content')
         
         if not entry_content:
+            logger.error("[BACKUP] Div 'entry-content' não encontrada no HTML. O layout do site pode ter mudado.")
+            # Debug: Mostra os primeiros 500 chars do HTML para ver se foi bloqueio
+            logger.debug(f"[BACKUP] HTML Preview: {response.text[:500]}")
             return None
 
-        # Estrutura de retorno compatível com a API Vercel
         full_text = entry_content.get_text("\n")
+        logger.info(f"[BACKUP] Texto extraído com sucesso. Tamanho: {len(full_text)} caracteres.")
         
-        # Tentativa simples de separação por palavras-chave
         readings = {}
         
-        # Regex para encontrar blocos (Lógica aproximada)
-        # Tenta achar onde começa cada parte
         idx_1a = re.search(r'(1ª Leitura|Primeira Leitura)', full_text, re.IGNORECASE)
         idx_salmo = re.search(r'(Salmo|Salmo Responsorial)', full_text, re.IGNORECASE)
         idx_2a = re.search(r'(2ª Leitura|Segunda Leitura)', full_text, re.IGNORECASE)
         idx_evang = re.search(r'(Evangelho)', full_text, re.IGNORECASE)
 
-        # Helper para extrair texto entre índices
         def get_chunk(start_match, end_match, text):
             if not start_match: return ""
             start = start_match.end()
             end = end_match.start() if end_match else len(text)
             return text[start:end].strip()
 
-        # Monta o objeto readings
         if idx_1a:
             readings['first_reading'] = {'text': get_chunk(idx_1a, idx_salmo, full_text), 'title': '1ª Leitura (Backup)'}
-        
+        else:
+            logger.warning("[BACKUP] 1ª Leitura não identificada no texto.")
+
         if idx_salmo:
-            # O salmo vai até a 2ª leitura ou Evangelho
             end_salmo = idx_2a if idx_2a else idx_evang
             readings['psalm'] = {'text': get_chunk(idx_salmo, end_salmo, full_text), 'title': 'Salmo (Backup)'}
+        else:
+            logger.warning("[BACKUP] Salmo não identificado no texto.")
             
         if idx_2a:
             readings['second_reading'] = {'text': get_chunk(idx_2a, idx_evang, full_text), 'title': '2ª Leitura (Backup)'}
             
         if idx_evang:
             readings['gospel'] = {'text': full_text[idx_evang.end():].strip(), 'title': 'Evangelho (Backup)'}
+        else:
+            logger.warning("[BACKUP] Evangelho não identificado no texto.")
 
         if not readings:
-            # Se falhar a separação, retorna tudo no Evangelho para não perder o dia
-            readings['gospel'] = {'text': full_text[:2000], 'title': 'Leitura Completa (Backup - Falha na Separação)'}
+            logger.warning("[BACKUP] Nenhuma leitura separada corretamente. Retornando texto bruto.")
+            readings['gospel'] = {'text': full_text[:2500], 'title': 'Leitura Completa (Backup - Bruto)'}
 
         return {'readings': readings, 'source': 'Backup Canção Nova'}
 
     except Exception as e:
-        print(f"Erro no backup Canção Nova: {e}")
+        logger.error(f"[BACKUP] Exceção crítica: {e}", exc_info=True)
         return None
 
 def fetch_liturgia(date_obj):
-    # 1. Tenta API Principal (Vercel)
+    # 1. Tenta API Principal
     url_vercel = f"https://api-liturgia-diaria.vercel.app/?date={date_obj.strftime('%Y-%m-%d')}".strip()
+    logger.info(f"Tentando API Principal: {url_vercel}")
+    
     try:
         resp = requests.get(url_vercel, timeout=10)
         if resp.status_code == 200:
+            logger.info("Sucesso na API Principal (Vercel).")
             return resp.json()
         else:
-            print(f"Erro API Vercel ({resp.status_code}). Tentando backup...")
+            logger.warning(f"Falha API Principal. Status: {resp.status_code}. Motivo: {resp.text}")
     except Exception as e:
-        print(f"Exceção API Vercel: {e}. Tentando backup...")
+        logger.warning(f"Erro de conexão API Principal: {e}")
 
-    # 2. Tenta Backup (Canção Nova)
-    st.toast(f"Usando fonte de backup para {date_obj.strftime('%d/%m')}...", icon="⚠️")
+    # 2. Tenta Backup
+    st.toast(f"API instável. Tentando backup para {date_obj.strftime('%d/%m')}...", icon="⚠️")
     return fetch_liturgia_cancaonova(date_obj)
 
 def send_to_gas(payload):
     gas_url = st.secrets.get("GAS_SCRIPT_URL") or os.getenv("GAS_SCRIPT_URL")
-    if not gas_url: st.error("❌ GAS_SCRIPT_URL não encontrada."); return None
+    if not gas_url:
+        logger.error("URL do GAS não configurada.")
+        st.error("❌ GAS_SCRIPT_URL não encontrada."); return None
+    
+    logger.info(f"Enviando job para GAS. Ref: {payload.get('meta_dados', {}).get('ref')}")
     try:
         resp = requests.post(f"{gas_url}?action=generate_job", json=payload)
-        return resp.json() if resp.status_code == 200 else None
-    except Exception as e: st.error(f"Erro GAS: {e}"); return None
+        if resp.status_code == 200:
+            logger.info("Envio para GAS com sucesso.")
+            return resp.json()
+        else:
+            logger.error(f"Erro GAS: {resp.status_code} - {resp.text}")
+            return None
+    except Exception as e:
+        logger.error(f"Exceção no envio GAS: {e}")
+        st.error(f"Erro GAS: {e}"); return None
 
 # ==========================================
-# LÓGICA DE IA (GROQ) E PROCESSAMENTO
+# LÓGICA DE IA E UTILS
 # ==========================================
 
 def generate_script_and_identify_chars(reading_text, reading_type):
@@ -177,16 +232,23 @@ def generate_script_and_identify_chars(reading_text, reading_type):
     4. aplicacao (20-25s).
     5. oracao (15-20s): Inicie com "Vamos orar"/"Oremos"/"Ore comigo". FIM: "Amém!".
     EXTRA: Identifique PERSONAGENS (exceto Jesus/Deus). SAÍDA JSON: {{"roteiro": {{...}}, "personagens_identificados": [...]}}"""
+    
     try:
+        logger.info(f"Gerando roteiro para: {reading_type}")
         chat = client.chat.completions.create(messages=[{"role": "system", "content": prompt}, {"role": "user", "content": f"Texto:\n{reading_text}"}], model="llama-3.3-70b-versatile", response_format={"type": "json_object"}, temperature=0.7)
         return json.loads(chat.choices[0].message.content)
-    except: return None
+    except Exception as e:
+        logger.error(f"Erro Groq na geração de roteiro: {e}")
+        return None
 
 def generate_character_description(name):
     try:
+        logger.info(f"Gerando descrição visual para: {name}")
         chat = get_groq_client().chat.completions.create(messages=[{"role": "user", "content": f"Descrição visual detalhada personagem bíblico: {name}. Rosto, roupas. ~300 chars. Realista."}], model="llama-3.3-70b-versatile", temperature=0.7)
         return chat.choices[0].message.content.strip()
-    except: return "Sem descrição."
+    except Exception as e:
+        logger.error(f"Erro Groq na descrição de personagem: {e}")
+        return "Sem descrição."
 
 def build_prompts(roteiro, chars, db, style):
     desc_j = db.get("Jesus", FIXED_CHARACTERS["Jesus"])
@@ -211,10 +273,6 @@ def extract(obj):
     if "content_psalm" in obj: return f"{obj.get('response', '')}\n" + ("\n".join(obj["content_psalm"]) if isinstance(obj["content_psalm"], list) else str(obj["content_psalm"]))
     return clean_text(obj.get("text") or obj.get("texto"))
 
-# ==========================================
-# INTERFACE GRÁFICA
-# ==========================================
-
 def render_calendar(history):
     today = date.today()
     cal = calendar.monthcalendar(today.year, today.month)
@@ -234,6 +292,10 @@ def render_calendar(history):
     html += "</div><div style='margin-top:5px; font-size:10px;'>🟩 Enviado</div></div>"
     st.sidebar.markdown(html, unsafe_allow_html=True)
 
+# ==========================================
+# INTERFACE PRINCIPAL
+# ==========================================
+
 def main():
     st.sidebar.title("⚙️ Config")
     char_db = load_characters()
@@ -241,8 +303,18 @@ def main():
     render_calendar(history)
     
     st.sidebar.markdown("---")
+    with st.sidebar.expander("📝 Logs do Sistema (Debug)"):
+        # Mostra os logs
+        log_content = st.session_state.log_capture_string.getvalue()
+        st.text_area("Log Output", value=log_content, height=200, key="log_view")
+        st.download_button("Baixar Logs", log_content, file_name="debug_logs.txt")
+        if st.button("Limpar Logs"):
+            st.session_state.log_capture_string.truncate(0)
+            st.session_state.log_capture_string.seek(0)
+            st.rerun()
+
     with st.sidebar.expander("🧹 Manutenção"):
-        if st.button("Limpar Histórico"):
+        if st.button("Limpar Histórico de Envios"):
             if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE); st.rerun()
         if st.button("Limpar Cache"): st.session_state.clear(); st.rerun()
 
@@ -266,12 +338,14 @@ def main():
                 count = 0
                 while curr <= dt_fim:
                     st.write(f"Baixando: {curr.strftime('%d/%m/%Y')}")
-                    # Chama função que tem o fallback embutido
                     data = fetch_liturgia(curr)
                     if data:
-                        # Adaptação para estrutura da API Vercel OU do Backup Canção Nova
-                        rds = data.get('today', {}).get('readings', {}) or data.get('readings', {})
+                        rds = data.get('today', {}).get('readings', {}) or data.get('readings', {}) or data.get('readings', {})
                         
+                        # Se veio do backup, a estrutura já é 'readings' direto na raiz do dict
+                        if 'source' in data and data['source'] == 'Backup Canção Nova':
+                            rds = data['readings']
+
                         def add(k, t):
                             if k in rds:
                                 txt, ref = extract(rds[k]), rds[k].get('title', t)
