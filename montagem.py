@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V4 (Limpeza Fina)
+# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V5 (Upload Manual)
 import os
 import re
 import json
@@ -197,7 +197,6 @@ def process_job_payload(payload: Dict, temp_dir: str):
         
         # --- 1. DATA (Formatação com Ponto) ---
         d_raw = meta.get("data", "")
-        # Tenta parsear formato ISO (YYYY-MM-DD)
         if re.match(r"\d{4}-\d{2}-\d{2}", d_raw):
             try:
                 d_obj = datetime.strptime(d_raw, '%Y-%m-%d')
@@ -205,7 +204,6 @@ def process_job_payload(payload: Dict, temp_dir: str):
             except:
                 st.session_state["data_display"] = d_raw.replace('/', '.')
         else:
-            # Se já vier formatado ou outro formato (DD/MM/YYYY), apenas substitui barras
             st.session_state["data_display"] = d_raw.replace('/', '.')
             
         # --- 2. TÍTULO E REFERÊNCIA ---
@@ -213,32 +211,27 @@ def process_job_payload(payload: Dict, temp_dir: str):
         title = "EVANGELHO" # Padrão
         clean_ref = raw_ref
 
-        # Separa o tipo da referência se houver hífen (padrão do roteiro.py)
         if " - " in raw_ref:
             parts = raw_ref.split(" - ", 1)
             tipo_raw = parts[0]
             clean_ref = parts[1]
             
-            # Define Título (Linha 1)
             if "1ª" in tipo_raw or "Primeira" in tipo_raw: title = "1ª LEITURA"
             elif "2ª" in tipo_raw or "Segunda" in tipo_raw: title = "2ª LEITURA"
             elif "Salmo" in tipo_raw: title = "SALMO"
         else:
-            # Fallback se não tiver hífen
             if "Salmo" in raw_ref: title = "SALMO"
             elif "Leitura" in raw_ref: title = "1ª LEITURA"
         
-        # --- LIMPEZA FINA DA REFERÊNCIA (Linha 3) ---
-        # Remove prefixos repetitivos como "Primeira leitura: ", "Salmo Responsorial: ", etc.
+        # Limpeza fina de prefixos
         patterns_to_remove = [
-            r"^(Primeira|Segunda|1ª|2ª)\s*Leitura\s*:\s*",  # Remove "Primeira leitura: "
-            r"^Leitura\s*(do|da)\s*.*:\s*",                 # Remove "Leitura do Livro...:"
-            r"^Salmo\s*Responsorial\s*:\s*",                # Remove "Salmo Responsorial:"
-            r"^Salmo\s*:\s*",                               # Remove "Salmo:"
-            r"^Evangelho\s*:\s*",                           # Remove "Evangelho:"
-            r"^Proclamação\s*do\s*Evangelho.*:\s*"          # Remove "Proclamação..."
+            r"^(Primeira|Segunda|1ª|2ª)\s*Leitura\s*:\s*",
+            r"^Leitura\s*(do|da)\s*.*:\s*",
+            r"^Salmo\s*Responsorial\s*:\s*",
+            r"^Salmo\s*:\s*",
+            r"^Evangelho\s*:\s*",
+            r"^Proclamação\s*do\s*Evangelho.*:\s*"
         ]
-        
         for pat in patterns_to_remove:
             clean_ref = re.sub(pat, "", clean_ref, flags=re.IGNORECASE).strip()
 
@@ -251,9 +244,9 @@ def process_job_payload(payload: Dict, temp_dir: str):
         st.session_state["generated_srt_content"] = ""
 
         assets = payload.get("assets", [])
+        # Permitimos continuar mesmo sem assets, para o usuário fazer upload manual se quiser
         if not assets:
-            st.error("❌ Job sem assets.")
-            return False
+            st.warning("⚠️ Job sem assets. Use os botões de upload abaixo para adicionar mídia manual.")
 
         for asset in assets:
             bid, atype, b64 = asset.get("block_id"), asset.get("type"), asset.get("data_b64")
@@ -307,14 +300,6 @@ def resolve_font(choice, upload):
     for f in sys_fonts.get(choice, []): return f
     return None
 
-def get_main_title(ref_text: str) -> str:
-    """Fallback para título se necessário."""
-    ref = ref_text.lower()
-    if "1ª leitura" in ref or "primeira leitura" in ref: return "1ª LEITURA"
-    if "2ª leitura" in ref or "segunda leitura" in ref: return "2ª LEITURA"
-    if "salmo" in ref: return "SALMO"
-    return "EVANGELHO" 
-
 def criar_preview(w, h, texts, upload):
     img = Image.new("RGB", (w, h), "black")
     draw = ImageDraw.Draw(img)
@@ -322,15 +307,17 @@ def criar_preview(w, h, texts, upload):
         if not t["text"]: continue
         try: font = ImageFont.truetype(resolve_font(t["font_style"], upload), t["size"])
         except: font = ImageFont.load_default()
-        
-        # Centraliza
         try: length = draw.textlength(t["text"], font=font)
         except: length = len(t["text"]) * t["size"] * 0.5
         x = (w - length) / 2
-        
         draw.text((x, t["y"]), t["text"], fill=t["color"], font=font)
     bio = BytesIO(); img.save(bio, "PNG"); bio.seek(0)
     return bio
+
+def get_alpha(anim, dur):
+    if anim == "Fade In": return "alpha='min(1,t/1)'"
+    if anim == "Fade In/Out": return f"alpha='min(1,t/1)*min(1,({dur}-t)/1)'"
+    return "alpha=1"
 
 def san(txt): return txt.replace(":", "\\:").replace("'", "") if txt else ""
 
@@ -346,11 +333,9 @@ def whisper_srt(audio_path):
 # =========================
 # APP MAIN
 # =========================
-# Inicializa session state
 if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "generated_srt_content": "", "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None})
 if "overlay_settings" not in st.session_state: st.session_state["overlay_settings"] = load_config()
 
-# Sidebar
 res_choice = st.sidebar.selectbox("Resolução", ["9:16 (Stories)", "16:9 (YouTube)", "1:1 (Feed)"])
 font_up = st.sidebar.file_uploader("Fonte .ttf", type=["ttf"])
 
@@ -423,7 +408,6 @@ with tab2:
             sets["sub_y_pos"] = st.slider("Posição Y (px do fundo)", 0, 500, 150)
             sets["sub_color"] = st.color_picker("Cor Texto", "#FFFF00")
             sets["sub_outline_color"] = st.color_picker("Cor Borda", "#000000")
-        
         if st.button("Salvar Config"): save_config(sets); st.success("Salvo!")
 
     with c2:
@@ -440,7 +424,7 @@ with tab3:
     st.header("Renderização")
     if not st.session_state["job_loaded_from_drive"]: st.warning("Carregue um job primeiro."); st.stop()
     
-    # Review Assets
+    # Review e Upload Manual de Assets
     for bid in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]:
         with st.expander(bid.upper()):
             c1, c2 = st.columns([2, 1])
@@ -448,16 +432,36 @@ with tab3:
             img = st.session_state["generated_images_blocks"].get(bid)
             with c1: 
                 if aud: st.audio(aud)
-                else: st.warning("Sem áudio")
+                else: st.info("Sem áudio")
+                
+                # Uploader de Áudio Manual
+                aud_file = st.file_uploader(f"🎤 Enviar Áudio para {bid.upper()}", type=["mp3", "wav"], key=f"up_aud_{bid}")
+                if aud_file:
+                    if st.session_state.get("temp_assets_dir"):
+                        path = os.path.join(st.session_state["temp_assets_dir"], f"{bid}.wav")
+                        with open(path, "wb") as f: f.write(aud_file.read())
+                        st.session_state["generated_audios_blocks"][bid] = path
+                        st.success("Áudio atualizado!")
+                        st.rerun()
+
             with c2: 
                 if img: st.image(img)
-                else: st.warning("Sem imagem")
+                else: st.info("Sem imagem")
+                
+                # Uploader de Imagem Manual
+                img_file = st.file_uploader(f"🖼️ Enviar Imagem para {bid.upper()}", type=["png", "jpg", "jpeg"], key=f"up_img_{bid}")
+                if img_file:
+                    if st.session_state.get("temp_assets_dir"):
+                        path = os.path.join(st.session_state["temp_assets_dir"], f"{bid}.png")
+                        with open(path, "wb") as f: f.write(img_file.read())
+                        st.session_state["generated_images_blocks"][bid] = path
+                        st.success("Imagem atualizada!")
+                        st.rerun()
 
     st.divider()
     use_subs = st.checkbox("Queimar Legendas", value=True)
     use_over = st.checkbox("Overlay Texto", value=True)
     
-    # Whisper
     if st.button("Gerar Legendas (Whisper)"):
         with st.status("Transcrevendo...") as s:
             auds = [p for p in st.session_state["generated_audios_blocks"].values() if os.path.exists(p)]
@@ -475,7 +479,6 @@ with tab3:
                 s.update(label="Legendas Geradas!", state="complete"); st.rerun()
             else: s.update(label="Erro Whisper", state="error")
 
-    # Render
     if st.button("RENDERIZAR VÍDEO FINAL", type="primary"):
         with st.status("Renderizando...", expanded=True) as s:
             try:
@@ -483,8 +486,6 @@ with tab3:
                 clips = []
                 res = get_resolution_params(res_choice)
                 w, h = res["w"], res["h"]
-                
-                # Overlay Setup
                 f1 = resolve_font(sets["line1_font"], font_up)
                 
                 for bid in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]:
@@ -495,7 +496,6 @@ with tab3:
                     dur = get_audio_duration(aud)
                     out = os.path.join(tmp, f"{bid}.mp4")
                     
-                    # Zoom Effect
                     vf = f"scale={w}x{h}" 
                     if sets["effect_type"] == "Zoom In (Ken Burns)":
                         vf = f"zoompan=z='min(zoom+0.0015,1.5)':d={int(dur*25)}:s={w}x{h}:fps=25"
@@ -507,7 +507,6 @@ with tab3:
                     filters = [vf, f"fade=t=in:st=0:d=0.5,fade=t=out:st={dur-0.5}:d=0.5"]
                     
                     if use_over and f1:
-                        # Títulos Dinâmicos
                         t1 = san(st.session_state.get("title_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t1}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}")
                         t2 = san(st.session_state.get("data_display", ""))
@@ -518,7 +517,6 @@ with tab3:
                     run_cmd(["ffmpeg", "-y", "-loop", "1", "-i", img, "-i", aud, "-vf", ",".join(filters), "-c:v", "libx264", "-t", str(dur), "-pix_fmt", "yuv420p", "-shortest", out])
                     clips.append(out)
 
-                # Concat
                 lst = os.path.join(tmp, "list.txt")
                 with open(lst, "w") as f:
                     for c in clips: f.write(f"file '{c}'\n")
@@ -527,8 +525,6 @@ with tab3:
                 run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", conc])
                 
                 final = os.path.join(tmp, "final.mp4")
-                
-                # Subtitles & Music
                 mix_cmd = ["ffmpeg", "-y", "-i", conc]
                 filter_complex = []
                 
