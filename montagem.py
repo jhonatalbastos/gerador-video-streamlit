@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V2
+# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V3 (Limpeza de Títulos)
 import os
 import re
 import json
@@ -131,7 +131,6 @@ def download_file_content(service, file_id: str) -> Optional[str]:
     except: return None
 
 def list_recent_jobs(limit: int = 15) -> List[Dict]:
-    """Lista Jobs CONCLUÍDOS (com descrição 'COMPLETE') na pasta."""
     service = get_drive_service()
     if not service: return []
     jobs_list = []
@@ -142,7 +141,6 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
         if not folders: return []
         folder_id = folders[0]['id']
 
-        # Filtra arquivos JSON
         query_file = (
             f"mimeType = 'application/json' and "
             f"'{folder_id}' in parents and "
@@ -159,9 +157,7 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
         files = results.get('files', [])
 
         for f in files:
-            # Filtragem Client-Side: Apenas COMPLETE
-            if f.get('description') != 'COMPLETE':
-                continue
+            if f.get('description') != 'COMPLETE': continue
 
             content = download_file_content(service, f['id'])
             if content:
@@ -175,7 +171,6 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
                         "file_id": f['id']
                     })
                 except: continue
-            
             if len(jobs_list) >= limit: break
                 
     except Exception as e:
@@ -197,6 +192,7 @@ def process_job_payload(payload: Dict, temp_dir: str):
         st.session_state["roteiro_gerado"] = payload.get("roteiro", {})
         meta = payload.get("meta_dados", {})
         
+        # 1. DATA (Linha 2)
         d_raw = meta.get("data", "")
         if re.match(r"\d{4}-\d{2}-\d{2}", d_raw):
             try:
@@ -206,7 +202,37 @@ def process_job_payload(payload: Dict, temp_dir: str):
         else:
             st.session_state["data_display"] = d_raw
             
-        st.session_state["ref_display"] = meta.get("ref", "")
+        # 2. TÍTULO E REFERÊNCIA (Linha 1 e 3)
+        # O formato vindo do roteiro.py é "TIPO - REFERENCIA" (ex: "1ª Leitura - Is 26,1-6")
+        raw_ref = meta.get("ref", "")
+        title = "EVANGELHO" # Padrão
+        clean_ref = raw_ref
+
+        if " - " in raw_ref:
+            parts = raw_ref.split(" - ", 1)
+            tipo_raw = parts[0]
+            clean_ref = parts[1]
+            
+            # Define Título (Linha 1)
+            if "1ª" in tipo_raw or "Primeira" in tipo_raw: title = "1ª LEITURA"
+            elif "2ª" in tipo_raw or "Segunda" in tipo_raw: title = "2ª LEITURA"
+            elif "Salmo" in tipo_raw: title = "SALMO"
+            
+            # Limpeza específica para Salmo na Referência (Linha 3)
+            if title == "SALMO":
+                # Remove prefixos para padronizar e adiciona o texto completo
+                base_ref = clean_ref.replace("Salmo ", "").replace("Sl ", "").replace("Responsorial ", "").strip()
+                clean_ref = f"Salmo Responsorial {base_ref}"
+                
+        else:
+            # Fallback se não tiver hífen
+            if "Salmo" in raw_ref: title = "SALMO"
+            elif "Leitura" in raw_ref: title = "LEITURA"
+        
+        st.session_state["title_display"] = title
+        st.session_state["ref_display"] = clean_ref
+
+        # 3. ASSETS
         st.session_state["generated_images_blocks"] = {}
         st.session_state["generated_audios_blocks"] = {}
         st.session_state["generated_srt_content"] = ""
@@ -268,14 +294,6 @@ def resolve_font(choice, upload):
     for f in sys_fonts.get(choice, []): return f
     return None
 
-def get_main_title(ref_text: str) -> str:
-    """Determina o título principal (Linha 1) com base na referência."""
-    ref = ref_text.lower()
-    if "1ª leitura" in ref or "primeira leitura" in ref: return "1ª LEITURA"
-    if "2ª leitura" in ref or "segunda leitura" in ref: return "2ª LEITURA"
-    if "salmo" in ref: return "SALMO RESPONSORIAL"
-    return "EVANGELHO" # Padrão
-
 def criar_preview(w, h, texts, upload):
     img = Image.new("RGB", (w, h), "black")
     draw = ImageDraw.Draw(img)
@@ -283,14 +301,15 @@ def criar_preview(w, h, texts, upload):
         if not t["text"]: continue
         try: font = ImageFont.truetype(resolve_font(t["font_style"], upload), t["size"])
         except: font = ImageFont.load_default()
-        draw.text((10, t["y"]), t["text"], fill=t["color"], font=font)
+        
+        # Centraliza
+        try: length = draw.textlength(t["text"], font=font)
+        except: length = len(t["text"]) * t["size"] * 0.5
+        x = (w - length) / 2
+        
+        draw.text((x, t["y"]), t["text"], fill=t["color"], font=font)
     bio = BytesIO(); img.save(bio, "PNG"); bio.seek(0)
     return bio
-
-def get_alpha(anim, dur):
-    if anim == "Fade In": return "alpha='min(1,t/1)'"
-    if anim == "Fade In/Out": return f"alpha='min(1,t/1)*min(1,({dur}-t)/1)'"
-    return "alpha=1"
 
 def san(txt): return txt.replace(":", "\\:").replace("'", "") if txt else ""
 
@@ -306,7 +325,8 @@ def whisper_srt(audio_path):
 # =========================
 # APP MAIN
 # =========================
-if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "generated_srt_content": "", "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None})
+# Inicializa session state
+if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "generated_srt_content": "", "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None})
 if "overlay_settings" not in st.session_state: st.session_state["overlay_settings"] = load_config()
 
 # Sidebar
@@ -347,13 +367,16 @@ with tab1:
                 else: s.update(label="Erro/Incompleto", state="error")
 
     if st.session_state["job_loaded_from_drive"]:
-        st.success(f"Job Ativo: {st.session_state['ref_display']}")
-        c1, c2 = st.columns(2)
+        st.success(f"Carregado: {st.session_state['title_display']} - {st.session_state['ref_display']}")
+        c1, c2, c3 = st.columns(3)
         with c1: 
-            val = st.text_input("Data Display", st.session_state["data_display"])
+            val = st.text_input("Título (Linha 1)", st.session_state["title_display"])
+            if val != st.session_state["title_display"]: st.session_state["title_display"] = val
+        with c2: 
+            val = st.text_input("Data (Linha 2)", st.session_state["data_display"])
             if val != st.session_state["data_display"]: st.session_state["data_display"] = val
-        with c2:
-            val = st.text_input("Ref Display", st.session_state["ref_display"])
+        with c3:
+            val = st.text_input("Referência (Linha 3)", st.session_state["ref_display"])
             if val != st.session_state["ref_display"]: st.session_state["ref_display"] = val
 
 # TAB 2
@@ -361,10 +384,6 @@ with tab2:
     st.header("Editor Visual")
     c1, c2 = st.columns(2)
     sets = st.session_state["overlay_settings"]
-    
-    # Título Dinâmico
-    current_ref = st.session_state.get("ref_display", "")
-    dynamic_title = get_main_title(current_ref)
     
     with c1:
         with st.expander("Movimento"):
@@ -389,9 +408,9 @@ with tab2:
     with c2:
         res = get_resolution_params(res_choice)
         prev = criar_preview(int(res["w"]*0.4), int(res["h"]*0.4), [
-            {"text": dynamic_title, "size": int(sets["line1_size"]*0.4), "y": int(sets["line1_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
+            {"text": st.session_state.get("title_display","EVANGELHO"), "size": int(sets["line1_size"]*0.4), "y": int(sets["line1_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
             {"text": st.session_state.get("data_display","01.01.2025"), "size": int(sets["line2_size"]*0.4), "y": int(sets["line2_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
-            {"text": current_ref, "size": int(sets["line3_size"]*0.4), "y": int(sets["line3_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
+            {"text": st.session_state.get("ref_display","Mt 1,1"), "size": int(sets["line3_size"]*0.4), "y": int(sets["line3_y"]*0.4), "color": "white", "font_style": sets["line1_font"]},
         ], font_up)
         st.image(prev, caption="Preview")
 
@@ -447,9 +466,6 @@ with tab3:
                 # Overlay Setup
                 f1 = resolve_font(sets["line1_font"], font_up)
                 
-                # TITULO DINAMICO PARA O VÍDEO
-                dynamic_title = get_main_title(st.session_state.get("ref_display", ""))
-                
                 for bid in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]:
                     aud = st.session_state["generated_audios_blocks"].get(bid)
                     img = st.session_state["generated_images_blocks"].get(bid)
@@ -470,14 +486,15 @@ with tab3:
                     filters = [vf, f"fade=t=in:st=0:d=0.5,fade=t=out:st={dur-0.5}:d=0.5"]
                     
                     if use_over and f1:
-                        # Título dinâmico (Line 1)
-                        filters.append(f"drawtext=fontfile='{f1}':text='{dynamic_title}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}")
-                        # Referência (Line 3 - ex: Is 26,1)
-                        t3 = san(st.session_state.get("ref_display", ""))
-                        if t3: filters.append(f"drawtext=fontfile='{f1}':text='{t3}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
-                        # Data (Line 2)
+                        # Linha 1 (Título)
+                        t1 = san(st.session_state.get("title_display", ""))
+                        filters.append(f"drawtext=fontfile='{f1}':text='{t1}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}")
+                        # Linha 2 (Data)
                         t2 = san(st.session_state.get("data_display", ""))
-                        if t2: filters.append(f"drawtext=fontfile='{f1}':text='{t2}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}")
+                        filters.append(f"drawtext=fontfile='{f1}':text='{t2}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}")
+                        # Linha 3 (Ref)
+                        t3 = san(st.session_state.get("ref_display", ""))
+                        filters.append(f"drawtext=fontfile='{f1}':text='{t3}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
 
                     run_cmd(["ffmpeg", "-y", "-loop", "1", "-i", img, "-i", aud, "-vf", ",".join(filters), "-c:v", "libx264", "-t", str(dur), "-pix_fmt", "yuv420p", "-shortest", out])
                     clips.append(out)
