@@ -7,12 +7,11 @@ import calendar
 import logging
 from datetime import date, timedelta, datetime
 from groq import Groq
-from bs4 import BeautifulSoup
 
 # ==========================================
 # CONFIGURAÇÕES
 # ==========================================
-st.set_page_config(page_title="Roteirista Litúrgico Multi-Job", layout="wide")
+st.set_page_config(page_title="Roteirista Litúrgico Híbrido", layout="wide")
 CHARACTERS_FILE = "characters_db.json"
 HISTORY_FILE = "history_db.json"
 STYLE_SUFFIX = ". Style: Cinematic Realistic, 1080p resolution, highly detailed, masterpiece, cinematic lighting, detailed texture, photography style."
@@ -23,7 +22,7 @@ FIXED_CHARACTERS = {
 }
 
 # ==========================================
-# FUNÇÕES AUXILIARES
+# PERSISTÊNCIA
 # ==========================================
 def load_json(file_path):
     if os.path.exists(file_path):
@@ -51,64 +50,28 @@ def update_history_bulk(dates):
     if updated: hist.sort(); save_json(HISTORY_FILE, hist)
 
 # ==========================================
-# FONTES DE DADOS
+# FONTES DE DADOS (APIS APENAS)
 # ==========================================
 def get_groq_client():
     api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
     if not api_key: st.error("❌ Configure GROQ_API_KEY."); st.stop()
     return Groq(api_key=api_key)
 
-# --- SCRAPER ARAUTOS (BACKUP FORTE) ---
-def fetch_liturgia_arautos(date_obj):
-    url = f"https://www.arautos.org/liturgia-diaria?date={date_obj.strftime('%Y-%m-%d')}"
-    print(f"Tentando Arautos: {url}")
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=15)
-        if r.status_code != 200: return None
-            
-        soup = BeautifulSoup(r.content, 'html.parser')
-        full_text = soup.get_text("\n")
-        
-        # Mapa simples
-        readings = {}
-        
-        # Regex para achar posições
-        # Procura por "Evangelho" ou "Proclamação..."
-        idx_evang = re.search(r'(Evangelho|Proclamação do Evangelho)', full_text, re.IGNORECASE)
-        idx_1a = re.search(r'(Primeira Leitura|Leitura do Livro)', full_text, re.IGNORECASE)
-        
-        # Extração Simples (Evangelho é prioridade)
-        if idx_evang:
-            # Pega tudo do Evangelho até "Outros santos" ou fim
-            raw = full_text[idx_evang.end():]
-            clean = re.split(r'(Outros santos|Santo do dia|Comentário)', raw, flags=re.IGNORECASE)[0]
-            readings['gospel'] = {'text': clean.strip()[:4000], 'title': 'Evangelho (Arautos)'}
-            
-        if idx_1a and idx_evang:
-            # Pega o que está entre 1a leitura e Evangelho como "1a Leitura" (simplificado)
-            raw = full_text[idx_1a.end():idx_evang.start()]
-            readings['first_reading'] = {'text': raw.strip()[:3000], 'title': '1ª Leitura (Arautos)'}
-
-        if readings: return {'readings': readings, 'source': 'Backup Arautos'}
-    except Exception as e: print(f"Erro Arautos: {e}")
-    return None
-
 def fetch_liturgia(date_obj):
-    # 1. Tenta Vercel
+    # 1. Vercel
     try:
         url = f"https://api-liturgia-diaria.vercel.app/?date={date_obj.strftime('%Y-%m-%d')}".strip()
         r = requests.get(url, timeout=5)
         if r.status_code == 200: return r.json()
     except: pass
 
-    # 2. Tenta Railway
+    # 2. Railway
     try:
         url = f"https://liturgia.up.railway.app/v2/{date_obj.strftime('%Y-%m-%d')}"
         r = requests.get(url, timeout=8)
         if r.status_code == 200:
             d = r.json()
-            # Normaliza Railway
+            # Normaliza Railway para padrão
             norm = {'readings': {}}
             if d.get('evangelho'): norm['readings']['gospel'] = {'text': d['evangelho'].get('texto'), 'title': 'Evangelho'}
             if d.get('primeira_leitura'): norm['readings']['first_reading'] = {'text': d['primeira_leitura'].get('texto'), 'title': '1ª Leitura'}
@@ -116,9 +79,8 @@ def fetch_liturgia(date_obj):
             if d.get('segunda_leitura'): norm['readings']['second_reading'] = {'text': d['segunda_leitura'].get('texto'), 'title': '2ª Leitura'}
             return norm
     except: pass
-
-    # 3. Tenta Arautos
-    return fetch_liturgia_arautos(date_obj)
+    
+    return None # Falha total
 
 def send_to_gas(payload):
     gas_url = st.secrets.get("GAS_SCRIPT_URL") or os.getenv("GAS_SCRIPT_URL")
@@ -129,7 +91,7 @@ def send_to_gas(payload):
     except: return None
 
 # ==========================================
-# LÓGICA IA
+# LÓGICA IA (GROQ)
 # ==========================================
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
@@ -188,11 +150,12 @@ def render_calendar(history):
             else:
                 d_str = f"{today.year}-{today.month:02d}-{day:02d}"
                 bg = "#d1fae5" if d_str in history else "transparent"
-                html += f"<div style='background:{bg}; border-radius:3px;'>{day}</div>"
+                border = "1px solid blue" if d_str == today.strftime("%Y-%m-%d") else "none"
+                html += f"<div style='background:{bg}; border:{border}; border-radius:3px;'>{day}</div>"
     st.sidebar.markdown(html + "</div></div>", unsafe_allow_html=True)
 
 # ==========================================
-# MAIN
+# INTERFACE
 # ==========================================
 def main():
     st.sidebar.title("⚙️ Config")
@@ -205,9 +168,11 @@ def main():
         if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE); st.rerun()
     if st.sidebar.button("Limpar Cache"): st.session_state.clear(); st.rerun()
 
-    tab1, tab2 = st.tabs(["📜 Roteiros (Massa)", "👥 Personagens"])
+    tab1, tab2 = st.tabs(["📜 Roteiros", "👥 Personagens"])
     if 'daily' not in st.session_state: st.session_state['daily'] = []
     if 'scripts' not in st.session_state: st.session_state['scripts'] = []
+    if 'manual_mode' not in st.session_state: st.session_state['manual_mode'] = False
+    if 'manual_date' not in st.session_state: st.session_state['manual_date'] = date.today()
 
     with tab1:
         st.header("1. Seleção de Datas")
@@ -215,54 +180,83 @@ def main():
         with c1: dt_ini = st.date_input("Início", value=date.today())
         with c2: dt_fim = st.date_input("Fim", value=date.today())
         
-        if st.button("Buscar Leituras"):
+        if st.button("Buscar Leituras (APIs)"):
             st.session_state['daily'] = []
             st.session_state['scripts'] = []
+            st.session_state['manual_mode'] = False # Reset manual
+            
+            if dt_fim < dt_ini: st.error("Data final menor que inicial"); st.stop()
             
             with st.status("🔍 Buscando...", expanded=True) as status:
                 curr = dt_ini
+                count = 0
                 while curr <= dt_fim:
                     st.write(f"🗓️ {curr.strftime('%d/%m')}")
                     data = fetch_liturgia(curr)
-                    
                     if data:
-                        # DEBUG: Mostra o que chegou para entendermos o erro
-                        # st.write(data) 
-                        
-                        # Tenta normalizar 'readings'
                         rds = {}
                         if 'readings' in data: 
                             if 'today' in data and 'readings' in data['today']: rds = data['today']['readings']
                             else: rds = data['readings']
                         else: rds = data
 
-                        # Função ADD robusta
-                        def add(key_list, label):
-                            obj = None
-                            for k in key_list:
-                                if k in rds and rds[k]:
-                                    obj = rds[k]
-                                    break
+                        def add(k, t):
+                            obj = rds.get(k)
+                            # Mapeamento flexível
+                            if not obj and k == 'gospel': obj = rds.get('evangelho')
+                            if not obj and k == 'first_reading': obj = rds.get('primeira_leitura') or rds.get('leitura_1')
+                            if not obj and k == 'psalm': obj = rds.get('salmo') or rds.get('salmo_responsorial')
+                            if not obj and k == 'second_reading': obj = rds.get('segunda_leitura') or rds.get('leitura_2')
                             
                             if obj:
-                                txt = extract(obj)
-                                if len(txt) > 20:
-                                    ref = obj.get('title') or label
-                                    st.session_state['daily'].append({"type": label, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")})
+                                txt_raw = obj.get('text') or obj.get('texto') or obj.get('conteudo') or obj.get('refrao')
+                                ref = obj.get('title') or obj.get('referencia', t)
+                                txt = extract({'text': txt_raw, 'content_psalm': obj.get('content_psalm'), 'response': obj.get('response')})
+                                if txt and len(txt) > 20: 
+                                    st.session_state['daily'].append({"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")})
                         
-                        # Tenta várias chaves possíveis para cada tipo
-                        add(['first_reading', 'primeira_leitura', 'leitura_1'], '1ª Leitura')
-                        add(['psalm', 'salmo', 'salmo_responsorial'], 'Salmo')
-                        add(['second_reading', 'segunda_leitura', 'leitura_2'], '2ª Leitura')
-                        add(['gospel', 'evangelho', 'evangelho_do_dia'], 'Evangelho')
+                        add('first_reading', '1ª Leitura')
+                        add('psalm', 'Salmo')
+                        add('second_reading', '2ª Leitura')
+                        add('gospel', 'Evangelho')
+                        count += 1
                     else:
-                        st.error(f"❌ Falha para {curr.strftime('%d/%m')}")
+                        st.warning(f"⚠️ Sem dados para {curr.strftime('%d/%m')}. Ativando modo manual.")
+                        st.session_state['manual_mode'] = True
+                        st.session_state['manual_date'] = curr
                     curr += timedelta(days=1)
                 
                 status.update(label=f"Fim! {len(st.session_state['daily'])} leituras encontradas.", state="complete")
 
+        # --- ÁREA MANUAL ---
+        if st.session_state.get('manual_mode'):
+            st.markdown("---")
+            st.error(f"✍️ **Modo Manual Ativado para {st.session_state['manual_date'].strftime('%d/%m/%Y')}**")
+            st.info("Cole o texto completo das leituras abaixo para processamento.")
+            
+            with st.form("manual_input_form"):
+                t1 = st.text_area("1ª Leitura (Texto Completo)")
+                t_sl = st.text_area("Salmo (Texto Completo)")
+                t2 = st.text_area("2ª Leitura (Opcional)")
+                t_ev = st.text_area("Evangelho (Texto Completo)")
+                
+                if st.form_submit_button("Processar Texto Manual"):
+                    d_iso = st.session_state['manual_date'].strftime("%Y-%m-%d")
+                    d_show = st.session_state['manual_date'].strftime("%d/%m/%Y")
+                    
+                    if t1: st.session_state['daily'].append({"type": "1ª Leitura", "text": t1, "ref": "Manual", "d_show": d_show, "d_iso": d_iso})
+                    if t_sl: st.session_state['daily'].append({"type": "Salmo", "text": t_sl, "ref": "Manual", "d_show": d_show, "d_iso": d_iso})
+                    if t2: st.session_state['daily'].append({"type": "2ª Leitura", "text": t2, "ref": "Manual", "d_show": d_show, "d_iso": d_iso})
+                    if t_ev: st.session_state['daily'].append({"type": "Evangelho", "text": t_ev, "ref": "Manual", "d_show": d_show, "d_iso": d_iso})
+                    
+                    st.success("Textos manuais adicionados à fila! Agora clique em 'Gerar Tudo'.")
+                    st.session_state['manual_mode'] = False # Fecha o modo manual
+                    st.rerun()
+
+        # --- FIM ÁREA MANUAL ---
+
         if st.session_state['daily']:
-            st.divider(); st.write(f"📖 **{len(st.session_state['daily'])} Leituras Prontas**")
+            st.divider(); st.write(f"📖 **{len(st.session_state['daily'])} Leituras na Fila**")
             with st.expander("Ver lista"):
                 for r in st.session_state['daily']: st.text(f"{r['d_show']} - {r['type']}")
             
@@ -285,10 +279,12 @@ def main():
             unique_dates = sorted(list(set([s['meta']['d_iso'] for s in st.session_state['scripts']])))
             already_sent = [d for d in unique_dates if d in history]
             
-            if already_sent: st.warning(f"⚠️ Já enviados: {already_sent}")
-            force = st.checkbox("Forçar envio duplicado") if already_sent else True
+            if already_sent:
+                st.warning(f"⚠️ Datas já enviadas: {', '.join(already_sent)}")
+                force = st.checkbox("Confirmar duplicidade")
+            else: force = True
 
-            st.write("▼ **Preview:**")
+            st.write("▼ **Preview e Prompts:**")
             for s in st.session_state['scripts']:
                 m, r = s['meta'], s['roteiro']
                 prompts = build_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
@@ -298,9 +294,9 @@ def main():
                         st.info(f"**Hook:** {r.get('hook')}")
                         st.text_area("Leitura", r.get('leitura'), height=150, key=f"l_{m['d_iso']}_{m['type']}")
                     with c2:
-                        st.write(f"Reflexão: {r.get('reflexao')}")
-                        st.write(f"Aplicação: {r.get('aplicacao')}")
-                        st.write(f"Oração: {r.get('oracao')}")
+                        st.write(f"**Reflexão:** {r.get('reflexao')}")
+                        st.write(f"**Aplicação:** {r.get('aplicacao')}")
+                        st.write(f"**Oração:** {r.get('oracao')}")
                     st.caption("🎨 Prompts:")
                     st.code(f"HOOK: {prompts['hook']}\nLEITURA: {prompts['leitura']}\nREFLEXÃO: {prompts['reflexao']}\nAPLICAÇÃO: {prompts['aplicacao']}\nORAÇÃO: {prompts['oracao']}", language="text")
 
