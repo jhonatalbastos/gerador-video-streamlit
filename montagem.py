@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Barra de Progresso e Correção de Legendas
+# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V6 (Fix blocos_config scope)
 import os
 import re
 import json
@@ -360,6 +360,15 @@ def criar_preview(w, h, texts, upload):
 
 def san(txt): return txt.replace(":", "\\:").replace("'", "") if txt else ""
 
+def whisper_srt(audio_path):
+    key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not key or not OpenAI: return None
+    try:
+        client = OpenAI(api_key=key)
+        with open(audio_path, "rb") as f:
+            return client.audio.transcriptions.create(model="whisper-1", file=f, response_format="srt", language="pt")
+    except: return None
+
 # =========================
 # Correção de Legendas com Groq
 # =========================
@@ -570,7 +579,20 @@ with tab3:
     st.header("Renderização")
     if not st.session_state["job_loaded_from_drive"]: st.warning("Carregue um job primeiro."); st.stop()
     
-    for bid in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]:
+    # Blocos Config Definition MOVED HERE - TO FIX NameError
+    blocos_config = [
+        {"id": "hook", "label": "🎣 HOOK", "text_path": "hook", "prompt_path": "hook"},
+        {"id": "leitura", "label": "📖 LEITURA", "text_path": "leitura", "prompt_path": "leitura"},
+        {"id": "reflexao", "label": "💭 REFLEXÃO", "text_path": "reflexao", "prompt_path": "reflexao"},
+        {"id": "aplicacao", "label": "🌟 APLICAÇÃO", "text_path": "aplicacao", "prompt_path": "aplicacao"},
+        {"id": "oracao", "label": "🙏 ORAÇÃO", "text_path": "oracao", "prompt_path": "oracao"},
+    ]
+    
+    # Make roteiro object available based on roteiro_gerado state
+    roteiro = st.session_state.get("roteiro_gerado", {})
+
+    for bid_item in blocos_config:
+        bid = bid_item["id"] # use bid for block id
         with st.expander(bid.upper()):
             c1, c2 = st.columns([2, 1])
             aud = st.session_state["generated_audios_blocks"].get(bid)
