@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Correção de Legendas Burn-in
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Correção de Legendas Burn-in e Whisper Tiny
 import os
 import re
 import json
@@ -414,6 +414,14 @@ def corrigir_legendas_com_groq(srt_content, roteiro_original):
 # =========================
 # Whisper Local (Tiny)
 # =========================
+def format_timestamp(seconds):
+    """Converte segundos para formato SRT (HH:MM:SS,mmm)"""
+    millis = int((seconds - int(seconds)) * 1000)
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
+
 def gerar_legendas_whisper_tiny(audio_path):
     """Gera legendas usando Whisper Tiny localmente."""
     try:
@@ -436,14 +444,6 @@ def gerar_legendas_whisper_tiny(audio_path):
     except Exception as e:
         st.error(f"Erro no Whisper Tiny: {e}")
         return None
-
-def format_timestamp(seconds):
-    """Converte segundos para formato SRT (HH:MM:SS,mmm)"""
-    millis = int((seconds - int(seconds)) * 1000)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
 # =========================
 # APP MAIN
@@ -607,10 +607,14 @@ with tab3:
                 for a in auds: f.write(f"file '{a}'\n")
             run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", mst])
             
-            srt = whisper_srt(mst)
+            srt = whisper_srt(mst) # Correção da chamada da função
             if srt:
-                st.session_state["generated_srt_content"] = srt
-                s.update(label="Legendas Geradas!", state="complete"); st.rerun()
+                # Corrige com Groq
+                roteiro_original = st.session_state.get("roteiro_gerado", {})
+                srt_corrigido = corrigir_legendas_com_groq(srt, roteiro_original)
+                
+                st.session_state["generated_srt_content"] = srt_corrigido
+                s.update(label="Legendas Geradas e Corrigidas!", state="complete"); st.rerun()
             else: s.update(label="Erro Whisper", state="error")
 
     if st.button("RENDERIZAR VÍDEO FINAL", type="primary"):
