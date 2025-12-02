@@ -49,7 +49,7 @@ def update_history_bulk(dates):
     if updated: hist.sort(); save_json(HISTORY_FILE, hist)
 
 # ==========================================
-# FONTES DE DADOS (APIS APENAS)
+# FONTES DE DADOS
 # ==========================================
 def get_groq_client():
     api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
@@ -57,19 +57,20 @@ def get_groq_client():
     return Groq(api_key=api_key)
 
 def fetch_liturgia(date_obj):
-    # 1. Tenta Vercel
+    # 1. Tenta Vercel (Principal)
     try:
         url = f"https://api-liturgia-diaria.vercel.app/?date={date_obj.strftime('%Y-%m-%d')}".strip()
         r = requests.get(url, timeout=5)
         if r.status_code == 200: return r.json()
     except: pass
 
-    # 2. Tenta Railway
+    # 2. Tenta Railway (Backup)
     try:
         url = f"https://liturgia.up.railway.app/v2/{date_obj.strftime('%Y-%m-%d')}"
         r = requests.get(url, timeout=8)
         if r.status_code == 200:
             d = r.json()
+            # Normaliza Railway para padrão
             norm = {'readings': {}}
             if d.get('evangelho'): norm['readings']['gospel'] = {'text': d['evangelho'].get('texto'), 'title': d['evangelho'].get('referencia')}
             if d.get('primeira_leitura'): norm['readings']['first_reading'] = {'text': d['primeira_leitura'].get('texto'), 'title': d['primeira_leitura'].get('referencia')}
@@ -78,7 +79,7 @@ def fetch_liturgia(date_obj):
             return norm
     except: pass
     
-    return None
+    return None # Falha total
 
 def send_to_gas(payload):
     gas_url = st.secrets.get("GAS_SCRIPT_URL") or os.getenv("GAS_SCRIPT_URL")
@@ -89,8 +90,25 @@ def send_to_gas(payload):
     except: return None
 
 # ==========================================
-# LÓGICA IA
+# LÓGICA IA & EXTRAÇÃO
 # ==========================================
+def clean_text(text):
+    if not text: return ""
+    text = re.sub(r'\d{1,3}(?=[A-Za-zÀ-ÿ])', '', text)
+    return re.sub(r'\b\d{1,3}\s+(?=["\'A-Za-zÀ-ÿ])', '', text).strip()
+
+def extract(obj):
+    if not obj: return ""
+    # Verifica valor do salmo
+    if obj.get("content_psalm"): 
+        c = obj["content_psalm"]
+        full_psalm = "\n".join(c) if isinstance(c, list) else str(c)
+        return f"{obj.get('response', '')}\n{full_psalm}"
+    
+    # Texto normal
+    raw_text = obj.get("text") or obj.get("texto") or obj.get("conteudo") or ""
+    return clean_text(raw_text)
+
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
     regras = "Texto LIMPO."
@@ -99,14 +117,18 @@ def generate_script_and_identify_chars(reading_text, reading_type):
     if "Salmo" in reading_type: regras = "1. INÍCIO: 'Salmo Responsorial: '. 2. Sem números."
     if "Evangelho" in reading_type: regras = "1. INÍCIO: 'Proclamação do Evangelho...'. 2. FIM: 'Palavra da Salvação...'. 3. NÃO duplicar."
     
+    # PROMPT ATUALIZADO COM HOOK + CTA
     prompt = f"""Assistente litúrgico. TAREFA: Roteiro curto ({reading_type}).
     ESTRUTURA: 
-    1. hook (5-10s): Impactante. FIM: CTA "Comente sua cidade".
+    1. hook (10-20s): Deve conter DOIS elementos:
+       - Parte A (5-10s): Frase impactante e curiosa relacionada ao tema da leitura para prender a atenção.
+       - Parte B (5-10s): CTA breve perguntando de qual cidade a pessoa está acompanhando ou pedindo interação.
     2. leitura: {regras}
     3. reflexao (20-25s): Inicie "Reflexão:".
     4. aplicacao (20-25s).
     5. oracao (15-20s): Inicie "Vamos orar". FIM "Amém!".
     EXTRA: Identifique PERSONAGENS (exceto Jesus/Deus). SAÍDA JSON: {{"roteiro": {{...}}, "personagens_identificados": [...]}}"""
+    
     try:
         chat = client.chat.completions.create(messages=[{"role": "system", "content": prompt}, {"role": "user", "content": f"Texto:\n{reading_text}"}], model="llama-3.3-70b-versatile", response_format={"type": "json_object"}, temperature=0.7)
         return json.loads(chat.choices[0].message.content)
@@ -129,20 +151,6 @@ def build_prompts(roteiro, chars, db, style):
         "aplicacao": f"Cena Moderna. Jesus e Pessoa Moderna caminhando. Jesus: {desc_j} Modern: {desc_m} {style}",
         "oracao": f"Cena Moderna. Jesus e Pessoa Moderna orando. Jesus: {desc_j} Modern: {desc_m} {style}"
     }
-
-def clean_text(text):
-    if not text: return ""
-    text = re.sub(r'\d{1,3}(?=[A-Za-zÀ-ÿ])', '', text)
-    return re.sub(r'\b\d{1,3}\s+(?=["\'A-Za-zÀ-ÿ])', '', text).strip()
-
-def extract(obj):
-    if not obj: return ""
-    if obj.get("content_psalm"): 
-        c = obj["content_psalm"]
-        full_psalm = "\n".join(c) if isinstance(c, list) else str(c)
-        return f"{obj.get('response', '')}\n{full_psalm}"
-    raw_text = obj.get("text") or obj.get("texto") or obj.get("conteudo") or ""
-    return clean_text(raw_text)
 
 def render_calendar(history):
     today = date.today()
@@ -195,7 +203,7 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
                         if not obj and k=='second_reading': obj = rds.get('segunda_leitura') or rds.get('leitura_2')
                         
                         if obj:
-                            txt = extract(obj) # Passa o objeto completo para extract
+                            txt = extract(obj)
                             ref = obj.get('title') or obj.get('referencia', t)
                             if txt and len(txt)>20:
                                 return {"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")}
@@ -267,7 +275,7 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
 
     # 4. PREVIEW & ENVIO
     if st.session_state[k_scripts]:
-        st.divider(); st.write("🚀 **Revisão e Envio**")
+        st.divider(); st.write("🚀 **Envio**")
         hist = load_history()
         dates = sorted(list(set([s['meta']['d_iso'] for s in st.session_state[k_scripts]])))
         dups = [d for d in dates if d in hist]
@@ -275,45 +283,29 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
         if dups: st.warning(f"⚠️ Já enviados: {dups}")
         force = st.checkbox("Confirmar duplicidade", key=f"chk_{mode_key}") if dups else True
 
-        # --- LOOP DE VISUALIZAÇÃO CORRIGIDO ---
         for s in st.session_state[k_scripts]:
             m, r = s['meta'], s['roteiro']
             prompts = build_prompts(r, s['chars'], load_characters(), STYLE_SUFFIX)
-            
             with st.expander(f"✅ {m['d_show']} - {m['type']} ({m['ref']})"):
-                # Exibe TODOS os textos
-                st.subheader("📝 Texto do Roteiro")
-                st.markdown(f"**🎣 Hook:** {r.get('hook', '---')}")
-                st.text_area("📖 Leitura", r.get('leitura', '---'), height=150, key=f"l_{m['ref']}_{mode_key}")
-                
-                c1, c2, c3 = st.columns(3)
+                c1, c2 = st.columns(2)
                 with c1: 
-                    st.markdown("**💭 Reflexão:**")
-                    st.write(r.get('reflexao', '---'))
+                    st.info(f"**Hook:** {r.get('hook')}")
+                    st.text_area("Leitura", r.get('leitura'), height=150, key=f"l_{m['ref']}_{mode_key}")
                 with c2:
-                    st.markdown("**🚀 Aplicação:**")
-                    st.write(r.get('aplicacao', '---'))
-                with c3:
-                    st.markdown("**🙏 Oração:**")
-                    st.write(r.get('oracao', '---'))
+                    st.write(f"**Reflexão:** {r.get('reflexao')[:100]}...")
+                    st.write(f"**Aplicação:** {r.get('aplicacao')}")
+                    st.write(f"**Oração:** {r.get('oracao')}")
                 
-                # Exibe TODOS os prompts separados
                 st.divider()
-                st.subheader("🎨 Prompts de Imagem")
-                cp1, cp2 = st.columns(2)
-                with cp1:
-                    st.caption("1. Hook")
-                    st.code(prompts.get('hook', '---'), language="text")
-                    st.caption("2. Leitura")
-                    st.code(prompts.get('leitura', '---'), language="text")
-                    st.caption("3. Reflexão")
-                    st.code(prompts.get('reflexao', '---'), language="text")
-                with cp2:
-                    st.caption("4. Aplicação")
-                    st.code(prompts.get('aplicacao', '---'), language="text")
-                    st.caption("5. Oração")
-                    st.code(prompts.get('oracao', '---'), language="text")
-        # ----------------------------------------
+                st.caption("🎨 Prompts:")
+                c3, c4 = st.columns(2)
+                with c3:
+                    st.code(f"Hook: {prompts['hook']}", language="text")
+                    st.code(f"Leitura: {prompts['leitura']}", language="text")
+                    st.code(f"Reflexão: {prompts['reflexao']}", language="text")
+                with c4:
+                    st.code(f"Aplicação: {prompts['aplicacao']}", language="text")
+                    st.code(f"Oração: {prompts['oracao']}", language="text")
 
         if st.button("🚀 Enviar Lote", disabled=not force, key=f"snd_{mode_key}"):
             prog = st.progress(0); sent = set(); cnt=0
