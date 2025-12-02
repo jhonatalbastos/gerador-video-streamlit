@@ -82,7 +82,12 @@ def generate_script_and_identify_chars(reading_text, reading_type):
     else: regras = "Texto LIMPO."
 
     prompt = f"""Assistente litúrgico. TAREFA: Roteiro curto ({reading_type}).
-    ESTRUTURA: 1. hook (5-10s): Impactante (20-30 palavras). 2. leitura: {regras} 3. reflexao (20-25s): Inicie com "Reflexão:". 4. aplicacao (20-25s). 5. oracao (15-20s): Inicie com "Vamos orar"/"Oremos"/"Ore comigo". FIM: "Amém!".
+    ESTRUTURA: 
+    1. hook (5-10s): Frase impactante (20-30 palavras). FINAL OBRIGATÓRIO: Adicione um breve CTA pedindo para comentar de qual cidade a pessoa está assistindo.
+    2. leitura: {regras}
+    3. reflexao (20-25s): Inicie com "Reflexão:".
+    4. aplicacao (20-25s).
+    5. oracao (15-20s): Inicie com "Vamos orar"/"Oremos"/"Ore comigo". FIM: "Amém!".
     EXTRA: Identifique PERSONAGENS (exceto Jesus/Deus). SAÍDA JSON: {{"roteiro": {{...}}, "personagens_identificados": [...]}}"""
     try:
         chat = client.chat.completions.create(messages=[{"role": "system", "content": prompt}, {"role": "user", "content": f"Texto:\n{reading_text}"}], model="llama-3.3-70b-versatile", response_format={"type": "json_object"}, temperature=0.7)
@@ -143,22 +148,11 @@ def main():
     history = load_history()
     render_calendar(history)
     
-    # --- SEÇÃO DE MANUTENÇÃO ---
     st.sidebar.markdown("---")
-    with st.sidebar.expander("🧹 Manutenção (Limpeza)"):
-        if st.button("Limpar Histórico de Envios"):
-            if os.path.exists(HISTORY_FILE):
-                os.remove(HISTORY_FILE)
-                st.toast("Histórico deletado.", icon="🗑️")
-                st.rerun()
-            else:
-                st.info("Histórico já está vazio.")
-        
-        if st.button("Limpar Cache (Reset App)"):
-            st.session_state.clear()
-            st.toast("Memória limpa!", icon="🧹")
-            st.rerun()
-    # ---------------------------
+    with st.sidebar.expander("🧹 Manutenção"):
+        if st.button("Limpar Histórico"):
+            if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE); st.rerun()
+        if st.button("Limpar Cache"): st.session_state.clear(); st.rerun()
 
     tab1, tab2 = st.tabs(["📜 Roteiros (Massa)", "👥 Personagens"])
     if 'daily' not in st.session_state: st.session_state['daily'] = []
@@ -217,7 +211,7 @@ def main():
             already_sent = [d for d in unique_dates if d in history]
             
             if already_sent:
-                st.warning(f"⚠️ As seguintes datas já constam no histórico: {', '.join(already_sent)}")
+                st.warning(f"⚠️ Datas já enviadas: {', '.join(already_sent)}")
                 force = st.checkbox("Confirmar envio duplicado")
             else: force = True
 
