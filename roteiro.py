@@ -185,10 +185,19 @@ def main():
             st.divider(); st.header("3. Enviar (Drive)")
             for s in st.session_state['generated_scripts']:
                 m = s['meta']; r = s['roteiro']
+                # GERA OS PROMPTS AQUI PARA EXIBIÇÃO
+                prompts_view = build_scene_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
+                
                 with st.expander(f"✅ {m['type']} - {m['ref']}"):
                     c1, c2 = st.columns(2)
                     with c1: st.info(f"Hook: {r.get('hook')}"); st.text_area("Leitura", r.get('leitura'), height=100, key=f"l_{m['type']}")
                     with c2: st.write(f"Reflexão: {r.get('reflexao')}"); st.write(f"Aplicação: {r.get('aplicacao')}"); st.write(f"Oração: {r.get('oracao')}")
+                    
+                    # VISUALIZAÇÃO DOS PROMPTS
+                    st.divider()
+                    st.caption("🎨 Prompts de Imagem (Preview):")
+                    st.text(f"HOOK: {prompts_view.get('hook','')}")
+                    st.text(f"LEITURA: {prompts_view.get('leitura','')}")
 
             if st.button("🚀 Enviar Todos"):
                 prog = st.progress(0); cnt = 0
