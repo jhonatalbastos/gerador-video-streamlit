@@ -4,29 +4,9 @@ import json
 import os
 import re
 import calendar
-import shutil
-import logging
-import io
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from groq import Groq
 from bs4 import BeautifulSoup
-
-# ==========================================
-# CONFIGURAÇÃO DE LOGS (DEBUG)
-# ==========================================
-if 'log_capture_string' not in st.session_state:
-    st.session_state.log_capture_string = io.StringIO()
-
-def setup_logging():
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    if logger.hasHandlers(): logger.handlers.clear()
-    handler = logging.StreamHandler(st.session_state.log_capture_string)
-    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    logger.addHandler(handler)
-    return logger
-
-logger = setup_logging()
 
 # ==========================================
 # CONFIGURAÇÕES GERAIS
@@ -43,6 +23,26 @@ FIXED_CHARACTERS = {
 }
 
 # ==========================================
+# SISTEMA DE LOGS (SIMPLIFICADO)
+# ==========================================
+
+if 'system_logs' not in st.session_state:
+    st.session_state['system_logs'] = []
+
+def add_log(message, level="INFO"):
+    """Adiciona log na memória da sessão para exibição."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    entry = f"[{timestamp}] [{level}] {message}"
+    st.session_state['system_logs'].append(entry)
+    # Mantém apenas os últimos 500 logs para não pesar
+    if len(st.session_state['system_logs']) > 500:
+        st.session_state['system_logs'].pop(0)
+    print(entry) # Também imprime no console do Cloud para redundância
+
+def get_logs_as_text():
+    return "\n".join(st.session_state['system_logs'])
+
+# ==========================================
 # FUNÇÕES DE PERSISTÊNCIA
 # ==========================================
 
@@ -51,7 +51,7 @@ def load_json(file_path):
         try:
             with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
         except Exception as e:
-            logger.error(f"Erro ao ler JSON {file_path}: {e}")
+            add_log(f"Erro ao ler JSON {file_path}: {e}", "ERROR")
             return {} if "char" in file_path else []
     return {} if "char" in file_path else []
 
@@ -59,7 +59,7 @@ def save_json(file_path, data):
     try:
         with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"Erro ao salvar JSON {file_path}: {e}")
+        add_log(f"Erro ao salvar JSON {file_path}: {e}", "ERROR")
 
 def load_characters():
     custom = load_json(CHARACTERS_FILE)
@@ -89,48 +89,70 @@ def update_history_bulk(dates_list):
 def get_groq_client():
     api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
     if not api_key:
-        logger.critical("GROQ_API_KEY não encontrada.")
+        add_log("GROQ_API_KEY não encontrada.", "CRITICAL")
         st.error("❌ GROQ_API_KEY não encontrada."); st.stop()
     return Groq(api_key=api_key)
 
 # --- BACKUP 1: API RAILWAY ---
 def fetch_liturgia_railway(date_obj):
     """Backup 1: API alternativa hospedada no Railway."""
-    # Tenta formato DD-MM-YYYY que é comum nessa API
-    date_str = date_obj.strftime("%d-%m-%Y")
+    # CORREÇÃO: Railway usa YYYY-MM-DD
+    date_str = date_obj.strftime("%Y-%m-%d")
     url = f"https://liturgia.up.railway.app/v2/{date_str}"
     
-    logger.info(f"[BACKUP 1] Tentando Railway API: {url}")
+    add_log(f"Tentando Backup 1 (Railway): {url}")
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=15)
         if response.status_code == 200:
-            logger.info("[BACKUP 1] Sucesso na Railway API.")
+            add_log("Sucesso na Railway API.")
             data = response.json()
             
-            # Adaptação da estrutura da Railway para o padrão do app
-            # A Railway retorna chaves diferentes, então normalizamos aqui
+            # Normalização dos dados para estrutura padrão
             normalized = {'readings': {}}
             
-            # Tenta mapear os campos
-            if 'primeira_leitura' in data:
-                normalized['readings']['first_reading'] = {'text': data['primeira_leitura'].get('texto', ''), 'title': data['primeira_leitura'].get('referencia', '1ª Leitura')}
+            # Mapeamento de campos Railway -> Padrão
+            # A Railway pode retornar 'liturgia' no topo ou campos diretos
+            base = data.get('liturgia', data) # Tenta pegar chave 'liturgia' se existir
             
-            if 'salmo' in data:
-                normalized['readings']['psalm'] = {'text': data['salmo'].get('texto', '') or data['salmo'].get('refrao', ''), 'title': data['salmo'].get('referencia', 'Salmo')}
-                
-            if 'segunda_leitura' in data:
-                normalized['readings']['second_reading'] = {'text': data['segunda_leitura'].get('texto', ''), 'title': data['segunda_leitura'].get('referencia', '2ª Leitura')}
-                
-            if 'evangelho' in data:
-                normalized['readings']['gospel'] = {'text': data['evangelho'].get('texto', ''), 'title': data['evangelho'].get('referencia', 'Evangelho')}
+            # Evangelho
+            ev = base.get('evangelho') or base.get('evangelho_do_dia')
+            if ev:
+                normalized['readings']['gospel'] = {
+                    'text': ev.get('texto', '') or ev.get('conteudo', ''), 
+                    'title': ev.get('titulo', 'Evangelho')
+                }
+            
+            # 1ª Leitura
+            pl = base.get('primeira_leitura')
+            if pl:
+                normalized['readings']['first_reading'] = {
+                    'text': pl.get('texto', '') or pl.get('conteudo', ''), 
+                    'title': pl.get('titulo', '1ª Leitura')
+                }
+
+            # Salmo
+            sl = base.get('salmo')
+            if sl:
+                normalized['readings']['psalm'] = {
+                    'text': sl.get('texto', '') or sl.get('refrao', '') or sl.get('conteudo', ''), 
+                    'title': sl.get('titulo', 'Salmo')
+                }
+
+            # 2ª Leitura (opcional)
+            sl2 = base.get('segunda_leitura')
+            if sl2:
+                normalized['readings']['second_reading'] = {
+                    'text': sl2.get('texto', '') or sl2.get('conteudo', ''), 
+                    'title': sl2.get('titulo', '2ª Leitura')
+                }
                 
             normalized['source'] = 'Backup Railway'
             return normalized
         else:
-            logger.warning(f"[BACKUP 1] Falha Railway. Code: {response.status_code}")
+            add_log(f"Falha Railway. Status: {response.status_code}", "WARNING")
             return None
     except Exception as e:
-        logger.error(f"[BACKUP 1] Erro conexão Railway: {e}")
+        add_log(f"Erro conexão Railway: {e}", "ERROR")
         return None
 
 # --- BACKUP 2: SCRAPER CANÇÃO NOVA ---
@@ -139,25 +161,25 @@ def fetch_liturgia_cancaonova(date_obj):
     date_str = date_obj.strftime("%d-%m-%Y")
     url = f"https://liturgia.cancaonova.com/pb/liturgia/{date_str}/"
     
-    logger.info(f"[BACKUP 2] Tentando Scraper Canção Nova: {url}")
+    add_log(f"Tentando Backup 2 (Scraper CN): {url}")
     
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         response = requests.get(url, headers=headers, timeout=20)
         
         if response.status_code != 200:
-            logger.error(f"[BACKUP 2] Falha na requisição. Código: {response.status_code}")
+            add_log(f"Falha Scraper CN. Status: {response.status_code}", "WARNING")
             return None
 
         soup = BeautifulSoup(response.content, 'html.parser')
         entry_content = soup.find('div', class_='entry-content')
         
         if not entry_content:
-            logger.error("[BACKUP 2] Div 'entry-content' não encontrada.")
+            add_log("Div 'entry-content' não encontrada no HTML.", "ERROR")
             return None
 
         full_text = entry_content.get_text("\n")
-        logger.info(f"[BACKUP 2] Texto extraído com sucesso.")
+        add_log(f"Texto extraído via Scraper. Tamanho: {len(full_text)}")
         
         readings = {}
         idx_1a = re.search(r'(1ª Leitura|Primeira Leitura)', full_text, re.IGNORECASE)
@@ -176,27 +198,29 @@ def fetch_liturgia_cancaonova(date_obj):
         if idx_2a: readings['second_reading'] = {'text': get_chunk(idx_2a, idx_evang, full_text), 'title': '2ª Leitura (Backup)'}
         if idx_evang: readings['gospel'] = {'text': full_text[idx_evang.end():].strip(), 'title': 'Evangelho (Backup)'}
 
-        if not readings: readings['gospel'] = {'text': full_text[:2500], 'title': 'Leitura Completa (Bruto)'}
+        if not readings:
+            add_log("Scraper não conseguiu separar os blocos. Retornando bruto.", "WARNING")
+            readings['gospel'] = {'text': full_text[:3000], 'title': 'Leitura Completa (Bruto)'}
 
         return {'readings': readings, 'source': 'Backup Scraper CN'}
 
     except Exception as e:
-        logger.error(f"[BACKUP 2] Exceção crítica: {e}")
+        add_log(f"Exceção Scraper CN: {e}", "ERROR")
         return None
 
 def fetch_liturgia(date_obj):
     # 1. Tenta API Principal (Vercel)
     url_vercel = f"https://api-liturgia-diaria.vercel.app/?date={date_obj.strftime('%Y-%m-%d')}".strip()
-    logger.info(f"Tentando API Principal: {url_vercel}")
+    add_log(f"Tentando API Principal (Vercel): {url_vercel}")
     try:
         resp = requests.get(url_vercel, timeout=8)
         if resp.status_code == 200:
-            logger.info("Sucesso API Vercel.")
+            add_log("Sucesso API Vercel.")
             return resp.json()
-        logger.warning(f"Falha Vercel ({resp.status_code}).")
-    except Exception as e: logger.warning(f"Erro Vercel: {e}")
+        add_log(f"Falha Vercel ({resp.status_code}).")
+    except Exception as e: add_log(f"Erro Vercel: {e}", "WARNING")
 
-    # 2. Tenta API Railway
+    # 2. Tenta API Railway (Correção de Formato aplicada)
     res_railway = fetch_liturgia_railway(date_obj)
     if res_railway: return res_railway
 
@@ -206,16 +230,20 @@ def fetch_liturgia(date_obj):
 def send_to_gas(payload):
     gas_url = st.secrets.get("GAS_SCRIPT_URL") or os.getenv("GAS_SCRIPT_URL")
     if not gas_url:
-        logger.error("URL do GAS não configurada.")
+        add_log("URL do GAS não configurada.", "ERROR")
         st.error("❌ GAS_SCRIPT_URL não encontrada."); return None
     
-    logger.info(f"Enviando job para GAS. Ref: {payload.get('meta_dados', {}).get('ref')}")
+    add_log(f"Enviando job para GAS: {payload.get('meta_dados', {}).get('ref')}")
     try:
         resp = requests.post(f"{gas_url}?action=generate_job", json=payload)
-        if resp.status_code == 200: return resp.json()
-        else: logger.error(f"Erro GAS: {resp.status_code} - {resp.text}"); return None
+        if resp.status_code == 200:
+            add_log("Envio GAS com sucesso.")
+            return resp.json()
+        else:
+            add_log(f"Erro GAS: {resp.status_code} - {resp.text}", "ERROR")
+            return None
     except Exception as e:
-        logger.error(f"Exceção GAS: {e}"); st.error(f"Erro GAS: {e}"); return None
+        add_log(f"Exceção GAS: {e}", "ERROR"); return None
 
 # ==========================================
 # LÓGICA DE IA E UTILS
@@ -242,13 +270,16 @@ def generate_script_and_identify_chars(reading_text, reading_type):
     5. oracao (15-20s): Inicie com "Vamos orar"/"Oremos"/"Ore comigo". FIM: "Amém!".
     EXTRA: Identifique PERSONAGENS (exceto Jesus/Deus). SAÍDA JSON: {{"roteiro": {{...}}, "personagens_identificados": [...]}}"""
     try:
-        logger.info(f"Gerando roteiro Groq: {reading_type}")
+        add_log(f"Gerando roteiro Groq para {reading_type}...")
         chat = client.chat.completions.create(messages=[{"role": "system", "content": prompt}, {"role": "user", "content": f"Texto:\n{reading_text}"}], model="llama-3.3-70b-versatile", response_format={"type": "json_object"}, temperature=0.7)
         return json.loads(chat.choices[0].message.content)
-    except Exception as e: logger.error(f"Erro Groq: {e}"); return None
+    except Exception as e:
+        add_log(f"Erro Groq: {e}", "ERROR")
+        return None
 
 def generate_character_description(name):
     try:
+        add_log(f"Criando prompt visual para: {name}")
         chat = get_groq_client().chat.completions.create(messages=[{"role": "user", "content": f"Descrição visual detalhada personagem bíblico: {name}. Rosto, roupas. ~300 chars. Realista."}], model="llama-3.3-70b-versatile", temperature=0.7)
         return chat.choices[0].message.content.strip()
     except: return "Sem descrição."
@@ -306,17 +337,17 @@ def main():
     render_calendar(history)
     
     st.sidebar.markdown("---")
-    with st.sidebar.expander("📝 Logs do Sistema (Debug)"):
-        log_content = st.session_state.log_capture_string.getvalue()
-        st.text_area("Log Output", value=log_content, height=200, key="log_view")
-        st.download_button("Baixar Logs", log_content, file_name="debug_logs.txt")
+    with st.sidebar.expander("📝 Logs do Sistema"):
+        # Mostra os logs da sessão (agora funcionais)
+        log_text = get_logs_as_text()
+        st.text_area("Log Output", value=log_text, height=200)
+        st.download_button("Baixar Logs", log_text, file_name="logs.txt")
         if st.button("Limpar Logs"):
-            st.session_state.log_capture_string.truncate(0)
-            st.session_state.log_capture_string.seek(0)
+            st.session_state['system_logs'] = []
             st.rerun()
 
     with st.sidebar.expander("🧹 Manutenção"):
-        if st.button("Limpar Histórico"):
+        if st.button("Limpar Histórico de Envios"):
             if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE); st.rerun()
         if st.button("Limpar Cache"): st.session_state.clear(); st.rerun()
 
@@ -334,6 +365,7 @@ def main():
             if dt_fim < dt_ini: st.error("Data final menor que inicial"); st.stop()
             st.session_state['daily'] = []
             st.session_state['scripts'] = []
+            st.session_state['system_logs'] = [] # Limpa logs ao iniciar nova busca
             
             with st.status("Baixando liturgias...", expanded=True) as status:
                 curr = dt_ini
@@ -342,31 +374,27 @@ def main():
                     st.write(f"Baixando: {curr.strftime('%d/%m/%Y')}")
                     data = fetch_liturgia(curr)
                     if data:
-                        # Adaptação para estrutura Vercel, Railway ou Backup
+                        # Extrai 'readings' de qualquer estrutura
                         rds = {}
-                        if 'readings' in data: # Vercel ou Backup
-                            # Se for Vercel, 'readings' está dentro de 'today' ou na raiz
-                            if 'today' in data: rds = data['today']['readings']
-                            else: rds = data['readings']
-                        else: # Railway (retorno direto)
-                            # Se for Railway, já normalizamos no fetch_liturgia_railway para retornar 'readings'
-                            # Mas se a estrutura original for mantida, adaptamos aqui
-                            if 'primeira_leitura' in data: # Caso a normalização falhe
-                                rds = {'first_reading': data['primeira_leitura'], 'psalm': data['salmo'], 'second_reading': data['segunda_leitura'], 'gospel': data['evangelho']}
+                        if 'readings' in data: # Vercel, Railway normalizado ou Backup
+                            # Se for Vercel, 'readings' pode estar dentro de 'today'
+                            if 'today' in data and 'readings' in data['today']:
+                                rds = data['today']['readings']
                             else:
-                                rds = data.get('readings', {})
+                                rds = data['readings']
+                        elif 'primeira_leitura' in data: # Railway puro (caso falhe normalização)
+                             rds = {'first_reading': data['primeira_leitura'], 'psalm': data['salmo'], 'second_reading': data.get('segunda_leitura'), 'gospel': data['evangelho']}
 
                         def add(k, t):
-                            if k in rds:
-                                # Railway usa 'texto', Vercel 'text'
-                                txt_raw = rds[k].get('text') or rds[k].get('texto') or rds[k].get('refrao')
-                                # Railway usa 'referencia', Vercel 'title'
+                            if k in rds and rds[k]:
+                                txt_raw = rds[k].get('text') or rds[k].get('texto') or rds[k].get('conteudo')
                                 ref = rds[k].get('title') or rds[k].get('referencia', t)
                                 
-                                # Tratamento especial para Salmo (se for Vercel, pode ser lista)
+                                # Tratamento Salmo
                                 txt = extract({'text': txt_raw, 'content_psalm': rds[k].get('content_psalm'), 'response': rds[k].get('response')})
                                 
-                                if txt.strip(): st.session_state['daily'].append({"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")})
+                                if txt and txt.strip(): 
+                                    st.session_state['daily'].append({"type": t, "text": txt, "ref": ref, "d_show": curr.strftime("%d/%m/%Y"), "d_iso": curr.strftime("%Y-%m-%d")})
                         
                         add('first_reading', '1ª Leitura')
                         add('psalm', 'Salmo')
@@ -374,7 +402,8 @@ def main():
                         add('gospel', 'Evangelho')
                         count += 1
                     else:
-                        st.error(f"Falha total (APIs + Backup) para {curr.strftime('%d/%m')}.")
+                        add_log(f"Falha total para {curr.strftime('%d/%m')}", "ERROR")
+                        st.error(f"Falha ao obter liturgia para {curr.strftime('%d/%m')}.")
                     curr += timedelta(days=1)
                 status.update(label=f"Concluído! {len(st.session_state['daily'])} leituras em {count} dias.", state="complete")
 
