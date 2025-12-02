@@ -215,11 +215,29 @@ def main():
                 force = st.checkbox("Confirmar envio duplicado")
             else: force = True
 
-            with st.expander("Pré-visualizar Roteiros"):
-                for s in st.session_state['scripts']:
-                    m, r = s['meta'], s['roteiro']
-                    st.markdown(f"**{m['d_show']} - {m['type']}**")
-                    st.info(f"Hook: {r.get('hook')}")
+            st.write("▼ **Pré-visualização e Prompts:**")
+            
+            # --- CORREÇÃO: LOOP DE EXIBIÇÃO DETALHADA ---
+            for s in st.session_state['scripts']:
+                m, r = s['meta'], s['roteiro']
+                # Gera prompts aqui para visualização
+                prompts_preview = build_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
+                
+                with st.expander(f"✅ {m['d_show']} - {m['type']} ({m['ref']})"):
+                    c1, c2 = st.columns(2)
+                    with c1: 
+                        st.info(f"**Hook:** {r.get('hook')}")
+                        st.text_area("Leitura", r.get('leitura'), height=150, key=f"lei_{m['d_iso']}_{m['type']}")
+                    with c2:
+                        st.write(f"**Reflexão:** {r.get('reflexao')}")
+                        st.write(f"**Aplicação:** {r.get('aplicacao')}")
+                        st.write(f"**Oração:** {r.get('oracao')}")
+                    
+                    st.markdown("---")
+                    st.caption("🎨 Prompts de Imagem Gerados:")
+                    st.code(f"Hook Prompt: {prompts_preview['hook']}", language="text")
+                    st.code(f"Leitura Prompt: {prompts_preview['leitura']}", language="text")
+            # ---------------------------------------------
 
             if st.button("🚀 Enviar Lote para Drive", disabled=not force):
                 prog, cnt = st.progress(0), 0
