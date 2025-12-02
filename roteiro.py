@@ -99,16 +99,27 @@ def main():
                 data = fetch_liturgia(date_sel)
                 if data:
                     readings_text = ""
-                    today_data = data.get('readings') or data
-                    if 'first_reading' in today_data: readings_text += f"1ª Leitura: {today_data['first_reading'].get('text', '')}\n\n"
-                    if 'psalm' in today_data: readings_text += f"Salmo: {today_data['psalm'].get('text', '')}\n\n"
-                    if 'second_reading' in today_data: readings_text += f"2ª Leitura: {today_data['second_reading'].get('text', '')}\n\n"
-                    if 'gospel' in today_data: readings_text += f"Evangelho: {today_data['gospel'].get('text', '')}\n\n"
-                    st.session_state['raw_readings'] = readings_text
-                    ref_title = today_data.get('gospel', {}).get('title', 'Evangelho do Dia')
-                    st.session_state['liturgy_meta'] = {"data": date_sel.strftime("%d/%m/%Y"), "ref": ref_title}
-                    st.success("Leituras obtidas!")
-                    with st.expander("Ver texto"): st.text(readings_text)
+                    # CORREÇÃO: Acessar 'today' -> 'readings'
+                    today_data = data.get('today', {})
+                    readings = today_data.get('readings', {})
+                    
+                    if not readings: # Fallback simples
+                         readings = data.get('readings', {})
+
+                    if 'first_reading' in readings: readings_text += f"1ª Leitura: {readings['first_reading'].get('text', '')}\n\n"
+                    if 'psalm' in readings: readings_text += f"Salmo: {readings['psalm'].get('text', '')}\n\n"
+                    if 'second_reading' in readings: readings_text += f"2ª Leitura: {readings['second_reading'].get('text', '')}\n\n"
+                    if 'gospel' in readings: readings_text += f"Evangelho: {readings['gospel'].get('text', '')}\n\n"
+                    
+                    if readings_text:
+                        st.session_state['raw_readings'] = readings_text
+                        ref_title = today_data.get('entry_title', readings.get('gospel', {}).get('title', 'Evangelho do Dia'))
+                        st.session_state['liturgy_meta'] = {"data": date_sel.strftime("%d/%m/%Y"), "ref": ref_title}
+                        st.success("Leituras obtidas!")
+                        with st.expander("Ver texto"): st.text(readings_text)
+                    else:
+                        st.warning("API conectou, mas não encontrou leituras na estrutura esperada.")
+                        st.json(data) # Mostra o JSON para debug se falhar
 
         st.markdown("---"); st.header("2. Gerar Roteiro")
         if 'raw_readings' in st.session_state:
