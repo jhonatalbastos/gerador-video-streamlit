@@ -4,6 +4,7 @@ import json
 import os
 import re
 import calendar
+import shutil
 from datetime import date, timedelta
 from groq import Groq
 
@@ -142,6 +143,23 @@ def main():
     history = load_history()
     render_calendar(history)
     
+    # --- SEÇÃO DE MANUTENÇÃO ---
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("🧹 Manutenção (Limpeza)"):
+        if st.button("Limpar Histórico de Envios"):
+            if os.path.exists(HISTORY_FILE):
+                os.remove(HISTORY_FILE)
+                st.toast("Histórico deletado.", icon="🗑️")
+                st.rerun()
+            else:
+                st.info("Histórico já está vazio.")
+        
+        if st.button("Limpar Cache (Reset App)"):
+            st.session_state.clear()
+            st.toast("Memória limpa!", icon="🧹")
+            st.rerun()
+    # ---------------------------
+
     tab1, tab2 = st.tabs(["📜 Roteiros (Massa)", "👥 Personagens"])
     if 'daily' not in st.session_state: st.session_state['daily'] = []
     if 'scripts' not in st.session_state: st.session_state['scripts'] = []
