@@ -57,6 +57,10 @@ def generate_script_and_identify_chars(reading_text, reading_type):
         regras_leitura_bloco = """O texto bíblico completo. 
         1. INÍCIO: 'Leitura do Livro do [Nome do Livro]' (sem capítulos/versículos).
         2. FIM: 'Palavra do Senhor!'."""
+    elif reading_type == "2ª Leitura":
+        regras_leitura_bloco = """O texto bíblico completo.
+        1. INÍCIO: 'Leitura da [Nome da Carta]' (ex: 'Leitura da Carta de São Tiago') sem capítulos/versículos.
+        2. FIM: 'Palavra do Senhor!'."""
     elif reading_type == "Salmo":
         regras_leitura_bloco = """O Salmo completo.
         1. INÍCIO: 'Salmo Responsorial: '.
@@ -65,7 +69,7 @@ def generate_script_and_identify_chars(reading_text, reading_type):
         regras_leitura_bloco = """O texto do Evangelho completo.
         1. INÍCIO OBRIGATÓRIO: 'Proclamação do Evangelho de Jesus Cristo segundo [MATEUS/MARCOS/LUCAS/JOÃO]. Glória a Vós, Senhor!' (Identifique o evangelista pelo contexto).
         2. FINAL OBRIGATÓRIO: 'Palavra da Salvação. Glória a Vós, Senhor!'.
-        3. CRÍTICO: Verifique se o texto já possui essas frases. Se sim, NÃO as duplique. Mantenha apenas uma ocorrência no início e uma no fim."""
+        3. CRÍTICO: Verifique se o texto já possui essas frases. Se sim, NÃO as duplique."""
     else:
         regras_leitura_bloco = "O texto bíblico fornecido, LIMPO (sem versículos/cabeçalhos)."
 
