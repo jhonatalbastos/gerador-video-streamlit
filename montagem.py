@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Correção de Legendas Burn-in e Whisper Tiny
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Previews Menores e Vídeo Otimizado
 import os
 import re
 import json
@@ -581,7 +581,7 @@ with tab3:
                         st.rerun()
 
             with c2: 
-                if img: st.image(img)
+                if img: st.image(img, width=150) # Reduzido para 150px como solicitado
                 else: st.info("Sem imagem")
                 img_file = st.file_uploader(f"🖼️ Enviar Imagem para {bid.upper()}", type=["png", "jpg", "jpeg"], key=f"up_img_{bid}")
                 if img_file:
@@ -653,7 +653,8 @@ with tab3:
                         t3 = san(st.session_state.get("ref_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t3}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
 
-                    run_cmd(["ffmpeg", "-y", "-loop", "1", "-i", img, "-i", aud, "-vf", ",".join(filters), "-c:v", "libx264", "-t", str(dur), "-pix_fmt", "yuv420p", "-shortest", out])
+                    # Parametro para reduzir tamanho: -crf 28 -preset fast
+                    run_cmd(["ffmpeg", "-y", "-loop", "1", "-i", img, "-i", aud, "-vf", ",".join(filters), "-c:v", "libx264", "-t", str(dur), "-pix_fmt", "yuv420p", "-crf", "28", "-preset", "fast", "-shortest", out])
                     clips.append(out)
 
                 lst = os.path.join(tmp, "list.txt")
@@ -702,6 +703,9 @@ with tab3:
                     mix_cmd.extend(["-filter_complex", ",".join(filter_complex)])
                     if "amix" in "".join(filter_complex):
                         mix_cmd.extend(["-map", "0:v", "-map", map_a])
+                
+                # Redução de tamanho para o vídeo final também
+                mix_cmd.extend(["-crf", "28", "-preset", "fast"])
                 
                 mix_cmd.append(final)
                 run_cmd(mix_cmd)
