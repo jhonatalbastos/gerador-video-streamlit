@@ -52,17 +52,30 @@ def send_to_gas(payload):
 
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
-    # Prompt ajustado com as novas regras de Hook, Reflexão e Oração
+    
+    # Lógica de regras condicionais para a Leitura
+    if reading_type == "1ª Leitura":
+        # Regra específica para 1ª Leitura
+        regras_leitura_bloco = """O texto bíblico completo. 
+        1. INÍCIO OBRIGATÓRIO: Inicie com a fórmula litúrgica do livro (ex: 'Leitura do Livro do Profeta Isaías', 'Leitura do Livro do Gênesis') sem mencionar capítulos e versículos numéricos.
+        2. FINAL OBRIGATÓRIO: Termine o texto com a frase exata: 'Palavra do Senhor!'."""
+    else:
+        # Regra padrão para outros tipos
+        regras_leitura_bloco = "O texto bíblico fornecido, LIMPO (sem versículos/cabeçalhos)."
+
     system_prompt = f"""Você é um assistente litúrgico católico.
     TAREFA: Crie um roteiro de vídeo curto baseado na leitura bíblica ({reading_type}).
+    
     ESTRUTURA OBRIGATÓRIA (5 BLOCOS):
-    1. hook (5-10s): Frase impactante e curiosa, com tamanho suficiente para 5 a 10 segundos de fala (aprox. 20 a 30 palavras).
-    2. leitura: O texto bíblico fornecido, LIMPO (sem versículos/cabeçalhos).
-    3. reflexao (20-25s): Ensinamento prático. OBRIGATÓRIO iniciar o texto com a palavra "Reflexão:".
-    4. aplicacao (20-25s): Dica de ação prática baseada no texto.
-    5. oracao (15-20s): Oração curta. OBRIGATÓRIO iniciar o texto com uma destas frases: "Vamos orar", "Oremos" ou "Ore comigo".
+    1. hook (5-10s): Frase impactante e curiosa (20-30 palavras).
+    2. leitura: {regras_leitura_bloco}
+    3. reflexao (20-25s): Ensinamento prático. INÍCIO OBRIGATÓRIO com a palavra "Reflexão:".
+    4. aplicacao (20-25s): Dica de ação prática.
+    5. oracao (15-20s): Oração curta. INÍCIO OBRIGATÓRIO com: "Vamos orar", "Oremos" ou "Ore comigo".
+    
     EXTRA: Identifique PERSONAGENS BÍBLICOS na cena (exceto Jesus/Deus).
     SAÍDA JSON: {{"roteiro": {{"hook": "...", "leitura": "...", "reflexao": "...", "aplicacao": "...", "oracao": "..."}}, "personagens_identificados": ["Nome1"]}}"""
+    
     try:
         chat_completion = client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": f"Texto Base:\n\n{reading_text}"}],
@@ -201,7 +214,6 @@ def main():
                 for idx, script_obj in enumerate(st.session_state['generated_scripts']):
                     meta = script_obj['meta']
                     rot = script_obj['roteiro']
-                    
                     prompts_finais = build_scene_prompts(rot, script_obj['chars'], char_db, STYLE_SUFFIX)
                     ref_final = f"{meta['type']} - {meta['ref']}"
                     
