@@ -52,21 +52,17 @@ def send_to_gas(payload):
 
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
-    # Prompt reforçado para garantir todas as chaves
+    # Prompt ajustado com as novas regras de Hook, Reflexão e Oração
     system_prompt = f"""Você é um assistente litúrgico católico.
     TAREFA: Crie um roteiro de vídeo curto baseado na leitura bíblica ({reading_type}).
-    SAÍDA OBRIGATÓRIA (JSON com TODAS estas chaves):
-    {{
-      "roteiro": {{
-        "hook": "Frase impactante de 5-8s",
-        "leitura": "Texto bíblico fornecido LIMPO (sem numeração)",
-        "reflexao": "Ensinamento prático de 20-25s",
-        "aplicacao": "Dica de ação de 20-25s",
-        "oracao": "Oração curta de 15-20s"
-      }},
-      "personagens_identificados": ["Nome1", "Nome2"]
-    }}
-    Identifique personagens bíblicos na cena (exceto Jesus/Deus)."""
+    ESTRUTURA OBRIGATÓRIA (5 BLOCOS):
+    1. hook (5-10s): Frase impactante e curiosa, com tamanho suficiente para 5 a 10 segundos de fala (aprox. 20 a 30 palavras).
+    2. leitura: O texto bíblico fornecido, LIMPO (sem versículos/cabeçalhos).
+    3. reflexao (20-25s): Ensinamento prático. OBRIGATÓRIO iniciar o texto com a palavra "Reflexão:".
+    4. aplicacao (20-25s): Dica de ação prática baseada no texto.
+    5. oracao (15-20s): Oração curta. OBRIGATÓRIO iniciar o texto com uma destas frases: "Vamos orar", "Oremos" ou "Ore comigo".
+    EXTRA: Identifique PERSONAGENS BÍBLICOS na cena (exceto Jesus/Deus).
+    SAÍDA JSON: {{"roteiro": {{"hook": "...", "leitura": "...", "reflexao": "...", "aplicacao": "...", "oracao": "..."}}, "personagens_identificados": ["Nome1"]}}"""
     try:
         chat_completion = client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": f"Texto Base:\n\n{reading_text}"}],
@@ -184,7 +180,6 @@ def main():
             st.markdown("---")
             st.header("3. Enviar Jobs (Drive)")
             
-            # --- CORREÇÃO: Exibindo TODOS os blocos para conferência ---
             for script_obj in st.session_state['generated_scripts']:
                 meta = script_obj['meta']
                 rot = script_obj['roteiro']
@@ -197,7 +192,6 @@ def main():
                         st.write(f"**Reflexão:** {rot.get('reflexao', '❌ FALTOU')}")
                         st.write(f"**Aplicação:** {rot.get('aplicacao', '❌ FALTOU')}")
                         st.write(f"**Oração:** {rot.get('oracao', '❌ FALTOU')}")
-            # -----------------------------------------------------------
             
             if st.button("🚀 Enviar TODOS para o Drive"):
                 progress_bar_send = st.progress(0)
@@ -209,8 +203,6 @@ def main():
                     rot = script_obj['roteiro']
                     
                     prompts_finais = build_scene_prompts(rot, script_obj['chars'], char_db, STYLE_SUFFIX)
-                    
-                    # Reforço no título para diferenciar os arquivos no Drive
                     ref_final = f"{meta['type']} - {meta['ref']}"
                     
                     payload = {
