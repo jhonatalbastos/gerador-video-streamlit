@@ -76,17 +76,15 @@ def fetch_liturgia(date_obj):
             # Helper para limpar referencia Railway
             def clean_ref_railway(ref_text):
                  if not ref_text: return ""
-                 # Remove "Proclamação do Evangelho de Jesus Cristo segundo "
-                 clean = re.sub(r"Proclamação do Evangelho.*?segundo\s*", "", ref_text, flags=re.IGNORECASE)
-                 # Remove "São "
-                 clean = clean.replace("São ", "").replace("Santo ", "")
-                 return clean.strip()
+                 # Remove tudo até "segundo " (case insensitive)
+                 clean = re.sub(r"^.*segundo\s+", "", ref_text, flags=re.IGNORECASE)
+                 # Remove "São ", "Santo "
+                 clean = clean.replace("São ", "").replace("Santo ", "").replace("+", "").strip()
+                 return clean
 
             if d.get('evangelho'): 
                 ref = d['evangelho'].get('referencia', 'Evangelho')
-                # Tenta extrair do texto se a referencia vier incompleta (ex: so "São Lucas")
                 texto = d['evangelho'].get('texto', '')
-                # Se a referencia nao tem numeros, tenta achar no texto ou titulo
                 norm['readings']['gospel'] = {'text': texto, 'title': clean_ref_railway(ref)}
 
             if d.get('primeira_leitura'): 
@@ -223,29 +221,26 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
                 if data:
                     rds = data.get('readings') or data.get('today', {}).get('readings', {}) or data
                     
-                    # Helper para limpar referência do Evangelho (CORREÇÃO AQUI)
+                    # Helper para limpar referência do Evangelho (CORREÇÃO ROBUSTA)
                     def clean_gospel_ref(ref_raw, text_raw):
-                        # Se já vier formatado bonito, ótimo. Se vier "São Lucas" ou vazio, tenta extrair do texto ou titulo.
-                        ref_clean = ref_raw
+                        if not ref_raw: return "Evangelho"
                         
-                        # 1. Remove prefixos longos
-                        ref_clean = re.sub(r"Proclamação do Evangelho de Jesus Cristo,? segundo\s*", "", ref_clean, flags=re.IGNORECASE)
+                        # 1. Limpeza agressiva do prefixo "Proclamação... segundo"
+                        ref_clean = re.sub(r"^.*segundo\s+", "", ref_raw, flags=re.IGNORECASE)
                         
-                        # 2. Se sobrou só o nome (ex: "São Lucas"), tenta achar os números no título original ou texto
-                        if re.match(r"^(São\s+)?[A-Za-z]+$", ref_clean.strip()):
-                             # Tenta achar números no head_title se disponível na API Vercel
-                             # Como não temos acesso fácil ao objeto pai aqui, vamos tentar um regex no próprio ref_raw se ele tiver numeros
-                             # Se ref_raw era só "São Lucas", não tem numeros.
-                             
-                             # Força padronização: "Lucas" em vez de "São Lucas"
-                             ref_clean = ref_clean.replace("São ", "").replace("Santo ", "").strip()
-                             
-                             # Se ainda não tem números, infelizmente a API não mandou. 
-                             # Vamos tentar adicionar números 'fictícios' ou deixar assim para edição manual?
-                             # Melhor deixar assim, mas limpo. O usuário edita no manual se precisar.
-                             pass
-
-                        return ref_clean.strip()
+                        # 2. Limpeza de títulos religiosos e caracteres extras
+                        ref_clean = ref_clean.replace("São ", "").replace("Santo ", "").replace("+", "").strip()
+                        
+                        # 3. VERIFICAÇÃO DE NÚMEROS: Se não tiver números, tenta extrair do texto
+                        # Procura por padrão de número (ex: "1,39-56" ou "10, 21-24")
+                        if not re.search(r"\d", ref_clean) and text_raw:
+                             # Tenta achar a referência no início do texto bruto da leitura
+                             # Ex: "Lucas 1,39-56 - Naqueles dias..."
+                             match = re.match(r"([A-Za-z]+\s+\d+\s*[,:]\s*[\d\-\s]+)", text_raw)
+                             if match:
+                                 return match.group(1)
+                        
+                        return ref_clean
 
                     def check_add(k, t):
                         obj = rds.get(k)
@@ -260,9 +255,9 @@ def run_process_dashboard(mode_key, dt_ini, dt_fim):
                             # Pega a referência bruta
                             raw_ref = obj.get('title') or obj.get('referencia', t)
                             
-                            # Limpa a referência se for Evangelho
+                            # Limpa a referência
                             if t == "Evangelho":
-                                ref = clean_gospel_ref(raw_ref, txt)
+                                ref = clean_gospel_ref(raw_ref, obj.get('text') or obj.get('texto') or "")
                             else:
                                 ref = raw_ref
 
