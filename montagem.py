@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V3 (Limpeza de Títulos)
+# montagem.py — Fábrica de Vídeos (Renderizador) - CORRIGIDO V4 (Limpeza Fina)
 import os
 import re
 import json
@@ -131,6 +131,7 @@ def download_file_content(service, file_id: str) -> Optional[str]:
     except: return None
 
 def list_recent_jobs(limit: int = 15) -> List[Dict]:
+    """Lista Jobs CONCLUÍDOS (com descrição 'COMPLETE') na pasta."""
     service = get_drive_service()
     if not service: return []
     jobs_list = []
@@ -141,6 +142,7 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
         if not folders: return []
         folder_id = folders[0]['id']
 
+        # Filtra arquivos JSON
         query_file = (
             f"mimeType = 'application/json' and "
             f"'{folder_id}' in parents and "
@@ -171,6 +173,7 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
                         "file_id": f['id']
                     })
                 except: continue
+            
             if len(jobs_list) >= limit: break
                 
     except Exception as e:
@@ -192,22 +195,25 @@ def process_job_payload(payload: Dict, temp_dir: str):
         st.session_state["roteiro_gerado"] = payload.get("roteiro", {})
         meta = payload.get("meta_dados", {})
         
-        # 1. DATA (Linha 2)
+        # --- 1. DATA (Formatação com Ponto) ---
         d_raw = meta.get("data", "")
+        # Tenta parsear formato ISO (YYYY-MM-DD)
         if re.match(r"\d{4}-\d{2}-\d{2}", d_raw):
             try:
                 d_obj = datetime.strptime(d_raw, '%Y-%m-%d')
                 st.session_state["data_display"] = d_obj.strftime('%d.%m.%Y')
-            except: st.session_state["data_display"] = d_raw
+            except:
+                st.session_state["data_display"] = d_raw.replace('/', '.')
         else:
-            st.session_state["data_display"] = d_raw
+            # Se já vier formatado ou outro formato (DD/MM/YYYY), apenas substitui barras
+            st.session_state["data_display"] = d_raw.replace('/', '.')
             
-        # 2. TÍTULO E REFERÊNCIA (Linha 1 e 3)
-        # O formato vindo do roteiro.py é "TIPO - REFERENCIA" (ex: "1ª Leitura - Is 26,1-6")
+        # --- 2. TÍTULO E REFERÊNCIA ---
         raw_ref = meta.get("ref", "")
         title = "EVANGELHO" # Padrão
         clean_ref = raw_ref
 
+        # Separa o tipo da referência se houver hífen (padrão do roteiro.py)
         if " - " in raw_ref:
             parts = raw_ref.split(" - ", 1)
             tipo_raw = parts[0]
@@ -217,22 +223,29 @@ def process_job_payload(payload: Dict, temp_dir: str):
             if "1ª" in tipo_raw or "Primeira" in tipo_raw: title = "1ª LEITURA"
             elif "2ª" in tipo_raw or "Segunda" in tipo_raw: title = "2ª LEITURA"
             elif "Salmo" in tipo_raw: title = "SALMO"
-            
-            # Limpeza específica para Salmo na Referência (Linha 3)
-            if title == "SALMO":
-                # Remove prefixos para padronizar e adiciona o texto completo
-                base_ref = clean_ref.replace("Salmo ", "").replace("Sl ", "").replace("Responsorial ", "").strip()
-                clean_ref = f"Salmo Responsorial {base_ref}"
-                
         else:
             # Fallback se não tiver hífen
             if "Salmo" in raw_ref: title = "SALMO"
-            elif "Leitura" in raw_ref: title = "LEITURA"
+            elif "Leitura" in raw_ref: title = "1ª LEITURA"
         
+        # --- LIMPEZA FINA DA REFERÊNCIA (Linha 3) ---
+        # Remove prefixos repetitivos como "Primeira leitura: ", "Salmo Responsorial: ", etc.
+        patterns_to_remove = [
+            r"^(Primeira|Segunda|1ª|2ª)\s*Leitura\s*:\s*",  # Remove "Primeira leitura: "
+            r"^Leitura\s*(do|da)\s*.*:\s*",                 # Remove "Leitura do Livro...:"
+            r"^Salmo\s*Responsorial\s*:\s*",                # Remove "Salmo Responsorial:"
+            r"^Salmo\s*:\s*",                               # Remove "Salmo:"
+            r"^Evangelho\s*:\s*",                           # Remove "Evangelho:"
+            r"^Proclamação\s*do\s*Evangelho.*:\s*"          # Remove "Proclamação..."
+        ]
+        
+        for pat in patterns_to_remove:
+            clean_ref = re.sub(pat, "", clean_ref, flags=re.IGNORECASE).strip()
+
         st.session_state["title_display"] = title
         st.session_state["ref_display"] = clean_ref
 
-        # 3. ASSETS
+        # --- 3. ASSETS ---
         st.session_state["generated_images_blocks"] = {}
         st.session_state["generated_audios_blocks"] = {}
         st.session_state["generated_srt_content"] = ""
@@ -293,6 +306,14 @@ def resolve_font(choice, upload):
     sys_fonts = {"Padrão (Sans)": ["arial.ttf", "DejaVuSans.ttf"], "Serif": ["times.ttf"], "Monospace": ["courier.ttf"]}
     for f in sys_fonts.get(choice, []): return f
     return None
+
+def get_main_title(ref_text: str) -> str:
+    """Fallback para título se necessário."""
+    ref = ref_text.lower()
+    if "1ª leitura" in ref or "primeira leitura" in ref: return "1ª LEITURA"
+    if "2ª leitura" in ref or "segunda leitura" in ref: return "2ª LEITURA"
+    if "salmo" in ref: return "SALMO"
+    return "EVANGELHO" 
 
 def criar_preview(w, h, texts, upload):
     img = Image.new("RGB", (w, h), "black")
@@ -367,7 +388,7 @@ with tab1:
                 else: s.update(label="Erro/Incompleto", state="error")
 
     if st.session_state["job_loaded_from_drive"]:
-        st.success(f"Carregado: {st.session_state['title_display']} - {st.session_state['ref_display']}")
+        st.success(f"Job Ativo")
         c1, c2, c3 = st.columns(3)
         with c1: 
             val = st.text_input("Título (Linha 1)", st.session_state["title_display"])
@@ -486,13 +507,11 @@ with tab3:
                     filters = [vf, f"fade=t=in:st=0:d=0.5,fade=t=out:st={dur-0.5}:d=0.5"]
                     
                     if use_over and f1:
-                        # Linha 1 (Título)
+                        # Títulos Dinâmicos
                         t1 = san(st.session_state.get("title_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t1}':fontcolor=white:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}")
-                        # Linha 2 (Data)
                         t2 = san(st.session_state.get("data_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t2}':fontcolor=white:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}")
-                        # Linha 3 (Ref)
                         t3 = san(st.session_state.get("ref_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t3}':fontcolor=white:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
 
