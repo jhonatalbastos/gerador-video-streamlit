@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import json
 import os
+import re
 from datetime import date
 from groq import Groq
 
@@ -52,50 +53,45 @@ def send_to_gas(payload):
 
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
-    
     if reading_type == "1ª Leitura":
-        regras_leitura_bloco = """O texto bíblico completo. 
-        1. INÍCIO: 'Leitura do Livro do [Nome do Livro]' (sem capítulos/versículos).
+        regras = """O texto completo. 
+        1. INÍCIO: 'Leitura do Livro do [Nome]' (sem caps/vers).
         2. FIM: 'Palavra do Senhor!'."""
     elif reading_type == "2ª Leitura":
-        regras_leitura_bloco = """O texto bíblico completo.
-        1. INÍCIO: 'Leitura da [Nome da Carta]' (ex: 'Leitura da Carta de São Tiago') sem capítulos/versículos.
+        regras = """O texto completo.
+        1. INÍCIO: 'Leitura da [Nome da Carta]' (sem caps/vers).
         2. FIM: 'Palavra do Senhor!'."""
     elif reading_type == "Salmo":
-        regras_leitura_bloco = """O Salmo completo.
+        regras = """O Salmo completo.
         1. INÍCIO: 'Salmo Responsorial: '.
         2. Sem números de versículos."""
     elif reading_type == "Evangelho":
-        regras_leitura_bloco = """O texto do Evangelho completo.
-        1. INÍCIO OBRIGATÓRIO: 'Proclamação do Evangelho de Jesus Cristo segundo [MATEUS/MARCOS/LUCAS/JOÃO]. Glória a Vós, Senhor!' (Identifique o evangelista pelo contexto).
-        2. FINAL OBRIGATÓRIO: 'Palavra da Salvação. Glória a Vós, Senhor!'.
-        3. CRÍTICO: Verifique se o texto já possui essas frases. Se sim, NÃO as duplique."""
-    else:
-        regras_leitura_bloco = "O texto bíblico fornecido, LIMPO (sem versículos/cabeçalhos)."
+        regras = """O Evangelho completo.
+        1. INÍCIO: 'Proclamação do Evangelho de Jesus Cristo segundo [AUTOR]. Glória a Vós, Senhor!'.
+        2. FIM: 'Palavra da Salvação. Glória a Vós, Senhor!'.
+        3. NÃO duplique as frases se já existirem."""
+    else: regras = "O texto bíblico fornecido, LIMPO."
 
     system_prompt = f"""Você é um assistente litúrgico católico.
-    TAREFA: Crie um roteiro de vídeo curto baseado na leitura bíblica ({reading_type}).
-    
-    ESTRUTURA OBRIGATÓRIA (5 BLOCOS):
-    1. hook (5-10s): Frase impactante e curiosa (20-30 palavras).
-    2. leitura: {regras_leitura_bloco}
-    3. reflexao (20-25s): Ensinamento prático. INÍCIO OBRIGATÓRIO: "Reflexão:".
-    4. aplicacao (20-25s): Dica de ação prática.
-    5. oracao (15-20s): Oração curta. INÍCIO OBRIGATÓRIO: "Vamos orar", "Oremos" ou "Ore comigo".
-    
-    EXTRA: Identifique PERSONAGENS BÍBLICOS na cena (exceto Jesus/Deus).
-    SAÍDA JSON: {{"roteiro": {{"hook": "...", "leitura": "...", "reflexao": "...", "aplicacao": "...", "oracao": "..."}}, "personagens_identificados": ["Nome1"]}}"""
-    
+    TAREFA: Crie um roteiro curto baseado na leitura ({reading_type}).
+    ESTRUTURA (5 BLOCOS):
+    1. hook (5-10s): Impactante (20-30 palavras).
+    2. leitura: {regras}
+    3. reflexao (20-25s): Ensinamento. INÍCIO: "Reflexão:".
+    4. aplicacao (20-25s): Ação prática.
+    5. oracao (15-20s): Oração. INÍCIO: "Vamos orar", "Oremos" ou "Ore comigo".
+    EXTRA: Identifique PERSONAGENS (exceto Jesus/Deus).
+    SAÍDA JSON: {{"roteiro": {{"hook": "...", "leitura": "...", "reflexao": "...", "aplicacao": "...", "oracao": "..."}}, "personagens_identificados": ["Nome"]}}"""
     try:
-        chat_completion = client.chat.completions.create(
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": f"Texto Base:\n\n{reading_text}"}],
+        chat = client.chat.completions.create(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": f"Texto:\n{reading_text}"}],
             model="llama-3.3-70b-versatile", response_format={"type": "json_object"}, temperature=0.7)
-        return json.loads(chat_completion.choices[0].message.content)
-    except Exception as e: st.error(f"Erro Groq ({reading_type}): {e}"); return None
+        return json.loads(chat.choices[0].message.content)
+    except Exception as e: st.error(f"Erro Groq: {e}"); return None
 
 def generate_character_description(name):
     client = get_groq_client()
-    prompt = f"Crie descrição visual física detalhada para personagem bíblico: {name}. Foco: Rosto, cabelo, barba, roupas. ~300 chars. Realista."
+    prompt = f"Crie descrição visual detalhada para personagem bíblico: {name}. Foco: Rosto, cabelo, barba, roupas. ~300 chars. Realista."
     try:
         chat = client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model="llama-3.3-70b-versatile", temperature=0.7)
         return chat.choices[0].message.content.strip()
@@ -105,150 +101,118 @@ def build_scene_prompts(roteiro_data, identified_chars, char_db, style_choice):
     prompts = {}
     desc_jesus = char_db.get("Jesus", FIXED_CHARACTERS["Jesus"])
     desc_moderna = char_db.get("Pessoa Moderna", FIXED_CHARACTERS["Pessoa Moderna"])
-    desc_biblicos = ""
-    if identified_chars:
-        desc_list = [f"{name}: {char_db.get(name, 'Trajes bíblicos genéricos')}" for name in identified_chars]
-        desc_biblicos = " Characters in scene: " + " | ".join(desc_list)
-    prompts["hook"] = f"Cena Bíblica Cinematográfica realista baseada na leitura: {roteiro_data.get('hook','')}. {desc_biblicos} {style_choice}"
-    prompts["leitura"] = f"Cena Bíblica Cinematográfica realista baseada na leitura. Contexto: {roteiro_data.get('leitura','').strip()[:300]}... {desc_biblicos} {style_choice}"
-    prompts["reflexao"] = f"Cena Moderna. Jesus conversando amigavelmente com a Pessoa Moderna em um café ou sala de estar. Jesus description: {desc_jesus} Modern Person description: {desc_moderna} {style_choice}"
-    prompts["aplicacao"] = f"Cena Moderna. Jesus e a Pessoa Moderna caminhando na cidade/trabalho. Jesus ensinando. Jesus description: {desc_jesus} Modern Person description: {desc_moderna} {style_choice}"
-    prompts["oracao"] = f"Cena Moderna. Jesus e a Pessoa Moderna orando juntos, olhos fechados, paz. Jesus description: {desc_jesus} Modern Person description: {desc_moderna} {style_choice}"
+    desc_biblicos = (" Characters: " + " | ".join([f"{n}: {char_db.get(n,'')}" for n in identified_chars])) if identified_chars else ""
+    
+    prompts["hook"] = f"Cena Bíblica Cinematográfica realista: {roteiro_data.get('hook','')}. {desc_biblicos} {style_choice}"
+    prompts["leitura"] = f"Cena Bíblica Cinematográfica realista. Contexto: {roteiro_data.get('leitura','').strip()[:300]}... {desc_biblicos} {style_choice}"
+    prompts["reflexao"] = f"Cena Moderna. Jesus conversando com Pessoa Moderna (café/sala). Jesus: {desc_jesus} Modern: {desc_moderna} {style_choice}"
+    prompts["aplicacao"] = f"Cena Moderna. Jesus e Pessoa Moderna caminhando/ensinando. Jesus: {desc_jesus} Modern: {desc_moderna} {style_choice}"
+    prompts["oracao"] = f"Cena Moderna. Jesus e Pessoa Moderna orando juntos, paz. Jesus: {desc_jesus} Modern: {desc_moderna} {style_choice}"
     return prompts
+
+def clean_verse_numbers(text):
+    if not text: return ""
+    text = re.sub(r'\d{1,3}(?=[A-Za-zÀ-ÿ])', '', text)
+    text = re.sub(r'\b\d{1,3}\s+(?=["\'A-Za-zÀ-ÿ])', '', text)
+    text = re.sub(r'\b\d{1,3}\.\s+', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
 
 def extract_text(obj):
     if not obj: return ""
     if "content_psalm" in obj:
         c = obj["content_psalm"]
-        text_part = "\n".join(c) if isinstance(c, list) else str(c)
-        refrain = obj.get("response", "")
-        return f"{refrain}\n{text_part}"
-    return obj.get("text") or obj.get("texto") or ""
+        text = "\n".join(c) if isinstance(c, list) else str(c)
+        return f"{obj.get('response', '')}\n{text}"
+    raw = obj.get("text") or obj.get("texto") or ""
+    return clean_verse_numbers(raw)
 
 def main():
     st.sidebar.title("⚙️ Configurações")
     char_db = load_characters()
-    tab_roteiro, tab_personagens = st.tabs(["📜 Roteiros (Multi)", "👥 Personagens"])
-    
+    tab_roteiro, tab_personagens = st.tabs(["📜 Roteiros", "👥 Personagens"])
     if 'daily_readings' not in st.session_state: st.session_state['daily_readings'] = []
     if 'generated_scripts' not in st.session_state: st.session_state['generated_scripts'] = []
 
     with tab_roteiro:
         st.header("1. Buscar Liturgia")
         date_sel = st.date_input("Data", value=date.today())
-        
         if st.button("Buscar Leituras"):
-            with st.spinner("Conectando à Vercel..."):
+            with st.spinner("Conectando..."):
                 data = fetch_liturgia(date_sel)
                 if data:
                     st.session_state['daily_readings'] = []
                     st.session_state['generated_scripts'] = []
-                    today_data = data.get('today', {})
-                    readings = today_data.get('readings', {}) or data.get('readings', {})
+                    today = data.get('today', {})
+                    readings = today.get('readings', {}) or data.get('readings', {})
                     
-                    def add_reading(key, type_name):
+                    def add(key, type_name):
                         if key in readings:
                             txt = extract_text(readings[key])
                             ref = readings[key].get('title', type_name)
-                            if txt.strip():
-                                st.session_state['daily_readings'].append({"type": type_name, "text": txt, "ref": ref, "date_display": date_sel.strftime("%d/%m/%Y")})
-
-                    add_reading('first_reading', '1ª Leitura')
-                    add_reading('psalm', 'Salmo')
-                    add_reading('second_reading', '2ª Leitura')
-                    add_reading('gospel', 'Evangelho')
+                            if txt.strip(): st.session_state['daily_readings'].append({"type": type_name, "text": txt, "ref": ref, "date_display": date_sel.strftime("%d/%m/%Y")})
                     
-                    if st.session_state['daily_readings']: st.success(f"{len(st.session_state['daily_readings'])} leituras encontradas!")
-                    else: st.warning("Nenhuma leitura extraída.")
+                    add('first_reading', '1ª Leitura')
+                    add('psalm', 'Salmo')
+                    add('second_reading', '2ª Leitura')
+                    add('gospel', 'Evangelho')
+                    
+                    if st.session_state['daily_readings']: st.success(f"{len(st.session_state['daily_readings'])} leituras!")
+                    else: st.warning("Vazio.")
 
         if st.session_state['daily_readings']:
-            st.markdown("---")
-            st.write("📖 **Leituras Disponíveis:**")
+            st.divider(); st.write("📖 **Leituras (Limpas):**")
             for r in st.session_state['daily_readings']:
                 with st.expander(f"{r['type']}: {r['ref']}"): st.text(r['text'])
-
-            st.markdown("---")
-            st.header("2. Gerar Roteiros (Batch)")
             
-            if st.button("✨ Gerar Roteiro para TODAS as Leituras"):
+            st.divider(); st.header("2. Gerar Roteiros")
+            if st.button("✨ Gerar Todos"):
                 st.session_state['generated_scripts'] = []
-                progress_bar = st.progress(0)
-                total = len(st.session_state['daily_readings'])
-                
-                with st.status("Gerando roteiros...", expanded=True) as status:
-                    for idx, reading in enumerate(st.session_state['daily_readings']):
-                        st.write(f"Processando: {reading['type']}...")
-                        ai_result = generate_script_and_identify_chars(reading['text'], reading['type'])
-                        
-                        if ai_result:
-                            identified = ai_result.get('personagens_identificados', [])
-                            new_chars_found = False
-                            for char_name in identified:
-                                if char_name not in char_db:
-                                    st.write(f"🎨 Criando personagem: {char_name}")
-                                    char_db[char_name] = generate_character_description(char_name)
-                                    new_chars_found = True
-                            if new_chars_found: save_characters(char_db)
-
-                            st.session_state['generated_scripts'].append({
-                                "meta": reading,
-                                "roteiro": ai_result.get('roteiro', {}),
-                                "chars": identified
-                            })
-                        progress_bar.progress((idx + 1) / total)
-                    status.update(label="Geração Concluída!", state="complete", expanded=False)
+                prog = st.progress(0)
+                with st.status("Gerando...", expanded=True):
+                    for i, r in enumerate(st.session_state['daily_readings']):
+                        st.write(f"Processando {r['type']}...")
+                        res = generate_script_and_identify_chars(r['text'], r['type'])
+                        if res:
+                            chars = res.get('personagens_identificados', [])
+                            for c in chars:
+                                if c not in char_db:
+                                    char_db[c] = generate_character_description(c)
+                            save_characters(char_db)
+                            st.session_state['generated_scripts'].append({"meta": r, "roteiro": res.get('roteiro', {}), "chars": chars})
+                        prog.progress((i+1)/len(st.session_state['daily_readings']))
 
         if st.session_state['generated_scripts']:
-            st.markdown("---")
-            st.header("3. Enviar Jobs (Drive)")
-            
-            for script_obj in st.session_state['generated_scripts']:
-                meta = script_obj['meta']
-                rot = script_obj['roteiro']
-                with st.expander(f"✅ Roteiro Pronto: {meta['type']} ({meta['ref']})"):
+            st.divider(); st.header("3. Enviar (Drive)")
+            for s in st.session_state['generated_scripts']:
+                m = s['meta']; r = s['roteiro']
+                with st.expander(f"✅ {m['type']} - {m['ref']}"):
                     c1, c2 = st.columns(2)
-                    with c1:
-                        st.info(f"**Hook:** {rot.get('hook', '❌ FALTOU')}")
-                        st.text_area("Leitura", rot.get('leitura', '❌ FALTOU'), height=100, key=f"lei_{meta['type']}")
-                    with c2:
-                        st.write(f"**Reflexão:** {rot.get('reflexao', '❌ FALTOU')}")
-                        st.write(f"**Aplicação:** {rot.get('aplicacao', '❌ FALTOU')}")
-                        st.write(f"**Oração:** {rot.get('oracao', '❌ FALTOU')}")
-            
-            if st.button("🚀 Enviar TODOS para o Drive"):
-                progress_bar_send = st.progress(0)
-                total_send = len(st.session_state['generated_scripts'])
-                success_count = 0
-                
-                for idx, script_obj in enumerate(st.session_state['generated_scripts']):
-                    meta = script_obj['meta']
-                    rot = script_obj['roteiro']
-                    prompts_finais = build_scene_prompts(rot, script_obj['chars'], char_db, STYLE_SUFFIX)
-                    ref_final = f"{meta['type']} - {meta['ref']}"
-                    
+                    with c1: st.info(f"Hook: {r.get('hook')}"); st.text_area("Leitura", r.get('leitura'), height=100, key=f"l_{m['type']}")
+                    with c2: st.write(f"Reflexão: {r.get('reflexao')}"); st.write(f"Aplicação: {r.get('aplicacao')}"); st.write(f"Oração: {r.get('oracao')}")
+
+            if st.button("🚀 Enviar Todos"):
+                prog = st.progress(0); cnt = 0
+                for i, s in enumerate(st.session_state['generated_scripts']):
+                    m = s['meta']; r = s['roteiro']
+                    prompts = build_scene_prompts(r, s['chars'], char_db, STYLE_SUFFIX)
                     payload = {
-                        "meta_dados": {"data": meta['date_display'], "ref": ref_final},
-                        "roteiro": {k: {"text": rot.get(k, ''), "prompt": prompts_finais.get(k, '')} for k in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]},
+                        "meta_dados": {"data": m['date_display'], "ref": f"{m['type']} - {m['ref']}"},
+                        "roteiro": {k: {"text": r.get(k,''), "prompt": prompts.get(k,'')} for k in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]},
                         "assets": []
                     }
-                    
-                    res = send_to_gas(payload)
-                    if res and res.get('status') == 'success': success_count += 1
-                    progress_bar_send.progress((idx + 1) / total_send)
-                
-                if success_count == total_send: st.balloons(); st.success(f"{success_count} jobs enviados com sucesso!")
-                else: st.warning(f"{success_count}/{total_send} jobs enviados. Verifique logs.")
+                    if send_to_gas(payload): cnt += 1
+                    prog.progress((i+1)/len(st.session_state['generated_scripts']))
+                if cnt == len(st.session_state['generated_scripts']): st.balloons(); st.success("Sucesso!")
+                else: st.warning(f"{cnt} enviados.")
 
     with tab_personagens:
         st.header("Personagens")
-        for name, desc in char_db.items():
-            with st.expander(f"👤 {name}", expanded=False):
-                new_desc = st.text_area(f"Desc ({name})", value=desc, height=100)
-                if st.button(f"Salvar {name}"): char_db[name] = new_desc; save_characters(char_db); st.success("Ok!")
-                if name not in FIXED_CHARACTERS:
-                    if st.button(f"Excluir {name}"): del char_db[name]; save_characters(char_db); st.rerun()
-        st.divider()
-        n = st.text_input("Nome"); d = st.text_area("Descrição")
-        if st.button("Criar") and n: char_db[n] = d; save_characters(char_db); st.success("Criado!"); st.rerun()
+        for n, d in char_db.items():
+            with st.expander(n):
+                new_d = st.text_area("Desc", d, key=f"d_{n}"); 
+                if st.button("Salvar", key=f"s_{n}"): char_db[n]=new_d; save_characters(char_db); st.rerun()
+                if n not in FIXED_CHARACTERS and st.button("Excluir", key=f"x_{n}"): del char_db[n]; save_characters(char_db); st.rerun()
+        n = st.text_input("Novo Nome"); d = st.text_area("Nova Descrição")
+        if st.button("Adicionar") and n: char_db[n]=d; save_characters(char_db); st.rerun()
 
 if __name__ == "__main__": main()
