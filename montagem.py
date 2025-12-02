@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Correção Definitiva de Legendas (CWD Fix)
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão Completa com Correções de Legenda e Progresso
 import os
 import re
 import json
@@ -823,29 +823,27 @@ with tab3:
                 else:
                     map_a = "0:a"
 
-                # CORREÇÃO DE LEGENDAS: CWD FIX
-                # Ao invés de passar o caminho absoluto do SRT (que falha), vamos copiar o SRT para a pasta TMP
-                # e rodar o FFmpeg DENTRO da pasta TMP.
+                # FORÇANDO A CRIAÇÃO DO ARQUIVO SRT FÍSICO
                 if use_subs and st.session_state.get("generated_srt_content"):
-                    srt_filename = "subs.srt"
-                    srtp = os.path.join(tmp, srt_filename)
+                    srtp = os.path.join(tmp, "subs.srt")
+                    srtp_abs = os.path.abspath(srtp)
                     
-                    with open(srtp, "w", encoding="utf-8") as f: 
+                    # Escreve o conteúdo da memória para o disco AGORA
+                    with open(srtp_abs, "w", encoding="utf-8") as f: 
                         f.write(st.session_state["generated_srt_content"])
                     
-                    if os.path.exists(srtp) and os.path.getsize(srtp) > 0:
+                    # Verifica se escreveu corretamente
+                    if os.path.exists(srtp_abs) and os.path.getsize(srtp_abs) > 0:
                         c = sets["sub_color"].lstrip("#")
                         co = sets["sub_outline_color"].lstrip("#")
                         ass_c = f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
                         ass_co = f"&H00{co[4:6]}{co[2:4]}{co[0:2]}"
                         margin_v = res['h'] - sets['sub_y_pos']
-                        # Garantimos que a fonte Arial existe, senão FFmpeg pode falhar se não achar
-                        font_name = "Arial"
-                        # Se tiver fonte personalizada salva, poderíamos usar, mas Arial é seguro
-                        style = f"FontName={font_name},FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
+                        style = f"FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
                         
-                        # Usamos apenas o nome do arquivo, pois rodaremos o comando dentro do diretório tmp
-                        filter_complex.append(f"subtitles='{srt_filename}':force_style='{style}'")
+                        # Caminho escapado
+                        srtp_esc = srtp_abs.replace("\\", "/").replace(":", "\\:")
+                        filter_complex.append(f"subtitles='{srtp_esc}':force_style='{style}'")
                     else:
                         st.warning("Falha ao escrever arquivo de legenda temporário.")
 
