@@ -16,8 +16,7 @@ FIXED_CHARACTERS = {
 def load_characters():
     if os.path.exists(CHARACTERS_FILE):
         try:
-            with open(CHARACTERS_FILE, "r", encoding="utf-8") as f:
-                custom_chars = json.load(f)
+            with open(CHARACTERS_FILE, "r", encoding="utf-8") as f: custom_chars = json.load(f)
         except: custom_chars = {}
     else: custom_chars = {}
     all_chars = FIXED_CHARACTERS.copy()
@@ -25,8 +24,7 @@ def load_characters():
     return all_chars
 
 def save_characters(chars_dict):
-    with open(CHARACTERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(chars_dict, f, ensure_ascii=False, indent=2)
+    with open(CHARACTERS_FILE, "w", encoding="utf-8") as f: json.dump(chars_dict, f, ensure_ascii=False, indent=2)
 
 def get_groq_client():
     api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
@@ -61,7 +59,7 @@ def generate_script_and_identify_chars(full_text_readings):
     try:
         chat_completion = client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": f"Leituras:\n\n{full_text_readings}"}],
-            model="llama-3.1-70b-versatile", response_format={"type": "json_object"}, temperature=0.7)
+            model="llama-3.3-70b-versatile", response_format={"type": "json_object"}, temperature=0.7)
         return json.loads(chat_completion.choices[0].message.content)
     except Exception as e: st.error(f"Erro na geração (Groq): {e}"); return None
 
@@ -69,7 +67,7 @@ def generate_character_description(name):
     client = get_groq_client()
     prompt = f"Crie descrição visual física detalhada para personagem bíblico: {name}. Foco: Rosto, cabelo, barba, roupas. ~300 chars. Realista."
     try:
-        chat = client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model="llama-3.1-70b-versatile", temperature=0.7)
+        chat = client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model="llama-3.3-70b-versatile", temperature=0.7)
         return chat.choices[0].message.content.strip()
     except: return "Descrição não gerada."
 
