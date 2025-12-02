@@ -53,15 +53,19 @@ def send_to_gas(payload):
 def generate_script_and_identify_chars(reading_text, reading_type):
     client = get_groq_client()
     
-    # Lógica de regras condicionais por tipo de leitura
     if reading_type == "1ª Leitura":
         regras_leitura_bloco = """O texto bíblico completo. 
-        1. INÍCIO OBRIGATÓRIO: Inicie com a fórmula litúrgica do livro (ex: 'Leitura do Livro do Profeta Isaías') sem mencionar capítulos/versículos.
-        2. FINAL OBRIGATÓRIO: Termine com a frase: 'Palavra do Senhor!'."""
+        1. INÍCIO: 'Leitura do Livro do [Nome do Livro]' (sem capítulos/versículos).
+        2. FIM: 'Palavra do Senhor!'."""
     elif reading_type == "Salmo":
-        regras_leitura_bloco = """O texto do Salmo completo (Refrão e Estrofes).
-        1. INÍCIO OBRIGATÓRIO: Inicie o texto com a frase exata: 'Salmo Responsorial: '.
-        2. Não mencione números de capítulos, livros ou versículos."""
+        regras_leitura_bloco = """O Salmo completo.
+        1. INÍCIO: 'Salmo Responsorial: '.
+        2. Sem números de versículos."""
+    elif reading_type == "Evangelho":
+        regras_leitura_bloco = """O texto do Evangelho completo.
+        1. INÍCIO OBRIGATÓRIO: 'Proclamação do Evangelho de Jesus Cristo segundo [MATEUS/MARCOS/LUCAS/JOÃO]. Glória a Vós, Senhor!' (Identifique o evangelista pelo contexto).
+        2. FINAL OBRIGATÓRIO: 'Palavra da Salvação. Glória a Vós, Senhor!'.
+        3. CRÍTICO: Verifique se o texto já possui essas frases. Se sim, NÃO as duplique. Mantenha apenas uma ocorrência no início e uma no fim."""
     else:
         regras_leitura_bloco = "O texto bíblico fornecido, LIMPO (sem versículos/cabeçalhos)."
 
@@ -71,9 +75,9 @@ def generate_script_and_identify_chars(reading_text, reading_type):
     ESTRUTURA OBRIGATÓRIA (5 BLOCOS):
     1. hook (5-10s): Frase impactante e curiosa (20-30 palavras).
     2. leitura: {regras_leitura_bloco}
-    3. reflexao (20-25s): Ensinamento prático. INÍCIO OBRIGATÓRIO com a palavra "Reflexão:".
+    3. reflexao (20-25s): Ensinamento prático. INÍCIO OBRIGATÓRIO: "Reflexão:".
     4. aplicacao (20-25s): Dica de ação prática.
-    5. oracao (15-20s): Oração curta. INÍCIO OBRIGATÓRIO com: "Vamos orar", "Oremos" ou "Ore comigo".
+    5. oracao (15-20s): Oração curta. INÍCIO OBRIGATÓRIO: "Vamos orar", "Oremos" ou "Ore comigo".
     
     EXTRA: Identifique PERSONAGENS BÍBLICOS na cena (exceto Jesus/Deus).
     SAÍDA JSON: {{"roteiro": {{"hook": "...", "leitura": "...", "reflexao": "...", "aplicacao": "...", "oracao": "..."}}, "personagens_identificados": ["Nome1"]}}"""
@@ -135,7 +139,6 @@ def main():
                 if data:
                     st.session_state['daily_readings'] = []
                     st.session_state['generated_scripts'] = []
-                    
                     today_data = data.get('today', {})
                     readings = today_data.get('readings', {}) or data.get('readings', {})
                     
@@ -216,7 +219,6 @@ def main():
                 for idx, script_obj in enumerate(st.session_state['generated_scripts']):
                     meta = script_obj['meta']
                     rot = script_obj['roteiro']
-                    
                     prompts_finais = build_scene_prompts(rot, script_obj['chars'], char_db, STYLE_SUFFIX)
                     ref_final = f"{meta['type']} - {meta['ref']}"
                     
