@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão V7 (Envio Final GAS + Arquivamento)
+# montagem.py — Fábrica de Vídeos (Renderizador) - VERSÃO FINAL V8 (Envio de Vídeo Pronto)
 import os
 import re
 import json
@@ -20,21 +20,16 @@ import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-try:
-    from groq import Groq
-except ImportError:
-    Groq = None
 
 # --- CONFIGURAÇÃO ---
-# Substitua pela URL do seu Web App GAS atualizado
 FRONTEND_AI_STUDIO_URL = "https://ai.studio/apps/drive/1gfrdHffzH67cCcZBJWPe6JfE1ZEttn6u"
-# IMPORTANTE: Atualize esta URL se você reimplantou o GAS
+# URL DO SEU SCRIPT GAS (ATUALIZE SE NECESSÁRIO)
 GAS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhHJejuPBx1Ud6B10Ag_xfnJVzGpE83n7gHdUHnk4yAgrpuidw/exec" 
 
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 CONFIG_FILE = "overlay_config.json"
 SAVED_MUSIC_FILE = "saved_bg_music.mp3"
-SAVED_FONT_FILE = "saved_custom_font.ttf"
+SAVED_FONT_FILE = "saved_custom_font.ttf" # Arquivo de fonte persistente
 MONETIZA_DRIVE_FOLDER_NAME = "Monetiza_Studio_Jobs"
 
 # =========================
@@ -93,7 +88,7 @@ def delete_font_file():
     return False
 
 # =========================
-# Google Drive API (Leitura)
+# Google Drive API
 # =========================
 _drive_service = None
 
@@ -162,7 +157,6 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
             f"trashed = false"
         )
         
-        # Pede o campo description para filtrar
         results = service.files().list(
             q=query_file, 
             orderBy="createdTime desc", 
@@ -173,7 +167,7 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
         files = results.get('files', [])
 
         for f in files:
-            # FILTRO: Só mostra o que é 'COMPLETE'. Ignora 'PENDING' e 'ARCHIVED'.
+            # FILTRO: Só mostra 'COMPLETE'. Ignora 'PENDING' e 'ARCHIVED'.
             if f.get('description') != 'COMPLETE': continue
 
             content = download_file_content(service, f['id'])
@@ -277,30 +271,32 @@ def process_job_payload(payload: Dict, temp_dir: str):
         return False
 
 # =========================
-# UPLOAD DE VIDEO FINAL (GAS)
+# Função de Envio de Vídeo Final
 # =========================
-def upload_final_video_to_gas(video_bytes_io: BytesIO, job_id: str, meta: Dict):
+def upload_final_video_to_gas(video_path: str, job_id: str, meta: Dict):
     """Envia o vídeo renderizado e metadados para o Google Drive via GAS."""
     try:
-        # Reseta ponteiro do BytesIO
-        video_bytes_io.seek(0)
-        video_b64 = base64.b64encode(video_bytes_io.read()).decode('utf-8')
-        video_bytes_io.seek(0) # Retorna para permitir download local se necessário
-
+        # Lê o arquivo de vídeo e converte para Base64
+        with open(video_path, "rb") as video_file:
+            video_base64 = base64.b64encode(video_file.read()).decode('utf-8')
+        
+        # Prepara o payload
         payload = {
             "action": "upload_video",
             "job_id": job_id,
-            "video_data": video_b64,
+            "video_data": video_base64,
             "filename": f"video_final_{job_id}.mp4",
             "meta_data": {
-                "data": meta.get("data", ""),
-                "ref": meta.get("ref", ""),
+                "data_liturgia": st.session_state.get("data_display", ""),
+                "tipo_leitura": st.session_state.get("title_display", ""),
+                "referencia": st.session_state.get("ref_display", ""),
+                "status": "READY_FOR_PUBLISH",
                 "processed_at": datetime.now().isoformat()
             }
         }
 
-        # Envia request (pode demorar se o vídeo for grande)
-        response = requests.post(GAS_SCRIPT_URL, json=payload, timeout=120) 
+        # Envia para o GAS (atenção ao limite de tamanho)
+        response = requests.post(GAS_SCRIPT_URL, json=payload, timeout=300)
         
         if response.status_code == 200:
             res_json = response.json()
@@ -310,7 +306,7 @@ def upload_final_video_to_gas(video_bytes_io: BytesIO, job_id: str, meta: Dict):
                 return False, res_json.get("message")
         else:
             return False, f"HTTP Error {response.status_code}"
-
+            
     except Exception as e:
         return False, str(e)
 
@@ -388,7 +384,7 @@ def auto_load_and_process_job(job_id: str):
         payload = load_job_from_drive(job_id)
         
         if payload and process_job_payload(payload, temp_assets_dir):
-            st.session_state.update({"job_loaded_from_drive": True, "temp_assets_dir": temp_assets_dir})
+            st.session_state.update({"job_loaded_from_drive": True, "temp_assets_dir": temp_assets_dir, "current_job_id_loaded": job_id})
             status_box.update(label=f"✅ Job carregado com sucesso!", state="complete")
             time.sleep(0.5)
             st.rerun()
@@ -402,7 +398,7 @@ def auto_load_and_process_job(job_id: str):
 # =========================
 # APP MAIN
 # =========================
-if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None})
+if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None, "current_job_id_loaded": None, "video_final_path": None})
 if "overlay_settings" not in st.session_state: st.session_state["overlay_settings"] = load_config()
 
 res_choice = st.sidebar.selectbox("Resolução", ["9:16 (Stories)", "16:9 (YouTube)", "1:1 (Feed)"])
@@ -437,12 +433,14 @@ with tab1:
         
         if st.session_state['lista_jobs']:
             opts = {j['display']: j['job_id'] for j in st.session_state['lista_jobs']}
+            
             selected_display = st.selectbox(
                 "Selecione um Job:", 
                 options=list(opts.keys()),
                 index=None, 
                 placeholder="Escolha um job para carregar..."
             )
+            
             if selected_display:
                 selected_id = opts[selected_display]
                 if selected_id != st.session_state.get('drive_job_id_input'):
@@ -692,17 +690,16 @@ with tab3:
         
         with c2:
             if st.button("☁️ Enviar ao Drive (Arquivar)"):
-                if st.session_state.get("drive_job_id_input") and st.session_state.get("video_final_bytes"):
+                if st.session_state.get("drive_job_id_input") and st.session_state.get("video_final_path"):
                     with st.spinner("Enviando..."):
                         ok, msg = upload_final_video_to_gas(
-                            st.session_state["video_final_bytes"], 
+                            st.session_state["video_final_path"], # Passa o caminho do arquivo
                             st.session_state['drive_job_id_input'], 
                             st.session_state.get("meta_dados", {})
                         )
                         if ok:
                             st.success("✅ Sucesso! Job arquivado.")
                             time.sleep(2)
-                            # Opcional: Limpar estado para próximo job
                         else:
                             st.error(f"Erro no envio: {msg}")
                 else:
