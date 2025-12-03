@@ -355,6 +355,7 @@ if "overlay_settings" not in st.session_state: st.session_state["overlay_setting
 
 res_choice = st.sidebar.selectbox("Resolução", ["9:16 (Stories)", "16:9 (YouTube)", "1:1 (Feed)"])
 
+# Upload de Fonte Persistente
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🅰️ Fonte Personalizada")
 
@@ -363,6 +364,7 @@ if font_up:
     if save_font_file(font_up.getvalue()):
         st.sidebar.success("Fonte salva! Selecione 'Upload Personalizada' ou 'Alegreya Sans Black' no menu.")
         
+# Verifica se existe fonte salva
 font_status = "✅ Fonte Salva Encontrada" if os.path.exists(SAVED_FONT_FILE) else "⚠️ Nenhuma fonte salva"
 st.sidebar.caption(font_status)
 
@@ -385,7 +387,15 @@ with tab1:
         
         if st.session_state['lista_jobs']:
             opts = {j['display']: j['job_id'] for j in st.session_state['lista_jobs']}
-            selected_display = st.selectbox("Selecione um Job:", options=list(opts.keys()), index=None, placeholder="Escolha um job para carregar...")
+            
+            # Callback para auto-load quando mudar a seleção
+            selected_display = st.selectbox(
+                "Selecione um Job:", 
+                options=list(opts.keys()),
+                index=None, 
+                placeholder="Escolha um job para carregar..."
+            )
+            
             if selected_display:
                 selected_id = opts[selected_display]
                 if selected_id != st.session_state.get('drive_job_id_input'):
@@ -393,6 +403,7 @@ with tab1:
         else: st.info("Nenhum job pronto encontrado.")
 
     with c2:
+        # Mantém opção manual caso o usuário queira colar um ID direto
         jid_in = st.text_input("ID Manual:", key="drive_job_id_input_manual") 
         if st.button("Baixar ID Manual", disabled=not jid_in):
              auto_load_and_process_job(jid_in)
@@ -497,7 +508,9 @@ with tab3:
         if os.path.exists(SAVED_MUSIC_FILE):
             st.success("💾 Música Padrão Ativa")
             st.audio(SAVED_MUSIC_FILE)
-            if st.button("❌ Remover Música"): if delete_music_file(): st.rerun()
+            if st.button("❌ Remover Música"):
+                if delete_music_file():
+                    st.rerun()
         else: st.info("Nenhuma música definida.")
 
     with col_mus_2:
