@@ -1,4 +1,4 @@
-# pages/4_🎬_Editor_Legendas.py - Editor de Legendas Avançado (Pós-Produção) - CORRIGIDO
+# editor_legendas.py - Editor de Legendas Avançado (Pós-Produção) - CORRIGIDO
 import os
 import re
 import json
@@ -28,11 +28,9 @@ from googleapiclient.errors import HttpError
 
 # --- CONFIGURAÇÃO ---
 # URL do Script GAS para interação com Drive (mesma do app principal)
-# Substitua pela sua URL correta se for diferente
 GAS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhHJejuPBx1Ud6B10Ag_xfnJVzGpE83n7gHdUHnk4yAgrpuidw/exec"
 MONETIZA_DRIVE_FOLDER_VIDEOS = "Monetiza_Studio_Videos_Finais" # Pasta onde videos sem legenda estao
-# Opcional: Pasta de destino para vídeos legendados (se quiser separar)
-MONETIZA_DRIVE_FOLDER_LEGENDADOS = "Monetiza_Studio_Videos_Legendados" 
+MONETIZA_DRIVE_FOLDER_LEGENDADOS = "Monetiza_Studio_Videos_Legendados" # Pasta de destino
 
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 
@@ -48,13 +46,10 @@ st.set_page_config(
 # =========================
 # Utils & Helpers
 # =========================
-def shutil_which(name): return shutil.which(name)
-
 def run_cmd(cmd):
     """Executa comandos de shell (FFmpeg)"""
-    clean = [arg.replace('\u00a0', ' ').strip() if isinstance(arg, str) else arg for arg in cmd if arg]
     try:
-        subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         st.error(f"Erro FFmpeg: {e.stderr.decode()}")
         raise e
@@ -75,7 +70,7 @@ def hex_to_ass_color(hex_color):
     return f"&H00{h[4:6]}{h[2:4]}{h[0:2]}"
 
 # =========================
-# Google Drive Service (CORRIGIDO COM BASE NO MONTAGEM.PY)
+# Google Drive Service (CORRIGIDO)
 # =========================
 _drive_service = None
 
@@ -96,20 +91,14 @@ def get_drive_service():
             missing_keys = []
             for key in required_keys:
                 # Busca com o prefixo correto
-                secret_key = prefix + key
-                val = st.secrets.get(secret_key)
-                
+                val = st.secrets.get(prefix + key)
                 if val is None: 
-                    # Tenta buscar sem prefixo como fallback
-                    val = st.secrets.get(key)
-                
-                if val is None:
-                    missing_keys.append(secret_key)
+                    missing_keys.append(prefix + key)
                 else:
                     creds_info[key] = val
             
             if missing_keys:
-                st.error(f"Faltam chaves no secrets (verifique o prefixo '{prefix}'): {', '.join(missing_keys)}")
+                st.error(f"Faltam chaves no secrets: {', '.join(missing_keys)}")
                 st.stop()
 
             creds = service_account.Credentials.from_service_account_info(
@@ -131,7 +120,7 @@ def list_videos_ready():
         folders = service.files().list(q=q_f, fields="files(id)").execute().get('files', [])
         
         if not folders: 
-            st.warning(f"Pasta '{MONETIZA_DRIVE_FOLDER_VIDEOS}' não encontrada. Certifique-se de ter gerado vídeos no Montagem.")
+            st.warning(f"Pasta '{MONETIZA_DRIVE_FOLDER_VIDEOS}' não encontrada.")
             return []
             
         folder_id = folders[0]['id']
@@ -167,11 +156,12 @@ def transcribe_audio(video_path, model_size="tiny"):
     try:
         # Extrai áudio temporário
         audio_path = "temp_audio.wav"
+        # Extrai áudio em 16k mono para o Whisper
         run_cmd(["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path])
         
-        # Carrega modelo (força CPU para evitar erros de GPU no Streamlit Cloud)
+        # Carrega modelo
         st.info(f"Carregando modelo Whisper ({model_size})...")
-        model = whisper.load_model(model_size, device="cpu")
+        model = whisper.load_model(model_size)
         
         # Transcreve
         st.info("Transcrevendo...")
@@ -214,6 +204,9 @@ def upload_legendado_to_gas(video_path, original_name):
                 "processed_at": datetime.now().isoformat()
             }
         }
+        
+        # Se quiser salvar em pasta diferente, o GAS precisaria suportar esse parametro
+        # Por enquanto usa a mesma lógica do montagem.py
         
         response = requests.post(GAS_SCRIPT_URL, json=payload, timeout=300) # Timeout maior para upload
         
@@ -292,7 +285,7 @@ def main():
             st.video(st.session_state.current_video_path)
             
             st.divider()
-            st.subheader("🧠 IA Transcrição")
+            st.subheader("🧠 Transcrição (Whisper)")
             
             c_mod, c_btn = st.columns([1,1])
             with c_mod:
@@ -300,12 +293,11 @@ def main():
             with c_btn:
                 st.write("") # Spacer
                 if st.button("✨ Gerar Legendas (Auto)"):
-                    with st.spinner("Transcrevendo áudio..."):
-                        srt, segs = transcribe_audio(st.session_state.current_video_path, model_size)
-                        if srt:
-                            st.session_state.srt_content = srt
-                            st.success("Legendas geradas!")
-                            st.rerun()
+                    srt, segs = transcribe_audio(st.session_state.current_video_path, model_size)
+                    if srt:
+                        st.session_state.srt_content = srt
+                        st.success("Legendas geradas!")
+                        st.rerun()
 
         with col_editor:
             st.subheader("✏️ Editor & Estilo")
