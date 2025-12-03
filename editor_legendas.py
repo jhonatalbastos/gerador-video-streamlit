@@ -8,16 +8,16 @@ import base64
 from typing import List, Dict, Any, Optional
 
 import streamlit as st
+# Manter moviepy, mas certifique-se de que está no requirements.txt
 from moviepy.editor import VideoFileClip # Para extração de áudio
 import requests
 from io import BytesIO
 
-# --- Configuração Google Drive API ---
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
+# --- API Imports (Ajustado para Service Account) ---
+from google.oauth2 import service_account # Importado conforme montagem.py
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+from googleapiclient.errors import HttpError
+# Removidos os imports de OAuth para simplificar e focar no Service Account
 
 # Tente importar Whisper (dependência externa)
 try:
@@ -32,9 +32,7 @@ GAS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhH
 MONETIZA_DRIVE_FOLDER_VIDEOS = "Monetiza_Studio_Videos_Finais"
 CONFIG_FILE = "legendas_config.json"
 SAVED_FONT_FILE = "saved_custom_font.ttf"
-CREDENTIALS_FILE = "client_secrets.json"
-TOKEN_FILE = "token.json"
-
+# Removidos CREDENTIALS_FILE e TOKEN_FILE, pois focaremos no Service Account via Secrets
 
 # ====================================================
 # FUNÇÕES DE UTILIDADE E CONFIGURAÇÃO
@@ -45,7 +43,6 @@ def run_cmd(cmd):
     clean = [arg.replace('\u00a0', ' ').strip() if isinstance(arg, str) else arg for arg in cmd if arg]
     st.info(f"Executando: {' '.join(clean)}", icon="💻")
     try:
-        # Usa subprocess.run para capturar stdout e stderr
         result = subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return result.stdout
     except subprocess.CalledProcessError as e:
@@ -68,7 +65,6 @@ def hex_to_ass_color(hex_color: str) -> str:
     """Converte cor HEX (#RRGGBB) para o formato BGR ASS (&H00BBGGRR)."""
     h = hex_color.lstrip('#')
     if len(h) != 6: return "&HFFFFFF&"
-    # O formato ASS é &H00BBGGRR. O canal Alpha (AA) é ignorado aqui.
     return f"&H00{h[4:6]}{h[2:4]}{h[0:2]}"
 
 def load_config() -> Dict[str, Any]:
@@ -78,7 +74,7 @@ def load_config() -> Dict[str, Any]:
         "margin_v": 250, 
         "color": "#FFFF00", 
         "border": "#000000",
-        "font_style": "Padrão (Arial)" # ou o caminho da fonte
+        "font_style": "Padrão (Arial)" 
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -100,73 +96,45 @@ def save_config(settings: Dict[str, Any]):
 def resolve_font(choice: str) -> str:
     """Resolve o caminho da fonte para o FFmpeg."""
     if choice == "Upload Personalizada" and os.path.exists(SAVED_FONT_FILE):
-        # Retorna o caminho absoluto do arquivo salvo
         return os.path.abspath(SAVED_FONT_FILE) 
-    
-    # Se for uma fonte padrão (como Arial, Helvetica, etc.), o FFmpeg tentará encontrá-la.
-    # Para sistemas Windows/Linux/macOS que podem ter nomes de fontes padrão diferentes, 
-    # é melhor usar o nome.
     return choice
 
 
 # ====================================================
-# FUNÇÕES DE INTEGRAÇÃO GOOGLE DRIVE / GAS
+# FUNÇÕES DE INTEGRAÇÃO GOOGLE DRIVE / GAS (CORRIGIDO)
 # ====================================================
 
 @st.cache_resource(ttl=3600)
 def get_drive_service() -> Optional[Any]:
-    """Cria e retorna o serviço da API Google Drive."""
+    """
+    Cria e retorna o serviço da API Google Drive.
+    Prioriza a autenticação via Service Account (Service Account) nos Secrets.
+    """
     creds = None
     
-    # 1. Tenta carregar credenciais salvas (token.json)
-    if os.path.exists(TOKEN_FILE):
+    # 1. Tenta carregar credenciais da Service Account via Streamlit Secrets
+    if "google_service_account" in st.secrets:
         try:
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+            creds_info = st.secrets["google_service_account"]
+            # Usa o import do service_account, como no montagem.py
+            creds = service_account.Credentials.from_service_account_info(
+                creds_info, 
+                scopes=SCOPES
+            )
+            st.success("Credenciais do Google Service Account carregadas com sucesso.")
         except Exception as e:
-            st.error(f"Erro ao carregar token.json: {e}")
-            
-    # 2. Se não houver credenciais válidas, tenta obter via Secrets (Streamlit Cloud)
-    if not creds or not creds.valid:
-        if "google_service_account" in st.secrets:
-            # Lógica para Streamlit Cloud com Service Account (mais complexo para OAuth, mas comum)
-            # Para OAuth em cloud, o método mais comum é forçar o login ou usar um Service Account.
-            # Usando o padrão de carregamento de credenciais via arquivo JSON:
-            try:
-                # Se o JSON de credenciais do app web estiver no secrets
-                secrets_content = st.secrets["google_service_account"]["credentials"]
-                if not os.path.exists(CREDENTIALS_FILE):
-                    with open(CREDENTIALS_FILE, "w") as f:
-                        f.write(secrets_content)
-            except:
-                pass # Falha na extração de secrets
-    
-    # 3. Se ainda não há credenciais válidas, tenta o fluxo OAuth local (se houver client_secrets.json)
-    if not creds or not creds.valid:
-        if os.path.exists(CREDENTIALS_FILE):
-            try:
-                if creds and creds.expired and creds.refresh_token:
-                    creds.refresh(Request())
-                else:
-                    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-                    
-                    # Usa o fluxo no terminal/navegador (pode ser problemático no Streamlit)
-                    st.warning("Executando fluxo OAuth. Verifique o terminal para o link de autorização (se estiver rodando localmente).")
-                    creds = flow.run_local_server(port=0)
-
-                # Salva as credenciais para a próxima vez
-                with open(TOKEN_FILE, 'w') as token:
-                    token.write(creds.to_json())
-            except Exception as e:
-                st.error(f"Falha no fluxo OAuth. Certifique-se de que {CREDENTIALS_FILE} está correto e o ambiente local está configurado. Erro: {e}")
-                return None
-        else:
-            st.warning("Nenhuma credencial Google Drive válida encontrada. Faça upload do `client_secrets.json` ou configure os `secrets`.")
+            st.error(f"❌ Erro ao carregar Service Account via Secrets: {e}")
             return None
-
-    try:
-        return build('drive', 'v3', credentials=creds)
-    except Exception as e:
-        st.error(f"Falha ao construir o serviço Drive: {e}")
+    
+    if creds:
+        try:
+            return build('drive', 'v3', credentials=creds)
+        except Exception as e:
+            st.error(f"❌ Falha ao construir o serviço Drive: {e}")
+            return None
+    else:
+        # Este aviso é a solução para o erro do usuário, se as credenciais estiverem faltando
+        st.warning("Nenhuma credencial Google Drive Service Account válida encontrada nos Secrets. Por favor, configure `secrets.toml`.")
         return None
 
 def list_videos_ready(service: Any) -> List[Dict[str, Any]]:
@@ -197,9 +165,6 @@ def list_videos_ready(service: Any) -> List[Dict[str, Any]]:
             f"mimeType!='application/vnd.google-apps.folder' and "
             f"trashed=false"
         )
-        # Excluir vídeos que já têm a propriedade 'LEGENDADO: True'
-        # Infelizmente, a busca por propriedades customizadas na API v3 é complexa
-        # Simplesmente verificamos se o nome não contém a tag final
         query += " and not name contains '[LEGENDADO]'"
 
         results = service.files().list(
@@ -209,8 +174,6 @@ def list_videos_ready(service: Any) -> List[Dict[str, Any]]:
         ).execute()
         
         videos = results.get('files', [])
-        
-        # Filtro final manual (pode ser removido se a query for ajustada)
         final_videos = [v for v in videos if not '[LEGENDADO]' in v['name']]
         
         return final_videos
@@ -294,7 +257,7 @@ def upload_legendado_to_gas(video_path: str, original_name: str) -> tuple[bool, 
 
 
 # ====================================================
-# FUNÇÕES DE TRANSCRIPT E RE-ALINHAMENTO (CHAVE!)
+# FUNÇÕES DE TRANSCRIPT E RE-ALINHAMENTO 
 # ====================================================
 
 @st.cache_resource(show_spinner=False)
@@ -315,7 +278,6 @@ def transcribe_audio_for_word_timing(video_path: str, model_size: str) -> List[D
     
     try:
         st.caption("Extraindo áudio...")
-        # Usa moviepy para extração de áudio mais confiável
         clip = VideoFileClip(video_path)
         clip.audio.write_audiofile(audio_path, logger=None)
         clip.close()
@@ -328,13 +290,12 @@ def transcribe_audio_for_word_timing(video_path: str, model_size: str) -> List[D
         result = model.transcribe(
             audio_path, 
             language="pt", 
-            word_timestamps=True, # <--- CRUCIAL: Habilita timing por palavra
+            word_timestamps=True, 
             verbose=False
         )
         
         segments = result.get('segments', [])
         
-        # Limpeza do arquivo de áudio
         if os.path.exists(audio_path): os.remove(audio_path)
         
         return segments
@@ -351,7 +312,6 @@ def generate_perfect_srt_realigned(segments: List[Dict[str, Any]], full_roteiro_
     """
     
     # 1. Preparação dos textos e palavras
-    # Remove as tags de alto-falante e limpa múltiplos espaços
     clean_text = re.sub(r'--- [A-ZÁÉÕÇ ]+ ---\n', '', full_roteiro_text).strip()
     clean_text = re.sub(r'\s+', ' ', clean_text)
     perfect_words = clean_text.split()
@@ -362,10 +322,8 @@ def generate_perfect_srt_realigned(segments: List[Dict[str, Any]], full_roteiro_
     # 2. Coletar todos os Timestamps de Palavra do Whisper
     whisper_words = []
     for seg in segments:
-        # A biblioteca Whisper fornece 'words' apenas se word_timestamps=True for usado
         if 'words' in seg:
             for w in seg['words']:
-                # O texto do Whisper pode ter espaços ou pontuação grudada, mas o timing é o que importa
                 whisper_words.append({
                     'text': w['text'].strip(), 
                     'start': w['start'],
@@ -377,32 +335,23 @@ def generate_perfect_srt_realigned(segments: List[Dict[str, Any]], full_roteiro_
         return ""
 
     # 3. Mapeamento e Geração do SRT em Blocos Curtos
-    # Assumimos que a ordem das palavras do roteiro (perfect_words) é a mesma
-    # da ordem dos timings de palavra do Whisper (whisper_words).
-    
     min_len = min(len(perfect_words), len(whisper_words))
     
     srt_content = ""
     subtitle_index = 1
-    i = 0 # Índice de Palavra
+    i = 0 
     
     while i < min_len:
-        # Define o tamanho do bloco (máximo 4 palavras)
         block_size = min(4, min_len - i)
         
-        # O bloco de texto é retirado do ROTEIRO PERFEITO (perfect_words)
+        # Texto é do ROTEIRO PERFEITO
         block_text = perfect_words[i : i + block_size]
         text_to_use = " ".join(block_text)
         
-        # O timing é retirado do WHISPER_WORDS
-        
-        # Início do bloco é o 'start' da primeira palavra do bloco
+        # Timing é do WHISPER_WORDS
         block_start = whisper_words[i]['start']
-        
-        # Fim do bloco é o 'end' da última palavra do bloco
         block_end = whisper_words[i + block_size - 1]['end']
         
-        # Formatação SRT
         if text_to_use and block_end > block_start:
             start_str = format_timestamp(block_start)
             end_str = format_timestamp(block_end)
@@ -410,7 +359,7 @@ def generate_perfect_srt_realigned(segments: List[Dict[str, Any]], full_roteiro_
             srt_content += f"{subtitle_index}\n{start_str} --> {end_str}\n{text_to_use}\n\n"
             subtitle_index += 1
         
-        i += block_size # Move o índice para o início do próximo bloco
+        i += block_size 
 
     return srt_content
 
@@ -428,32 +377,25 @@ def render_subtitles(video_path: str, srt_content: str, settings: Dict[str, Any]
         srt_path = os.path.join(temp_dir, "temp.srt")
         final_video_path = os.path.join(temp_dir, f"legendado_{os.path.basename(video_path)}")
         
-        # 1. Salva o SRT gerado
         with open(srt_path, "w", encoding="utf-8") as f: 
             f.write(srt_content)
             
-        # 2. Prepara os estilos ASS
         font_path = resolve_font(settings["font_style"])
         
-        # Para FFmpeg, se a fonte for um arquivo TTF, precisamos garantir que ele use o nome
-        # ou o caminho correto, dependendo da instalação.
-        # Aqui, usamos o caminho absoluto se for um arquivo customizado.
         if settings["font_style"] == "Upload Personalizada" and os.path.exists(font_path):
-            font_name_for_style = font_path # Usar o caminho completo
+            font_name_for_style = font_path
         else:
-            font_name_for_style = settings["font_style"] # Usar o nome da fonte
+            font_name_for_style = settings["font_style"]
             
         ass_c = hex_to_ass_color(settings["color"])
         ass_b = hex_to_ass_color(settings["border"])
         
-        # Cria a string de estilo ASS, usando Outline=2 (Padrão)
         style = (
             f"Fontname={font_name_for_style},FontSize={settings['f_size']},PrimaryColour={ass_c},"
             f"OutlineColour={ass_b},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,"
             f"Alignment=2,MarginV={settings['margin_v']}"
         )
         
-        # 3. Comando FFmpeg
         cmd = [
             "ffmpeg", "-y", "-i", video_path, 
             "-vf", f"subtitles={srt_path}:force_style='{style}'", 
@@ -473,7 +415,6 @@ def render_subtitles(video_path: str, srt_content: str, settings: Dict[str, Any]
         st.error(f"Falha na renderização FFmpeg: {e}")
         return None
     finally:
-        # Limpeza temporária (mantemos o vídeo legendado aqui por enquanto)
         if os.path.exists(srt_path): os.remove(srt_path)
 
 
@@ -508,7 +449,6 @@ def main_app():
         with st.expander("Estilo da Legenda (Salvo)", expanded=True):
             current_settings = st.session_state.settings
             
-            # Escolha da Fonte
             font_options = ["Padrão (Arial)", "Upload Personalizada"]
             
             font_choice = st.selectbox("Fonte:", font_options, index=font_options.index(current_settings["font_style"]) if current_settings["font_style"] in font_options else 0)
@@ -520,7 +460,6 @@ def main_app():
                         f.write(font_file.getbuffer())
                     st.success("Fonte personalizada salva!")
             
-            # Parâmetros de Estilo
             col1_c, col2_c = st.columns(2)
             with col1_c:
                 f_size = st.slider("Tamanho da Fonte:", 30, 100, current_settings["f_size"])
@@ -544,11 +483,15 @@ def main_app():
         st.subheader("📹 Vídeo e Roteiro")
         
         if st.button("🔄 Buscar Vídeos Prontos no Drive"):
+            # Verifica se o serviço do Drive foi inicializado com sucesso
             if st.session_state.drive_service:
                 with st.spinner("Buscando vídeos..."):
                     st.session_state.videos_list = list_videos_ready(st.session_state.drive_service)
                     if not st.session_state.videos_list:
                          st.warning("Nenhum vídeo 'video_final_' sem tag '[LEGENDADO]' encontrado.")
+            else:
+                 st.error("Não foi possível conectar ao Google Drive. Verifique as credenciais no `secrets.toml`.")
+                 return # Para evitar prosseguir sem conexão
         
         if st.session_state.videos_list:
             video_names = [v['name'] for v in st.session_state.videos_list]
@@ -570,7 +513,6 @@ def main_app():
                 
                 st.caption(f"ID do Job Encontrado: **{st.session_state.job_id or 'N/A'}**")
                 
-                # Botão para Download
                 if st.button("⬇️ 1. Baixar Vídeo"):
                     if st.session_state.drive_service and st.session_state.video_info:
                         temp_dir = "temp_download"
@@ -586,7 +528,6 @@ def main_app():
                             st.error(f"Falha no download: {e}")
                             st.session_state.current_video_path = None
                             
-                # Botão para buscar Roteiro
                 if st.session_state.current_video_path and st.session_state.job_id and st.button("📝 2. Buscar Roteiro Perfeito"):
                     with st.spinner(f"Buscando roteiro para {st.session_state.job_id}..."):
                         roteiro = get_job_roteiro(st.session_state.job_id)
@@ -600,9 +541,6 @@ def main_app():
     with col2:
         st.subheader("Workflow de Legenda")
 
-        # --- Exibição de Vídeo/Roteiro/SRT ---
-        
-        # 1. Player de Vídeo
         if st.session_state.current_video_path and os.path.exists(st.session_state.current_video_path):
             st.video(st.session_state.current_video_path)
         elif st.session_state.final_video_path and os.path.exists(st.session_state.final_video_path):
@@ -612,7 +550,6 @@ def main_app():
             
         st.markdown("---")
         
-        # 2. Geração do SRT (CRUCIAL)
         if st.session_state.current_video_path and st.session_state.roteiro_text:
             
             st.subheader("✨ Geração de Legenda Re-alinhada")
@@ -626,21 +563,17 @@ def main_app():
                     
                     with st.status("Iniciando Re-alinhamento...", expanded=True) as status:
                         
-                        # --- ETAPA DE TIMING E RE-ALINHAMENTO ---
                         status.update(label=f"1. Transcrevendo áudio para TIMING (Modelo {mod})...")
-                        # Usa a função que retorna os timestamps de palavra
                         segments = transcribe_audio_for_word_timing(st.session_state.current_video_path, mod)
                     
                     if segments:
                         with st.status("2. Mapeando Texto Perfeito para o Timing em Blocos Curtos...", expanded=True) as status:
-                            # CHAMADA DA NOVA FUNÇÃO REVISADA QUE USA O TEXTO PERFEITO
                             srt_content = generate_perfect_srt_realigned(segments, st.session_state.roteiro_text)
                             st.session_state.srt_content = srt_content
                             status.update(label="SRT Gerado e Re-alinhado (Correção de Sincronia)!", state="complete")
                             st.success("Legenda Re-alinhada gerada com sucesso!")
                             st.rerun()
 
-        # 3. Edição/Visualização do SRT
         if st.session_state.srt_content:
             st.subheader("✍️ SRT Gerado (Para Revisão)")
             st.session_state.srt_content = st.text_area(
@@ -649,7 +582,6 @@ def main_app():
                 height=300
             )
 
-        # 4. Renderização
         if st.session_state.srt_content and st.session_state.current_video_path:
             st.subheader("🎥 Renderização e Upload")
             
@@ -665,7 +597,6 @@ def main_app():
                         st.success("Renderização concluída! Vídeo pronto para upload.")
                         st.rerun()
 
-            # 5. Upload Final
             if st.session_state.final_video_path and os.path.exists(st.session_state.final_video_path):
                 st.info("Vídeo Legendado Pronto para Upload no Drive.")
                 
@@ -687,12 +618,7 @@ def main_app():
             st.caption(f"SRT Gerado: {len(st.session_state.srt_content.split())} palavras.")
 
 if __name__ == '__main__':
-    # Cria diretórios temporários se não existirem
     if not os.path.exists("temp_download"): os.makedirs("temp_download")
     if not os.path.exists("temp_render"): os.makedirs("temp_render")
-    
-    # Limpeza de arquivos temporários ao iniciar a sessão (opcional, mas bom)
-    # for f in os.listdir("temp_download"): os.remove(os.path.join("temp_download", f))
-    # for f in os.listdir("temp_render"): os.remove(os.path.join("temp_render", f))
     
     main_app()
