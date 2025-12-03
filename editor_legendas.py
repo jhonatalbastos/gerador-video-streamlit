@@ -308,6 +308,7 @@ def transcribe_audio(video_path, model_size="tiny"):
     if whisper is None: st.error("Biblioteca 'whisper' não instalada."); return None, None
     try:
         audio_path = "temp_audio.wav"; st.info("Extraindo áudio...")
+        # Adicionado -loglevel error para reduzir a saída do FFmpeg
         run_cmd(["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path])
         st.info(f"Carregando modelo Whisper ({model_size})...")
         model = whisper.load_model(model_size, device="cpu"); st.info("Transcrevendo...")
@@ -365,6 +366,9 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.header("🅰️ Configuração de Fonte")
     
+    # Verificação se a fonte personalizada está selecionada
+    is_custom_font_selected = sets.get("font_style") == "Upload Personalizada"
+    
     font_up = st.sidebar.file_uploader("Upload de Fonte (.ttf)", type=["ttf"])
     if font_up:
         if save_font_file(font_up.getvalue()):
@@ -377,6 +381,10 @@ def main():
     if st.sidebar.button("Apagar Fonte Salva"):
         if delete_font_file():
             st.sidebar.info("Fonte removida.")
+            # Se a fonte removida estava selecionada, reverter para Padrão
+            if is_custom_font_selected:
+                sets["font_style"] = "Padrão (Arial)"
+                save_config(sets)
             st.rerun()
 
     # --- OPÇÃO 1: GOOGLE DRIVE ---
@@ -454,32 +462,43 @@ def main():
                         full_text = get_full_roteiro_text(st.session_state.roteiro_data)
                         if not full_text: st.error("Roteiro vazio. Use o Fallback."); st.stop()
                         
-                        with st.spinner("1. Transcrevendo áudio para TIMING..."):
+                        with st.status("1. Transcrevendo áudio para TIMING...", expanded=True) as status:
                             srt_dummy, segments = transcribe_audio(st.session_state.current_video_path, mod)
                         
                         if segments:
-                            with st.spinner("2. Mapeando Texto Perfeito para o Timing em Blocos Curtos..."):
+                            with st.status("2. Mapeando Texto Perfeito para o Timing em Blocos Curtos...", expanded=True) as status:
                                 # CHAMADA DA FUNÇÃO REVISADA
                                 srt_content = generate_perfect_srt(segments, full_text)
                                 st.session_state.srt_content = srt_content
-                                st.success("SRT Gerado em Blocos Curtos (Estilo Dinâmico)!")
+                                status.update(label="SRT Gerado em Blocos Curtos (Estilo Dinâmico)!", state="complete")
                                 st.rerun()
                         else:
-                            st.error("Falha ao obter Timing do Whisper. Tente novamente ou use o Fallback.")
+                            status.update(label="Falha ao obter Timing do Whisper. Tente novamente ou use o Fallback.", state="error", expanded=True)
+                            st.error("Falha ao obter Timing do Whisper.")
 
                     # Botão de fallback
                     if st.button("Transcrever Áudio (Fallback)"):
-                        with st.spinner("Transcrevendo...") as status:
+                        with st.status("Transcrevendo...", expanded=True) as status:
                             srt, _ = transcribe_audio(st.session_state.current_video_path, mod)
-                            if srt: st.session_state.srt_content = srt; status.update(label="Transcrição Gerada!", state="complete"); st.rerun()
-                            else: status.update(label="Erro!", state="error")
+                            if srt: 
+                                st.session_state.srt_content = srt
+                                status.update(label="Transcrição Gerada!", state="complete")
+                                st.rerun()
+                            else: 
+                                status.update(label="Erro!", state="error", expanded=True)
+                                st.error("Falha na transcrição.")
                 
                 else: # Upload local ou Job ID não encontrado
                     if st.button("✨ Gerar Legendas"):
-                        with st.spinner("Transcrevendo...") as status:
+                        with st.status("Transcrevendo...", expanded=True) as status:
                             srt, _ = transcribe_audio(st.session_state.current_video_path, mod)
-                            if srt: st.session_state.srt_content = srt; status.update(label="Transcrição Gerada!", state="complete"); st.rerun()
-                            else: status.update(label="Erro!", state="error")
+                            if srt: 
+                                st.session_state.srt_content = srt
+                                status.update(label="Transcrição Gerada!", state="complete")
+                                st.rerun()
+                            else: 
+                                status.update(label="Erro!", state="error", expanded=True)
+                                st.error("Falha na transcrição.")
                                 
 
         with c2:
@@ -502,7 +521,8 @@ def main():
                 st.markdown("### Estilo e Posição")
                 col_s1, col_s2, col_s3 = st.columns(3)
                 with col_s1:
-                    sets["font_style"] = st.selectbox("Fonte", ["Padrão (Arial)", "Upload Personalizada"], index=0)
+                    # Permite selecionar a fonte
+                    sets["font_style"] = st.selectbox("Fonte", ["Padrão (Arial)", "Upload Personalizada"], index=0 if sets.get("font_style") == "Padrão (Arial)" or not os.path.exists(SAVED_FONT_FILE) else 1)
                     sets["f_size"] = st.slider("Tamanho", 10, 100, sets.get("f_size", 60))
                 with col_s2:
                     # Ajuste a Margem V. para centralizar melhor a única linha
@@ -523,11 +543,17 @@ def main():
                             f.write(st.session_state.srt_content)
                         
                         font_path = resolve_font(sets["font_style"])
-                        font_name_for_style = font_path if not os.path.exists(font_path) else os.path.basename(font_path)
+                        
+                        # CORREÇÃO DA FONTE: Se for upload personalizada, usa o caminho completo
+                        if sets["font_style"] == "Upload Personalizada" and os.path.exists(font_path):
+                            font_name_for_style = font_path # Usa o caminho absoluto
+                        else:
+                            font_name_for_style = font_path # Usa o nome (e.g., "Padrão (Arial)")
+
                         ass_c = hex_to_ass_color(sets["color"]); ass_b = hex_to_ass_color(sets["border"])
                         
-                        # NOVO ESTILO: Outline aumentado para 4 para o efeito TikTok
-                        style = f"Fontname={font_name_for_style},FontSize={sets['f_size']},PrimaryColour={ass_c},OutlineColour={ass_b},BackColour=&H80000000,BorderStyle=1,Outline=4,Shadow=0,Alignment=2,MarginV={sets['margin_v']}"
+                        # Outline ajustado para 2 (borda mais fina)
+                        style = f"Fontname={font_name_for_style},FontSize={sets['f_size']},PrimaryColour={ass_c},OutlineColour={ass_b},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={sets['margin_v']}"
                         
                         out_vid = f"legendado_{st.session_state.video_id}.mp4"
                         cmd = ["ffmpeg", "-y", "-i", st.session_state.current_video_path, "-vf", f"subtitles={srt_path}:force_style='{style}'", "-c:a", "copy", "-c:v", "libx264", "-preset", "fast", "-crf", "23", out_vid]
