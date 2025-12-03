@@ -1,4 +1,4 @@
-# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO FINAL C/ TIMING PERFEITO E CORREÇÃO DE SINTAXE
+# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO FINAL C/ TIMING PERFEITO E CORREÇÃO DE NameError
 import os
 import re
 import json
@@ -261,6 +261,14 @@ def list_videos_ready(service):
     except Exception as e: st.error(f"Erro inesperado ao listar vídeos: {e}"); return []
     return videos
 
+# NOVO: Função para download
+def download_video(service, file_id, filename):
+    if not service: return None
+    request = service.files().get_media(fileId=file_id)
+    with open(filename, "wb") as f:
+        f.write(request.execute())
+    return filename
+
 # =========================
 # GAS JOB ROTEIRO
 # =========================
@@ -384,7 +392,9 @@ def main():
 
                     with st.status("Baixando...", expanded=True) as status:
                         local_path = f"temp_{vid_id}.mp4"
-                        download_video(drive_service, vid_id, local_path)
+                        # CORREÇÃO: Chama a função download_video
+                        download_video(drive_service, vid_id, local_path) 
+                        
                         st.session_state.current_video_path = local_path; st.session_state.video_id = vid_id; st.session_state.video_name = sel_vid; st.session_state.srt_content = ""; st.session_state.final_video_path = None
                         
                         if extracted_job_id:
@@ -486,9 +496,8 @@ def main():
                 # --- RENDERIZAÇÃO ---
                 if st.button("🔥 Renderizar Final", type="primary"):
                     with st.status("Renderizando...") as status:
-                        # CORREÇÃO DA SINTAXE AQUI
                         srt_path = "temp.srt"
-                        with open(srt_path, "w", encoding="utf-8") as f:
+                        with open(srt_path, "w", encoding="utf-8") as f: 
                             f.write(st.session_state.srt_content)
                         
                         font_path = resolve_font(sets["font_style"])
