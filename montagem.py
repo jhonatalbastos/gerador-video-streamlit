@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Correção Definitiva de Legendas (CWD Fix)
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Editor de Legendas (SRT)
 import os
 import re
 import json
@@ -55,10 +55,7 @@ def load_config():
         "effect_type": "Estático", "effect_speed": 3, # Movimento padrão agora é Estático
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
-        "sub_size": 70, # Aumentado para destaque em 1 linha
-        "sub_color": "#FFFF00", 
-        "sub_outline_color": "#000000", 
-        "sub_y_pos": 250 # Ajustado para ficar mais central/baixo (margem do fundo)
+        "sub_size": 50, "sub_color": "#FFFF00", "sub_outline_color": "#000000", "sub_y_pos": 150 
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -292,13 +289,12 @@ def process_job_payload(payload: Dict, temp_dir: str):
 # =========================
 def shutil_which(name): return _shutil.which(name)
 
-def run_cmd(cmd, cwd=None):
-    """Executa comando shell, com suporte a diretório de trabalho (cwd)"""
+def run_cmd(cmd):
     clean = [arg.replace('\u00a0', ' ').strip() if isinstance(arg, str) else arg for arg in cmd if arg]
     # Debug: Imprime comando para verificar caminhos
-    # print(f"Executando: {' '.join(clean)}") 
+    print(f"Executando: {' '.join(clean)}")
     try:
-        subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+        subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"CMD Falhou: {e.stderr.decode()}")
 
@@ -425,7 +421,7 @@ def corrigir_legendas_com_groq(srt_content, roteiro_original):
         return srt_content # Retorna o original em caso de erro
 
 # =========================
-# Whisper Local (Tiny) - Dinâmico
+# Whisper Local (Tiny)
 # =========================
 def format_timestamp(seconds):
     """Converte segundos para formato SRT (HH:MM:SS,mmm)"""
@@ -436,7 +432,7 @@ def format_timestamp(seconds):
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
 def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
-    """Gera legendas dinâmicas (curtas e rápidas) usando Whisper Tiny."""
+    """Gera legendas usando Whisper Tiny localmente, com progresso."""
     try:
         if progress_bar: progress_bar.progress(10, text="Carregando modelo Whisper (Tiny)...")
         
@@ -446,60 +442,18 @@ def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
         if progress_bar: progress_bar.progress(30, text="Transcrevendo áudio...")
         
         # Transcreve
-        result = model.transcribe(audio_path, language="pt", task="transcribe")
+        result = model.transcribe(audio_path, language="pt")
         
-        if progress_bar: progress_bar.progress(80, text="Formatando legendas dinâmicas...")
+        if progress_bar: progress_bar.progress(80, text="Formatando legendas...")
 
+        # Formata para SRT
         segments = result['segments']
         srt_content = ""
-        counter = 1
-        
-        # Lógica de quebra para legendas "TikTok Style" (máx 4-6 palavras por linha ou 25 chars)
-        MAX_CHARS = 25
-        
-        for segment in segments:
-            words = segment['text'].strip().split()
-            start_time = segment['start']
-            end_time = segment['end']
-            duration = end_time - start_time
-            
-            current_line = []
-            current_len = 0
-            
-            # Divisão simples baseada em caracteres para visualização
-            # O tempo será interpolado linearmente
-            total_words = len(words)
-            if total_words == 0: continue
-            
-            time_per_word = duration / total_words
-            current_word_idx = 0
-            
-            # Reconstruindo em mini-blocos
-            chunks = []
-            temp_chunk = []
-            temp_char_count = 0
-            
-            for w in words:
-                if temp_char_count + len(w) + 1 > MAX_CHARS:
-                    chunks.append(temp_chunk)
-                    temp_chunk = [w]
-                    temp_char_count = len(w)
-                else:
-                    temp_chunk.append(w)
-                    temp_char_count += len(w) + 1
-            if temp_chunk: chunks.append(temp_chunk)
-
-            # Gerar SRT para os chunks
-            chunk_start = start_time
-            for chunk in chunks:
-                text_line = " ".join(chunk)
-                chunk_duration = len(chunk) * time_per_word
-                chunk_end = chunk_start + chunk_duration
-                
-                srt_content += f"{counter}\n{format_timestamp(chunk_start)} --> {format_timestamp(chunk_end)}\n{text_line}\n\n"
-                
-                chunk_start = chunk_end
-                counter += 1
+        for i, segment in enumerate(segments):
+            start = format_timestamp(segment['start'])
+            end = format_timestamp(segment['end'])
+            text = segment['text'].strip()
+            srt_content += f"{i+1}\n{start} --> {end}\n{text}\n\n"
             
         if progress_bar: progress_bar.progress(100, text="Legendas geradas!")
         return srt_content
@@ -642,8 +596,8 @@ with tab2:
                 sets["line3_font"] = "Alegreya Sans Black"
 
         with st.expander("Legendas"):
-            sets["sub_size"] = st.slider("Tam Legenda", 20, 100, sets.get("sub_size", 70))
-            sets["sub_y_pos"] = st.slider("Posição Y (px do fundo)", 0, 500, sets.get("sub_y_pos", 250))
+            sets["sub_size"] = st.slider("Tam Legenda", 20, 100, 50)
+            sets["sub_y_pos"] = st.slider("Posição Y (px do fundo)", 0, 500, 150)
             sets["sub_color"] = st.color_picker("Cor Texto", "#FFFF00")
             sets["sub_outline_color"] = st.color_picker("Cor Borda", "#000000")
         if st.button("Salvar Config"): save_config(sets); st.success("Salvo!")
@@ -823,29 +777,27 @@ with tab3:
                 else:
                     map_a = "0:a"
 
-                # CORREÇÃO DE LEGENDAS: CWD FIX
-                # Ao invés de passar o caminho absoluto do SRT (que falha), vamos copiar o SRT para a pasta TMP
-                # e rodar o FFmpeg DENTRO da pasta TMP.
+                # FORÇANDO A CRIAÇÃO DO ARQUIVO SRT FÍSICO
                 if use_subs and st.session_state.get("generated_srt_content"):
-                    srt_filename = "subs.srt"
-                    srtp = os.path.join(tmp, srt_filename)
+                    srtp = os.path.join(tmp, "subs.srt")
+                    srtp_abs = os.path.abspath(srtp)
                     
-                    with open(srtp, "w", encoding="utf-8") as f: 
+                    # Escreve o conteúdo da memória para o disco AGORA
+                    with open(srtp_abs, "w", encoding="utf-8") as f: 
                         f.write(st.session_state["generated_srt_content"])
                     
-                    if os.path.exists(srtp) and os.path.getsize(srtp) > 0:
+                    # Verifica se escreveu corretamente
+                    if os.path.exists(srtp_abs) and os.path.getsize(srtp_abs) > 0:
                         c = sets["sub_color"].lstrip("#")
                         co = sets["sub_outline_color"].lstrip("#")
                         ass_c = f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
                         ass_co = f"&H00{co[4:6]}{co[2:4]}{co[0:2]}"
                         margin_v = res['h'] - sets['sub_y_pos']
-                        # Garantimos que a fonte Arial existe, senão FFmpeg pode falhar se não achar
-                        font_name = "Arial"
-                        # Se tiver fonte personalizada salva, poderíamos usar, mas Arial é seguro
-                        style = f"FontName={font_name},FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
+                        style = f"FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
                         
-                        # Usamos apenas o nome do arquivo, pois rodaremos o comando dentro do diretório tmp
-                        filter_complex.append(f"subtitles='{srt_filename}':force_style='{style}'")
+                        # Caminho escapado
+                        srtp_esc = srtp_abs.replace("\\", "/").replace(":", "\\:")
+                        filter_complex.append(f"subtitles='{srtp_esc}':force_style='{style}'")
                     else:
                         st.warning("Falha ao escrever arquivo de legenda temporário.")
 
@@ -854,15 +806,13 @@ with tab3:
                     if "amix" in "".join(filter_complex):
                         mix_cmd.extend(["-map", "0:v", "-map", map_a])
                 
+                # Redução de tamanho para o vídeo final também
                 mix_cmd.extend(["-crf", "28", "-preset", "fast"])
-                mix_cmd.append("final.mp4") # Saída relativa
                 
-                # Executa o FFmpeg dentro do diretório temporário (cwd=tmp)
-                run_cmd(mix_cmd, cwd=tmp)
+                mix_cmd.append(final)
+                run_cmd(mix_cmd)
                 
-                final_absolute_path = os.path.join(tmp, "final.mp4")
-                
-                with open(final_absolute_path, "rb") as f:
+                with open(final, "rb") as f:
                     st.session_state["video_final_bytes"] = BytesIO(f.read())
                 
                 render_prog.progress(100, text="Finalizado!")
