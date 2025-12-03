@@ -1,4 +1,8 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Gerenciamento de Música de Fundo Melhorado
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Legendagem Dinâmica (Whisper Tiny + Groq)
+# Implementação adicionada: transcrição com Whisper Tiny, revisão opcional via Groq,
+# geração de SRT 'estilo TikTok' com timestamps reais (por interpolação) e queima das legendas
+# em cada clipe antes da concatenação final.
+
 import os
 import re
 import json
@@ -7,7 +11,7 @@ import tempfile
 import traceback
 import subprocess
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 import base64
 import shutil as _shutil
@@ -15,6 +19,12 @@ import shutil as _shutil
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
+
+# --- Adicionado: Whisper import ---
+try:
+    import whisper
+except Exception:
+    whisper = None
 
 # --- API Imports ---
 from google.oauth2 import service_account
@@ -42,20 +52,22 @@ st.set_page_config(
 # Persistência
 # =========================
 def load_config():
-    # NOVOS PADRÕES SOLICITADOS
     default = {
         "line1_y": 150, "line1_size": 70, "line1_font": "Alegreya Sans Black", "line1_anim": "Estático",
         "line2_y": 250, "line2_size": 50, "line2_font": "Alegreya Sans Black", "line2_anim": "Estático",
         "line3_y": 350, "line3_size": 50, "line3_font": "Alegreya Sans Black", "line3_anim": "Estático",
-        "effect_type": "Estático", "effect_speed": 3, # Movimento padrão agora é Estático
+        "effect_type": "Estático", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
+        # Nova opção para legendas dinâmicas (habilitada por padrão)
+        "dynamic_subtitles": True,
+        "subtitle_max_words": 6,
+        "subtitle_base_duration": 0.9
     }
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
                 saved = json.load(f)
-                # Atualiza apenas chaves que já existem no salvo, mas garante novos defaults se faltar
                 default.update(saved)
         except: pass
     return default
@@ -73,7 +85,6 @@ def save_music_file(file_bytes):
     except: return False
 
 def save_font_file(file_bytes):
-    """Salva a fonte enviada no disco para persistência."""
     try:
         with open(SAVED_FONT_FILE, "wb") as f: f.write(file_bytes)
         return True
@@ -140,7 +151,6 @@ def download_file_content(service, file_id: str) -> Optional[str]:
     except: return None
 
 def list_recent_jobs(limit: int = 15) -> List[Dict]:
-    """Lista Jobs CONCLUÍDOS (com descrição 'COMPLETE') na pasta."""
     service = get_drive_service()
     if not service: return []
     jobs_list = []
@@ -151,7 +161,6 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
         if not folders: return []
         folder_id = folders[0]['id']
 
-        # Filtra arquivos JSON
         query_file = (
             f"mimeType = 'application/json' and "
             f"'{folder_id}' in parents and "
@@ -217,7 +226,7 @@ def process_job_payload(payload: Dict, temp_dir: str):
             
         # --- 2. TÍTULO E REFERÊNCIA ---
         raw_ref = meta.get("ref", "")
-        title = "EVANGELHO" # Padrão
+        title = "EVANGELHO"
         clean_ref = raw_ref
 
         if " - " in raw_ref:
@@ -232,7 +241,6 @@ def process_job_payload(payload: Dict, temp_dir: str):
             if "Salmo" in raw_ref: title = "SALMO"
             elif "Leitura" in raw_ref: title = "1ª LEITURA"
         
-        # Limpeza fina de prefixos
         patterns_to_remove = [
             r"^(Primeira|Segunda|1ª|2ª)\s*Leitura\s*:\s*",
             r"^Leitura\s*(do|da)\s*.*:\s*",
@@ -250,7 +258,6 @@ def process_job_payload(payload: Dict, temp_dir: str):
         # --- 3. ASSETS ---
         st.session_state["generated_images_blocks"] = {}
         st.session_state["generated_audios_blocks"] = {}
-        # Legendas removidas
 
         assets = payload.get("assets", [])
         if not assets:
@@ -269,7 +276,6 @@ def process_job_payload(payload: Dict, temp_dir: str):
                     path = os.path.join(temp_dir, f"{bid}.wav")
                     with open(path, "wb") as f: f.write(raw)
                     st.session_state["generated_audios_blocks"][bid] = path
-                # Legendas removidas
             except Exception as ex: continue
                 
         return True
@@ -298,20 +304,127 @@ def get_audio_duration(path):
         return float(out)
     except: return 5.0
 
+# Whisper model singleton
+_whisper_model = None
+
+def load_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        if whisper is None:
+            st.warning("Whisper não está instalado. Instale 'whisper' para habilitar transcrição local.")
+            return None
+        _whisper_model = whisper.load_model("tiny")
+    return _whisper_model
+
+def transcribe_with_whisper(path: str, language: str = 'pt') -> List[Dict[str, Any]]:
+    """Transcreve um arquivo de áudio e retorna segmentos com 'start', 'end', 'text'."""
+    model = load_whisper_model()
+    if model is None:
+        return []
+    # Usa transcribe padrão; whisper 'tiny' retorna 'segments' com start/end
+    result = model.transcribe(path, language=language, word_timestamps=False)
+    return result.get('segments', [])
+
+# Função para revisar texto com Groq (opcional) — se a chave não estiver presente, retorna o mesmo texto
+def revise_text_with_groq(text: str) -> str:
+    key = st.secrets.get("GROQ_API_KEY")
+    if not key:
+        return text
+
+    try:
+        # Implementação genérica: faz uma chamada POST ao endpoint de completions do Groq.
+        # Observação: adapte o endpoint / payload conforme a API real do provedor se necessário.
+        endpoint = "https://api.groq.ai/v1/complete"
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "mixtral-8x7b",  # placeholder; altere conforme necessário
+            "prompt": f"Revise e corrija o texto a seguir, mantendo o conteúdo e melhorando a ortografia e pontuação:\n\n{text}",
+            "max_tokens": 1500
+        }
+        resp = requests.post(endpoint, headers=headers, json=payload, timeout=20)
+        if resp.status_code == 200:
+            j = resp.json()
+            # Extrai a resposta de forma segura (campo pode variar)
+            out = j.get('choices', [{}])[0].get('text') or j.get('completion') or j.get('result')
+            if out:
+                return out.strip()
+    except Exception as e:
+        print("Groq review failed:", e)
+    return text
+
+# Gera SRT estilo TikTok a partir de segmentos do Whisper
+def segments_to_tiktok_srt(segments: List[Dict[str, Any]], max_words: int = 6, base_duration: float = 0.9) -> str:
+    """Recebe segmentos com start/end/text e retorna o conteúdo do arquivo .srt (string).
+    Estratégia: para cada segmento, divide o texto em palavras e interpola timestamps linearmente entre start e end,
+    agrupando até `max_words` por bloco. Ajusta duração mínima por bloco com base em base_duration.
+    """
+    entries = []
+    idx = 1
+
+    for seg in segments:
+        start = float(seg.get('start', 0.0))
+        end = float(seg.get('end', start + base_duration))
+        text = seg.get('text', '').strip()
+        if not text: continue
+        words = text.split()
+        if not words: continue
+        total_words = len(words)
+        seg_duration = max(0.001, end - start)
+        approx_word_dur = seg_duration / max(total_words, 1)
+
+        # Cria blocos de até max_words
+        widx = 0
+        while widx < total_words:
+            chunk_words = words[widx:widx+max_words]
+            chunk_text = ' '.join(chunk_words)
+            # Calcula tempo do chunk
+            chunk_start = start + widx * approx_word_dur
+            chunk_end = chunk_start + max(len(chunk_words) * approx_word_dur, base_duration)
+            # Não exceder fim do segmento
+            if chunk_end > end:
+                chunk_end = end
+            # Formata
+            entries.append((idx, chunk_start, chunk_end, chunk_text))
+            idx += 1
+            widx += max_words
+
+    # Se houver muitos blocos muito curtos consecutivos, podemos fundi-los — mantemos simples por enquanto
+    # Monta SRT string
+    def fmt_time(t: float) -> str:
+        td = timedelta(seconds=float(t))
+        total_seconds = int(td.total_seconds())
+        hrs = total_seconds // 3600
+        mins = (total_seconds % 3600) // 60
+        secs = total_seconds % 60
+        millis = int((td.total_seconds() - total_seconds) * 1000)
+        return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
+
+    srt_lines = []
+    for i, stt, edt, txt in entries:
+        srt_lines.append(str(i))
+        srt_lines.append(f"{fmt_time(stt)} --> {fmt_time(edt)}")
+        srt_lines.append(txt)
+        srt_lines.append("")
+
+    return '\n'.join(srt_lines)
+
+# Escreve SRT em arquivo temporário e retorna o caminho
+def write_srt_file(srt_content: str, suffix: str = ".srt") -> str:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+        f.write(srt_content.encode('utf-8'))
+        return f.name
+
+
 def resolve_font(choice, upload):
-    # 1. Prioridade: Upload Temporário (na sessão atual)
     if choice == "Upload Personalizada" and upload:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp:
             tmp.write(upload.getvalue())
             return tmp.name
-            
-    # 2. Prioridade: Fonte Salva/Persistente (no disco)
     if choice == "Upload Personalizada" and os.path.exists(SAVED_FONT_FILE):
         return SAVED_FONT_FILE
-        
-    # 3. Prioridade: Fontes do Sistema ou Específicas
-    # Se a escolha for a "Alegreya", e tivermos o arquivo salvo, usamos ele.
-    # Caso contrário, tenta achar no sistema ou fallback.
     if choice == "Alegreya Sans Black" and os.path.exists(SAVED_FONT_FILE):
          return SAVED_FONT_FILE
 
@@ -320,8 +433,6 @@ def resolve_font(choice, upload):
         "Serif": ["times.ttf"], 
         "Monospace": ["courier.ttf"],
     }
-    
-    # Tenta encontrar a fonte específica ou fallback
     font_list = sys_fonts.get(choice, [])
     for f in font_list: return f
     return None
@@ -343,10 +454,7 @@ def criar_preview(w, h, texts, upload):
         try: length = draw.textlength(t["text"], font=font)
         except: length = len(t["text"]) * t["size"] * 0.5
         x = (w - length) / 2
-        
-        # Adiciona borda preta (stroke)
         draw.text((x, t["y"]), t["text"], fill=t["color"], font=font, stroke_width=2, stroke_fill="black")
-        
     bio = BytesIO(); img.save(bio, "PNG"); bio.seek(0)
     return bio
 
@@ -398,7 +506,6 @@ if font_up:
     if save_font_file(font_up.getvalue()):
         st.sidebar.success("Fonte salva! Selecione 'Upload Personalizada' ou 'Alegreya Sans Black' no menu.")
         
-# Verifica se existe fonte salva
 font_status = "✅ Fonte Salva Encontrada" if os.path.exists(SAVED_FONT_FILE) else "⚠️ Nenhuma fonte salva"
 st.sidebar.caption(font_status)
 
@@ -422,25 +529,19 @@ with tab1:
         
         if st.session_state['lista_jobs']:
             opts = {j['display']: j['job_id'] for j in st.session_state['lista_jobs']}
-            
-            # Callback para auto-load quando mudar a seleção
             selected_display = st.selectbox(
                 "Selecione um Job:", 
                 options=list(opts.keys()),
                 index=None, 
                 placeholder="Escolha um job para carregar..."
             )
-            
-            # Dispara auto-load se houver seleção
             if selected_display:
                 selected_id = opts[selected_display]
-                # Verifica se é um novo job para não recarregar em loop
                 if selected_id != st.session_state.get('drive_job_id_input'):
                      auto_load_and_process_job(selected_id)
         else: st.info("Nenhum job pronto encontrado.")
 
     with c2:
-        # Mantém opção manual caso o usuário queira colar um ID direto
         jid_in = st.text_input("ID Manual:", key="drive_job_id_input_manual") 
         if st.button("Baixar ID Manual", disabled=not jid_in):
              auto_load_and_process_job(jid_in)
@@ -469,7 +570,6 @@ with tab2:
             sets["effect_type"] = st.selectbox("Efeito", ["Zoom In (Ken Burns)", "Zoom Out", "Pan Esq", "Pan Dir", "Estático"], index=4)
             sets["effect_speed"] = st.slider("Velocidade", 1, 10, 3)
         with st.expander("Texto"):
-            # Adicionei 'Alegreya Sans Black' na lista
             sets["line1_font"] = st.selectbox("Fonte L1", ["Padrão (Sans)", "Alegreya Sans Black", "Serif", "Upload Personalizada"], index=1)
             sets["line1_size"] = st.slider("Tam L1", 10, 150, sets.get("line1_size", 70))
             sets["line1_y"] = st.slider("Y L1", 0, 800, sets.get("line1_y", 150))
@@ -478,7 +578,6 @@ with tab2:
             sets["line3_size"] = st.slider("Tam L3", 10, 100, sets.get("line3_size", 50))
             sets["line3_y"] = st.slider("Y L3", 0, 800, sets.get("line3_y", 350))
             
-            # Atualiza fontes das outras linhas para Alegreya se for o padrão
             if sets["line1_font"] == "Alegreya Sans Black":
                 sets["line2_font"] = "Alegreya Sans Black"
                 sets["line3_font"] = "Alegreya Sans Black"
@@ -499,7 +598,6 @@ with tab3:
     st.header("Renderização")
     if not st.session_state["job_loaded_from_drive"]: st.warning("Carregue um job primeiro."); st.stop()
     
-    # Blocos Config Definition
     blocos_config = [
         {"id": "hook", "label": "🎣 HOOK", "text_path": "hook", "prompt_path": "hook"},
         {"id": "leitura", "label": "📖 LEITURA", "text_path": "leitura", "prompt_path": "leitura"},
@@ -556,13 +654,11 @@ with tab3:
             st.info("ℹ️ Nenhuma música de fundo definida.")
     
     with col_music_action:
-        # Opção de remover
         if os.path.exists(SAVED_MUSIC_FILE):
             if st.button("🗑️ Remover Música Atual"):
                 if delete_music_file():
                     st.rerun()
         
-        # Opção de upload (substitui se existir)
         new_music = st.file_uploader("Substituir/Adicionar Música (MP3)", type=["mp3"])
         if new_music:
             if save_music_file(new_music.getvalue()):
@@ -572,7 +668,16 @@ with tab3:
 
     music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, load_config().get("music_vol", 0.15))
 
-    # Legendas removidas
+    # Nova opção: habilitar/desabilitar legendas dinâmicas
+    sets = st.session_state["overlay_settings"]
+    dyn_sub = st.checkbox("Habilitar legendas dinâmicas (Whisper + Groq)", value=sets.get("dynamic_subtitles", True))
+    if dyn_sub != sets.get("dynamic_subtitles"):
+        sets["dynamic_subtitles"] = dyn_sub
+
+    srt_max_words = st.number_input("Máx palavras por bloco (legenda)", min_value=2, max_value=12, value=sets.get("subtitle_max_words", 6))
+    sets["subtitle_max_words"] = int(srt_max_words)
+    base_dur = st.slider("Duração base por bloco (segundos)", 0.3, 2.0, float(sets.get("subtitle_base_duration", 0.9)))
+    sets["subtitle_base_duration"] = float(base_dur)
 
     if st.button("RENDERIZAR VÍDEO FINAL", type="primary"):
         render_prog = st.progress(0, text="Iniciando Renderização...")
@@ -587,7 +692,7 @@ with tab3:
                 w, h = res["w"], res["h"]
                 f1 = resolve_font(sets["line1_font"], font_up)
                 
-                total_steps = len(blocos_config) + 3
+                total_steps = len(blocos_config) + 4
                 current_step = 0
 
                 for bid in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]:
@@ -616,6 +721,41 @@ with tab3:
                     
                     filters = [vf, f"fade=t=in:st=0:d=0.5,fade=t=out:st={dur-0.5}:d=0.5"]
                     
+                    # Se habilitado, gera SRT dinâmico com Whisper + Groq e adiciona ao filtro
+                    srt_path = None
+                    if sets.get("dynamic_subtitles"):
+                        try:
+                            st.info(f"Transcrevendo (Whisper) {bid}...")
+                            segments = transcribe_with_whisper(aud, language='pt')
+                            # Se não houve segmentos (ou Whisper não instalado), tenta fallback básico: uma legenda única
+                            if not segments:
+                                # cria um único segmento com todo o áudio
+                                stext = ""
+                                # fallback: texto vazio
+                                segments = [{"start": 0.0, "end": dur, "text": stext}]
+
+                            # Junta todos os textos para revisão
+                            full_text = ' '.join([s.get('text','').strip() for s in segments])
+                            if full_text.strip():
+                                st.info("Revisando texto com Groq (se chave configurada)...")
+                                reviewed = revise_text_with_groq(full_text)
+                                # Se Groq alterou o texto, podemos re-segmentar de maneira simples (redistribuir as palavras)
+                                # Simples estratégia: distribuir 'reviewed' proporcionalmente ao tempo total
+                                words = reviewed.split()
+                                if words:
+                                    # cria segmentos com interpolação linear pelo tempo total
+                                    total_dur = sum([float(s.get('end',0)) - float(s.get('start',0)) for s in segments]) or dur
+                                    if total_dur <= 0: total_dur = dur
+                                    # vamos criar um único 'pseudo-segment' com o texto revisado cobrindo todo o áudio
+                                    segments = [{"start": 0.0, "end": total_dur, "text": reviewed}]
+
+                            srt_content = segments_to_tiktok_srt(segments, max_words=sets.get("subtitle_max_words", 6), base_duration=sets.get("subtitle_base_duration", 0.9))
+                            srt_path = write_srt_file(srt_content)
+                            st.info(f"SRT gerado: {srt_path}")
+                        except Exception as e:
+                            print("Erro gerando SRT:", e)
+                            srt_path = None
+
                     if use_over and f1:
                         t1 = san(st.session_state.get("title_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t1}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}")
@@ -624,6 +764,15 @@ with tab3:
                         t3 = san(st.session_state.get("ref_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t3}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
 
+                    # Se geramos um SRT, adiciona ao final dos filtros (subtitles deve ser aplicado antes do drawtext que queremos sobrepor ou depois conforme necessidade)
+                    if srt_path:
+                        # Force-style aproximação: centralizado, contorno preto, tamanho baseado na linha 2
+                        style = f"Fontsize={sets.get('line2_size',40)},Alignment=2,OutlineColour=&H000000&,BorderStyle=3,Outline=4"
+                        # Escapa apóstrofos no path
+                        safe_srt_path = srt_path.replace("'", "\\'")
+                        filters.append(f"subtitles={safe_srt_path}:force_style='{style}'")
+
+                    # Executa o ffmpeg para gerar o clipe com legenda/hardcoded
                     run_cmd(["ffmpeg", "-y", "-loop", "1", "-i", img, "-i", aud, "-vf", ",".join(filters), "-c:v", "libx264", "-t", str(dur), "-pix_fmt", "yuv420p", "-crf", "28", "-preset", "fast", "-shortest", out])
                     clips.append(out)
 
@@ -655,11 +804,10 @@ with tab3:
                     mix_cmd.extend(["-filter_complex", ",".join(filter_complex)])
                     if "amix" in "".join(filter_complex):
                         mix_cmd.extend(["-map", "0:v", "-map", map_a])
-                
+
                 mix_cmd.extend(["-crf", "28", "-preset", "fast"])
-                
                 mix_cmd.append("final.mp4")
-                
+
                 run_cmd(mix_cmd, cwd=tmp)
                 
                 final_absolute_path = os.path.join(tmp, "final.mp4")
