@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão Restaurada e Limpa (Sem Legendas, Com Música)
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão Corrigida (Títulos Dinâmicos por Bloco)
 import os
 import re
 import json
@@ -20,6 +20,10 @@ import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+try:
+    from groq import Groq
+except ImportError:
+    Groq = None
 
 # --- CONFIGURAÇÃO ---
 FRONTEND_AI_STUDIO_URL = "https://ai.studio/apps/drive/1gfrdHffzH67cCcZBJWPe6JfE1ZEttn6u"
@@ -199,7 +203,6 @@ def process_job_payload(payload: Dict, temp_dir: str):
         st.session_state["roteiro_gerado"] = payload.get("roteiro", {})
         meta = payload.get("meta_dados", {})
         
-        # DATA
         d_raw = meta.get("data", "")
         if re.match(r"\d{4}-\d{2}-\d{2}", d_raw):
             try:
@@ -210,9 +213,8 @@ def process_job_payload(payload: Dict, temp_dir: str):
         else:
             st.session_state["data_display"] = d_raw.replace('/', '.')
             
-        # TÍTULO E REFERÊNCIA
         raw_ref = meta.get("ref", "")
-        title = "EVANGELHO"
+        title = "EVANGELHO" # Padrão
         clean_ref = raw_ref
 
         if " - " in raw_ref:
@@ -240,7 +242,6 @@ def process_job_payload(payload: Dict, temp_dir: str):
         st.session_state["title_display"] = title
         st.session_state["ref_display"] = clean_ref
 
-        # ASSETS
         st.session_state["generated_images_blocks"] = {}
         st.session_state["generated_audios_blocks"] = {}
 
@@ -298,7 +299,6 @@ def resolve_font(choice, upload):
         return SAVED_FONT_FILE
     if choice == "Alegreya Sans Black" and os.path.exists(SAVED_FONT_FILE):
          return SAVED_FONT_FILE
-
     sys_fonts = {
         "Padrão (Sans)": ["arial.ttf", "DejaVuSans.ttf"], 
         "Serif": ["times.ttf"], 
@@ -355,7 +355,6 @@ if "overlay_settings" not in st.session_state: st.session_state["overlay_setting
 
 res_choice = st.sidebar.selectbox("Resolução", ["9:16 (Stories)", "16:9 (YouTube)", "1:1 (Feed)"])
 
-# Upload de Fonte Persistente
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🅰️ Fonte Personalizada")
 
@@ -364,7 +363,6 @@ if font_up:
     if save_font_file(font_up.getvalue()):
         st.sidebar.success("Fonte salva! Selecione 'Upload Personalizada' ou 'Alegreya Sans Black' no menu.")
         
-# Verifica se existe fonte salva
 font_status = "✅ Fonte Salva Encontrada" if os.path.exists(SAVED_FONT_FILE) else "⚠️ Nenhuma fonte salva"
 st.sidebar.caption(font_status)
 
@@ -387,15 +385,12 @@ with tab1:
         
         if st.session_state['lista_jobs']:
             opts = {j['display']: j['job_id'] for j in st.session_state['lista_jobs']}
-            
-            # Callback para auto-load quando mudar a seleção
             selected_display = st.selectbox(
                 "Selecione um Job:", 
                 options=list(opts.keys()),
                 index=None, 
                 placeholder="Escolha um job para carregar..."
             )
-            
             if selected_display:
                 selected_id = opts[selected_display]
                 if selected_id != st.session_state.get('drive_job_id_input'):
@@ -403,7 +398,6 @@ with tab1:
         else: st.info("Nenhum job pronto encontrado.")
 
     with c2:
-        # Mantém opção manual caso o usuário queira colar um ID direto
         jid_in = st.text_input("ID Manual:", key="drive_job_id_input_manual") 
         if st.button("Baixar ID Manual", disabled=not jid_in):
              auto_load_and_process_job(jid_in)
@@ -465,6 +459,15 @@ with tab3:
         {"id": "aplicacao", "label": "🌟 APLICAÇÃO", "text_path": "aplicacao", "prompt_path": "aplicacao"},
         {"id": "oracao", "label": "🙏 ORAÇÃO", "text_path": "oracao", "prompt_path": "oracao"},
     ]
+    
+    # Mapa dinâmico de títulos por bloco
+    map_titulos_padrao = {
+        "hook": st.session_state.get("title_display", "EVANGELHO"),
+        "leitura": st.session_state.get("title_display", "EVANGELHO"),
+        "reflexao": "REFLEXÃO",
+        "aplicacao": "APLICAÇÃO",
+        "oracao": "ORAÇÃO"
+    }
     
     roteiro = st.session_state.get("roteiro_gerado", {})
 
@@ -564,7 +567,10 @@ with tab3:
                     filters = [vf, f"fade=t=in:st=0:d=0.5,fade=t=out:st={dur-0.5}:d=0.5"]
                     
                     if use_over and f1:
-                        t1 = san(st.session_state.get("title_display", ""))
+                        # Título dinâmico por bloco (LÓGICA CORRIGIDA AQUI)
+                        titulo_bloco = map_titulos_padrao.get(bid, "EVANGELHO")
+                        t1 = san(titulo_bloco)
+                        
                         filters.append(f"drawtext=fontfile='{f1}':text='{t1}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}")
                         t2 = san(st.session_state.get("data_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t2}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}")
