@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Whisper Tiny Local (Estilo TikTok)
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão Final (Correção Filtro Legendas)
 import os
 import re
 import json
@@ -15,16 +15,11 @@ import shutil as _shutil
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
-import whisper  # Importação do Whisper Local
 
 # --- API Imports ---
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-try:
-    from groq import Groq
-except ImportError:
-    Groq = None
 
 # --- CONFIGURAÇÃO ---
 FRONTEND_AI_STUDIO_URL = "https://ai.studio/apps/drive/1gfrdHffzH67cCcZBJWPe6JfE1ZEttn6u"
@@ -47,15 +42,14 @@ st.set_page_config(
 # Persistência
 # =========================
 def load_config():
-    # NOVOS PADRÕES SOLICITADOS
     default = {
         "line1_y": 150, "line1_size": 70, "line1_font": "Alegreya Sans Black", "line1_anim": "Estático",
         "line2_y": 250, "line2_size": 50, "line2_font": "Alegreya Sans Black", "line2_anim": "Estático",
         "line3_y": 350, "line3_size": 50, "line3_font": "Alegreya Sans Black", "line3_anim": "Estático",
-        "effect_type": "Estático", "effect_speed": 3, # Movimento padrão agora é Estático
+        "effect_type": "Estático", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
-        "sub_size": 70, # Legendas grandes estilo TikTok
+        "sub_size": 70,
         "sub_color": "#FFFF00", 
         "sub_outline_color": "#000000", 
         "sub_y_pos": 250
@@ -64,7 +58,6 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r") as f:
                 saved = json.load(f)
-                # Atualiza apenas chaves que já existem no salvo, mas garante novos defaults se faltar
                 default.update(saved)
         except: pass
     return default
@@ -82,7 +75,6 @@ def save_music_file(file_bytes):
     except: return False
 
 def save_font_file(file_bytes):
-    """Salva a fonte enviada no disco para persistência."""
     try:
         with open(SAVED_FONT_FILE, "wb") as f: f.write(file_bytes)
         return True
@@ -149,7 +141,6 @@ def download_file_content(service, file_id: str) -> Optional[str]:
     except: return None
 
 def list_recent_jobs(limit: int = 15) -> List[Dict]:
-    """Lista Jobs CONCLUÍDOS (com descrição 'COMPLETE') na pasta."""
     service = get_drive_service()
     if not service: return []
     jobs_list = []
@@ -160,7 +151,6 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
         if not folders: return []
         folder_id = folders[0]['id']
 
-        # Filtra arquivos JSON
         query_file = (
             f"mimeType = 'application/json' and "
             f"'{folder_id}' in parents and "
@@ -308,15 +298,19 @@ def resolve_font(choice, upload):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp:
             tmp.write(upload.getvalue())
             return tmp.name
+            
     if choice == "Upload Personalizada" and os.path.exists(SAVED_FONT_FILE):
         return SAVED_FONT_FILE
+        
     if choice == "Alegreya Sans Black" and os.path.exists(SAVED_FONT_FILE):
          return SAVED_FONT_FILE
+
     sys_fonts = {
         "Padrão (Sans)": ["arial.ttf", "DejaVuSans.ttf"], 
         "Serif": ["times.ttf"], 
         "Monospace": ["courier.ttf"],
     }
+    
     font_list = sys_fonts.get(choice, [])
     for f in font_list: return f
     return None
@@ -338,95 +332,26 @@ def criar_preview(w, h, texts, upload):
         try: length = draw.textlength(t["text"], font=font)
         except: length = len(t["text"]) * t["size"] * 0.5
         x = (w - length) / 2
+        
         draw.text((x, t["y"]), t["text"], fill=t["color"], font=font, stroke_width=2, stroke_fill="black")
+        
     bio = BytesIO(); img.save(bio, "PNG"); bio.seek(0)
     return bio
 
 def san(txt): return txt.replace(":", "\\:").replace("'", "") if txt else ""
 
 # =========================
-# Whisper Local (Tiny) - Legendas Curtas
-# =========================
-def format_timestamp(seconds):
-    """Converte segundos para formato SRT (HH:MM:SS,mmm)"""
-    millis = int((seconds - int(seconds)) * 1000)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
-
-def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
-    """Gera legendas dinâmicas (curtas e rápidas) usando Whisper Tiny."""
-    try:
-        if progress_bar: progress_bar.progress(10, text="Carregando modelo Whisper (Tiny)...")
-        
-        model = whisper.load_model("tiny")
-        
-        if progress_bar: progress_bar.progress(30, text="Transcrevendo áudio...")
-        
-        # Transcreve
-        result = model.transcribe(audio_path, language="pt", task="transcribe")
-        
-        if progress_bar: progress_bar.progress(80, text="Formatando legendas dinâmicas...")
-
-        segments = result['segments']
-        srt_content = ""
-        counter = 1
-        
-        # Configuração para legendas curtas (estilo TikTok)
-        MAX_CHARS = 25
-        
-        for segment in segments:
-            words = segment['text'].strip().split()
-            start_time = segment['start']
-            end_time = segment['end']
-            duration = end_time - start_time
-            
-            total_words = len(words)
-            if total_words == 0: continue
-            
-            time_per_word = duration / total_words
-            
-            chunks = []
-            temp_chunk = []
-            temp_char_count = 0
-            
-            for w in words:
-                if temp_char_count + len(w) + 1 > MAX_CHARS:
-                    chunks.append(temp_chunk)
-                    temp_chunk = [w]
-                    temp_char_count = len(w)
-                else:
-                    temp_chunk.append(w)
-                    temp_char_count += len(w) + 1
-            if temp_chunk: chunks.append(temp_chunk)
-
-            chunk_start = start_time
-            for chunk in chunks:
-                text_line = " ".join(chunk)
-                chunk_duration = len(chunk) * time_per_word
-                chunk_end = chunk_start + chunk_duration
-                
-                srt_content += f"{counter}\n{format_timestamp(chunk_start)} --> {format_timestamp(chunk_end)}\n{text_line}\n\n"
-                
-                chunk_start = chunk_end
-                counter += 1
-            
-        if progress_bar: progress_bar.progress(100, text="Legendas geradas!")
-        return srt_content
-    except Exception as e:
-        st.error(f"Erro no Whisper Tiny: {e}")
-        return None
-
-# =========================
 # Helper Function for Auto-Load and Process
 # =========================
 def auto_load_and_process_job(job_id: str):
     if not job_id: return
+    
     st.session_state['drive_job_id_input'] = job_id
+
     with st.status(f"Carregando automaticamente job '{job_id}'...", expanded=True) as status_box:
         if st.session_state.get("temp_assets_dir") and os.path.exists(st.session_state["temp_assets_dir"]):
-            try: _shutil.rmtree(st.session_state["temp_assets_dir"])
+            try:
+                _shutil.rmtree(st.session_state["temp_assets_dir"])
             except: pass
         
         temp_assets_dir = tempfile.mkdtemp()
@@ -482,7 +407,14 @@ with tab1:
         
         if st.session_state['lista_jobs']:
             opts = {j['display']: j['job_id'] for j in st.session_state['lista_jobs']}
-            selected_display = st.selectbox("Selecione um Job:", options=list(opts.keys()), index=None, placeholder="Escolha um job para carregar...")
+            
+            selected_display = st.selectbox(
+                "Selecione um Job:", 
+                options=list(opts.keys()),
+                index=None, 
+                placeholder="Escolha um job para carregar..."
+            )
+            
             if selected_display:
                 selected_id = opts[selected_display]
                 if selected_id != st.session_state.get('drive_job_id_input'):
@@ -590,35 +522,12 @@ with tab3:
                         st.rerun()
 
     st.divider()
-    use_subs = st.checkbox("Queimar Legendas", value=True)
     use_over = st.checkbox("Overlay Texto", value=True)
-    
-    if st.button("Gerar Legendas (Whisper Tiny Local)"):
-        prog_bar = st.progress(0, text="Iniciando Whisper...")
-        with st.status("Transcrevendo...") as s:
-            auds = [p for p in st.session_state["generated_audios_blocks"].values() if os.path.exists(p)]
-            if not auds: s.update(label="Sem áudios!", state="error"); st.stop()
-            
-            lst = os.path.join(st.session_state["temp_assets_dir"], "list_aud.txt")
-            mst = os.path.join(st.session_state["temp_assets_dir"], "master.wav")
-            with open(lst, "w") as f: 
-                for a in auds: f.write(f"file '{a}'\n")
-            run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", mst])
-            
-            prog_bar.progress(20, text="Processando áudio mestre...")
-            
-            srt = gerar_legendas_whisper_tiny(mst, progress_bar=prog_bar)
-            
-            if srt:
-                st.session_state["generated_srt_content"] = srt
-                s.update(label="Legendas Geradas!", state="complete"); 
-                prog_bar.progress(100, text="Concluído!")
-                st.rerun()
-            else: s.update(label="Erro Whisper", state="error")
+    use_subs = st.checkbox("Queimar Legendas", value=True) # Checkbox para ativar legendas
 
     if st.session_state.get("generated_srt_content"):
-        with st.expander("📝 Revisar Legendas (SRT)", expanded=False):
-            edited_srt = st.text_area("Conteúdo SRT:", value=st.session_state["generated_srt_content"], height=300)
+        with st.expander("📝 Revisar e Editar Legendas (SRT)", expanded=False):
+            edited_srt = st.text_area("Conteúdo das Legendas (SRT):", value=st.session_state["generated_srt_content"], height=300)
             if st.button("Salvar Alterações na Legenda"):
                 st.session_state["generated_srt_content"] = edited_srt
                 st.success("Legendas atualizadas!")
@@ -700,11 +609,12 @@ with tab3:
                 else:
                     map_a = "0:a"
 
+                # ====================== BLOCO DE LEGENDAS (REINSERIDO) ======================
                 if use_subs and st.session_state.get("generated_srt_content"):
                     srt_filename = "subs.srt"
                     srtp = os.path.join(tmp, srt_filename)
                     
-                    with open(srtp, "w", encoding="utf-8") as f: 
+                    with open(srtp, "w", encoding="utf-8") as f:
                         f.write(st.session_state["generated_srt_content"])
                     
                     if os.path.exists(srtp) and os.path.getsize(srtp) > 0:
@@ -713,11 +623,26 @@ with tab3:
                         ass_c = f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
                         ass_co = f"&H00{co[4:6]}{co[2:4]}{co[0:2]}"
                         margin_v = res['h'] - sets['sub_y_pos']
-                        style = f"FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
                         
-                        filter_complex.append(f"subtitles='{srt_filename}':force_style='{style}'")
+                        style = (
+                            f"FontSize={sets['sub_size']},"
+                            f"PrimaryColour={ass_c},"
+                            f"OutlineColour={ass_co},"
+                            f"BackColour=&H80000000,"
+                            f"BorderStyle=1,"
+                            f"Outline=2,"
+                            f"Shadow=0,"
+                            f"Alignment=2,"
+                            f"MarginV={margin_v}"
+                        )
+                        
+                        # Usamos o filtro 'subtitles' referenciando o nome do arquivo local
+                        # O truque do filename= é importante para alguns parsers do ffmpeg
+                        subs_filter = f"subtitles=filename={srt_filename}:force_style='{style}'"
+                        filter_complex.append(subs_filter)
                     else:
                         st.warning("Falha ao escrever legenda.")
+                # ============================================================================
 
                 if filter_complex:
                     mix_cmd.extend(["-filter_complex", ",".join(filter_complex)])
@@ -725,6 +650,7 @@ with tab3:
                         mix_cmd.extend(["-map", "0:v", "-map", map_a])
                 
                 mix_cmd.extend(["-crf", "28", "-preset", "fast"])
+                
                 mix_cmd.append("final.mp4")
                 
                 run_cmd(mix_cmd, cwd=tmp)
