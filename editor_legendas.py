@@ -1,4 +1,4 @@
-# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO FINAL C/ TIMING PERFEITO E CORREÇÃO DE NameError
+# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO FINAL C/ TIMING PERFEITO E BLOCOS CURTOS
 import os
 import re
 import json
@@ -138,72 +138,89 @@ def get_full_roteiro_text(roteiro_data: Dict[str, Any]) -> str:
 
 
 # =========================
-# LÓGICA DE GERAÇÃO DE SRT PERFEITO
+# LÓGICA DE GERAÇÃO DE SRT PERFEITO (REVISADA PARA BLOCOS CURTOS)
 # =========================
 def generate_perfect_srt(segments: List[Dict[str, Any]], full_roteiro_text: str) -> str:
     """
     Usa o texto perfeito do roteiro e mapeia-o para os segmentos de tempo (timing)
-    gerados pelo Whisper.
+    gerados pelo Whisper, dividindo o resultado em blocos de até 4 palavras.
     """
-    # 1. Limpa o texto perfeito (remove marcações como --- HOOK ---)
+    # 1. Limpa o texto perfeito
     clean_text = re.sub(r'--- [A-ZÁÉÕÇ ]+ ---\n', '', full_roteiro_text).strip()
-    clean_text = re.sub(r'\s+', ' ', clean_text) # Remove quebras de linha/espaços duplos
+    clean_text = re.sub(r'\s+', ' ', clean_text)
+    words = clean_text.split()
     
-    if not clean_text or not segments: return ""
-
-    # 2. Concatena todo o texto transcrito pelo Whisper (para cálculo de proporção)
-    total_whisper_chars = sum(len(seg.get('text', '')) for seg in segments)
-    
-    if total_whisper_chars == 0:
-        st.warning("Whisper não conseguiu transcrever caracteres. Tentativa de mapeamento abortada.")
+    if not clean_text or not segments or not words:
+        st.warning("Texto perfeito ou segmentos do Whisper vazios.")
         return ""
 
-    total_perfect_chars = len(clean_text)
-    
+    # 2. Concatena todo o texto transcrito pelo Whisper para cálculo de proporção
+    total_whisper_chars = sum(len(seg.get('text', '')) for seg in segments)
+    if total_whisper_chars == 0:
+        st.warning("Whisper não conseguiu transcrever caracteres.")
+        return ""
+
+    total_perfect_words = len(words)
     srt_content = ""
-    start_char_index = 0
+    current_word_index = 0
+    subtitle_index = 1
     
-    for i, seg in enumerate(segments):
+    # Itera sobre os segmentos do Whisper para obter os TIMINGS
+    for seg in segments:
         whisper_text_len = len(seg.get('text', '').strip())
         
-        # Heurística: Quantos caracteres do texto perfeito devem ser alocados para este segmento?
-        char_count_estimate = round((whisper_text_len / total_whisper_chars) * total_perfect_chars)
+        # Heurística: Quantas palavras do texto perfeito devem ser alocadas para este segmento de tempo?
+        word_count_estimate = round((whisper_text_len / total_whisper_chars) * total_perfect_words)
         
-        end_char_index_raw = start_char_index + char_count_estimate
+        # Garante que haja pelo menos 1 palavra por segmento de tempo
+        word_count_estimate = max(1, word_count_estimate)
         
-        # Ajuste 1: Tenta quebrar a linha em um espaço (se houver)
-        final_end_index = end_char_index_raw
+        # Usa o timing do segmento Whisper como duração máxima
+        start_time = seg['start']
+        end_time = seg['end']
+        duration = end_time - start_time
         
-        if end_char_index_raw < total_perfect_chars and clean_text[end_char_index_raw] != ' ':
-            # Procura um espaço próximo (para trás)
-            last_space = clean_text.rfind(' ', start_char_index, end_char_index_raw)
-            if last_space != -1:
-                final_end_index = last_space
-            else:
-                # Se não há espaço, procura um espaço para frente (próxima palavra)
-                next_space = clean_text.find(' ', end_char_index_raw)
-                if next_space != -1:
-                    final_end_index = next_space
-                else:
-                    final_end_index = end_char_index_raw
+        # Divide o texto do segmento em blocos de no máximo o estimado
+        words_in_segment = words[current_word_index : current_word_index + word_count_estimate]
         
-        final_end_index = min(final_end_index, total_perfect_chars)
-
-        text_to_use = clean_text[start_char_index:final_end_index].strip()
+        if not words_in_segment:
+            break # Fim das palavras
+            
+        words_processed_in_seg = 0
         
-        start = format_timestamp(seg['start'])
-        end = format_timestamp(seg['end'])
+        while words_processed_in_seg < len(words_in_segment):
+            # Define o tamanho do bloco (máximo 4 palavras)
+            block_size = min(4, len(words_in_segment) - words_processed_in_seg)
+            block_words = words_in_segment[words_processed_in_seg : words_processed_in_seg + block_size]
+            text_to_use = " ".join(block_words)
+            
+            # Cálculo de Timing para o Sub-bloco
+            # Distribui o tempo do segmento Whisper proporcionalmente ao número de palavras
+            
+            # Se for o primeiro bloco, começa no start_time
+            block_start = start_time if words_processed_in_seg == 0 else block_end 
+            
+            # Estimativa de duração do bloco (distribui o tempo restante)
+            remaining_words = len(words_in_segment) - words_processed_in_seg
+            estimated_block_duration = duration * (block_size / remaining_words) if remaining_words > 0 else 0
+            
+            block_end = min(end_time, block_start + estimated_block_duration)
+            
+            # Formatação SRT
+            if text_to_use and block_end > block_start:
+                start_str = format_timestamp(block_start)
+                end_str = format_timestamp(block_end)
+                
+                # A legenda agora é uma única linha e curta
+                srt_content += f"{subtitle_index}\n{start_str} --> {end_str}\n{text_to_use}\n\n"
+                subtitle_index += 1
+            
+            words_processed_in_seg += block_size
         
-        if text_to_use:
-            srt_content += f"{i+1}\n{start} --> {end}\n{text_to_use}\n\n"
+        # Atualiza o índice global de palavras
+        current_word_index += words_processed_in_seg
         
-        # Prepara para o próximo segmento
-        start_char_index = final_end_index
-        # Avança o índice após o espaço, se houver, para o próximo segmento não começar com espaço
-        while start_char_index < total_perfect_chars and clean_text[start_char_index] == ' ':
-            start_char_index += 1
-
-        if start_char_index >= total_perfect_chars:
+        if current_word_index >= total_perfect_words:
             break
 
     return srt_content
@@ -299,6 +316,7 @@ def transcribe_audio(video_path, model_size="tiny"):
         srt_content = "";
         for i, seg in enumerate(segments):
             start = format_timestamp(seg['start']); end = format_timestamp(seg['end']); text = seg['text'].strip()
+            # Esta seção não é usada para a geração final, mas é o fallback
             srt_content += f"{i+1}\n{start} --> {end}\n{text}\n\n"
             
         if os.path.exists(audio_path): os.remove(audio_path)
@@ -440,10 +458,11 @@ def main():
                             srt_dummy, segments = transcribe_audio(st.session_state.current_video_path, mod)
                         
                         if segments:
-                            with st.spinner("2. Mapeando Texto Perfeito para o Timing..."):
+                            with st.spinner("2. Mapeando Texto Perfeito para o Timing em Blocos Curtos..."):
+                                # CHAMADA DA FUNÇÃO REVISADA
                                 srt_content = generate_perfect_srt(segments, full_text)
                                 st.session_state.srt_content = srt_content
-                                st.success("SRT Gerado com Texto Perfeito e Timing do Áudio!")
+                                st.success("SRT Gerado em Blocos Curtos (Estilo Dinâmico)!")
                                 st.rerun()
                         else:
                             st.error("Falha ao obter Timing do Whisper. Tente novamente ou use o Fallback.")
@@ -475,6 +494,7 @@ def main():
             
             if st.session_state.srt_content:
                 st.markdown("##### Legendas Geradas (Ajuste o Timing aqui)")
+                st.info("⚠️ O SRT agora está em blocos curtos, simulando dinamismo.")
                 srt_edit = st.text_area("SRT", st.session_state.srt_content, height=250)
                 st.session_state.srt_content = srt_edit
                 
@@ -485,10 +505,12 @@ def main():
                     sets["font_style"] = st.selectbox("Fonte", ["Padrão (Arial)", "Upload Personalizada"], index=0)
                     sets["f_size"] = st.slider("Tamanho", 10, 100, sets.get("f_size", 60))
                 with col_s2:
-                    sets["margin_v"] = st.slider("Posição Y (Margem V.)", 0, 500, sets.get("margin_v", 250))
+                    # Ajuste a Margem V. para centralizar melhor a única linha
+                    sets["margin_v"] = st.slider("Posição Y (Margem V.)", 0, 500, sets.get("margin_v", 250)) 
                 with col_s3:
-                    sets["color"] = st.color_picker("Cor", sets.get("color", "#FFFF00"))
-                    sets["border"] = st.color_picker("Borda", sets.get("border", "#000000"))
+                    sets["color"] = st.color_picker("Cor (Texto)", sets.get("color", "#FFFF00"))
+                    # Borda preta é ideal para contraste (TikTok)
+                    sets["border"] = st.color_picker("Borda (Stroke)", sets.get("border", "#000000"))
                 
                 if st.button("💾 Salvar Estilos"):
                     if save_config(sets): st.success("Estilos salvos!")
@@ -503,7 +525,9 @@ def main():
                         font_path = resolve_font(sets["font_style"])
                         font_name_for_style = font_path if not os.path.exists(font_path) else os.path.basename(font_path)
                         ass_c = hex_to_ass_color(sets["color"]); ass_b = hex_to_ass_color(sets["border"])
-                        style = f"Fontname={font_name_for_style},FontSize={sets['f_size']},PrimaryColour={ass_c},OutlineColour={ass_b},BackColour=&H80000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV={sets['margin_v']}"
+                        
+                        # NOVO ESTILO: Outline aumentado para 4 para o efeito TikTok
+                        style = f"Fontname={font_name_for_style},FontSize={sets['f_size']},PrimaryColour={ass_c},OutlineColour={ass_b},BackColour=&H80000000,BorderStyle=1,Outline=4,Shadow=0,Alignment=2,MarginV={sets['margin_v']}"
                         
                         out_vid = f"legendado_{st.session_state.video_id}.mp4"
                         cmd = ["ffmpeg", "-y", "-i", st.session_state.current_video_path, "-vf", f"subtitles={srt_path}:force_style='{style}'", "-c:a", "copy", "-c:v", "libx264", "-preset", "fast", "-crf", "23", out_vid]
