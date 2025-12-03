@@ -1,4 +1,4 @@
-# editor_legendas.py - Editor de Legendas Avançado (Pós-Produção) - CORRIGIDO
+# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO SIMPLIFICADA (Upload JSON)
 import os
 import re
 import json
@@ -27,10 +27,9 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # --- CONFIGURAÇÃO ---
-# URL do Script GAS para interação com Drive (mesma do app principal)
 GAS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhHJejuPBx1Ud6B10Ag_xfnJVzGpE83n7gHdUHnk4yAgrpuidw/exec"
-MONETIZA_DRIVE_FOLDER_VIDEOS = "Monetiza_Studio_Videos_Finais" # Pasta onde videos sem legenda estao
-MONETIZA_DRIVE_FOLDER_LEGENDADOS = "Monetiza_Studio_Videos_Legendados" # Pasta de destino
+MONETIZA_DRIVE_FOLDER_VIDEOS = "Monetiza_Studio_Videos_Finais" 
+MONETIZA_DRIVE_FOLDER_LEGENDADOS = "Monetiza_Studio_Videos_Legendados" 
 
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 
@@ -38,7 +37,7 @@ os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 # Page Config
 # =========================
 st.set_page_config(
-    page_title="Editor de Legendas Pro",
+    page_title="Editor de Legendas",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -46,16 +45,17 @@ st.set_page_config(
 # =========================
 # Utils & Helpers
 # =========================
+def shutil_which(name): return shutil.which(name)
+
 def run_cmd(cmd):
-    """Executa comandos de shell (FFmpeg)"""
+    clean = [arg.replace('\u00a0', ' ').strip() if isinstance(arg, str) else arg for arg in cmd if arg]
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         st.error(f"Erro FFmpeg: {e.stderr.decode()}")
         raise e
 
 def format_timestamp(seconds):
-    """Formata segundos para SRT (00:00:00,000)"""
     millis = int((seconds - int(seconds)) * 1000)
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -63,59 +63,60 @@ def format_timestamp(seconds):
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
 def hex_to_ass_color(hex_color):
-    """Converte HEX (#RRGGBB) para formato ASS (&HBBGGRR&)"""
     h = hex_color.lstrip('#')
     if len(h) != 6: return "&HFFFFFF&"
-    # Inverte RGB para BGR
     return f"&H00{h[4:6]}{h[2:4]}{h[0:2]}"
 
 # =========================
-# Google Drive Service (CORRIGIDO)
+# Google Drive Service (SIMPLIFICADO COM UPLOAD)
 # =========================
-_drive_service = None
-
-def get_drive_service():
-    global _drive_service
-    # Lista exata de chaves que você usa no montagem.py
-    required_keys = [
-        "type", "project_id", "private_key_id", "private_key", 
-        "client_email", "client_id", "auth_uri", "token_uri", 
-        "auth_provider_x509_cert_url", "client_x509_cert_url", "universe_domain"
-    ]
-    # Prefixo usado no seu secrets.toml
-    prefix = "gcp_service_account_"
-
-    if _drive_service is None:
+def get_drive_service(json_file=None):
+    """
+    Tenta conectar usando:
+    1. Arquivo JSON enviado pelo usuário (Prioridade)
+    2. st.secrets (Fallback)
+    """
+    creds = None
+    
+    # 1. Tenta pelo arquivo enviado na interface
+    if json_file is not None:
         try:
-            creds_info = {}
-            missing_keys = []
-            for key in required_keys:
-                # Busca com o prefixo correto
-                val = st.secrets.get(prefix + key)
-                if val is None: 
-                    missing_keys.append(prefix + key)
-                else:
-                    creds_info[key] = val
-            
-            if missing_keys:
-                st.error(f"Faltam chaves no secrets: {', '.join(missing_keys)}")
-                st.stop()
-
+            # Lê o arquivo uploaded
+            file_content = json_file.getvalue().decode("utf-8")
+            info = json.loads(file_content)
             creds = service_account.Credentials.from_service_account_info(
-                creds_info, scopes=['https://www.googleapis.com/auth/drive.readonly']
+                info, scopes=['https://www.googleapis.com/auth/drive.readonly']
             )
-            _drive_service = build('drive', 'v3', credentials=creds)
         except Exception as e:
-            st.error(f"Erro ao conectar Drive: {e}")
-            st.stop()
-    return _drive_service
+            st.error(f"Erro ao ler arquivo JSON enviado: {e}")
+            return None
 
-def list_videos_ready():
-    """Lista vídeos prontos para legendagem na pasta especificada."""
-    service = get_drive_service()
+    # 2. Se não enviou arquivo, tenta pegar do secrets (Automático)
+    elif "gcp_service_account" in st.secrets:
+        try:
+            info = dict(st.secrets["gcp_service_account"])
+            # Corrige quebras de linha na chave privada se necessário
+            if "private_key" in info:
+                info["private_key"] = info["private_key"].replace("\\n", "\n")
+            creds = service_account.Credentials.from_service_account_info(
+                info, scopes=['https://www.googleapis.com/auth/drive.readonly']
+            )
+        except Exception:
+            pass # Falha silenciosa, vai pedir arquivo
+
+    if creds:
+        try:
+            service = build('drive', 'v3', credentials=creds)
+            return service
+        except Exception as e:
+            st.error(f"Erro de autenticação: {e}")
+            return None
+    
+    return None
+
+def list_videos_ready(service):
     videos = []
     try:
-        # 1. Busca pasta de origem
         q_f = f"name = '{MONETIZA_DRIVE_FOLDER_VIDEOS}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         folders = service.files().list(q=q_f, fields="files(id)").execute().get('files', [])
         
@@ -124,21 +125,14 @@ def list_videos_ready():
             return []
             
         folder_id = folders[0]['id']
-
-        # 2. Lista arquivos MP4
         q_v = f"mimeType = 'video/mp4' and '{folder_id}' in parents and trashed = false"
-        # Pega nome, ID e descrição (onde guardamos metadados)
         files = service.files().list(q=q_v, orderBy="createdTime desc", pageSize=20, fields="files(id, name, description, createdTime)").execute().get('files', [])
-        
-        for f in files:
-            videos.append(f)
-            
+        for f in files: videos.append(f)
     except Exception as e:
         st.error(f"Erro ao listar vídeos: {e}")
     return videos
 
-def download_video(file_id, filename):
-    service = get_drive_service()
+def download_video(service, file_id, filename):
     request = service.files().get_media(fileId=file_id)
     with open(filename, "wb") as f:
         f.write(request.execute())
@@ -148,25 +142,16 @@ def download_video(file_id, filename):
 # Whisper Transcription
 # =========================
 def transcribe_audio(video_path, model_size="tiny"):
-    """Extrai áudio e transcreve com Whisper local"""
     if whisper is None:
-        st.error("Biblioteca 'whisper' não instalada. Adicione 'openai-whisper' ao requirements.txt")
+        st.error("Biblioteca 'whisper' não instalada.")
         return None, None
-        
     try:
-        # Extrai áudio temporário
         audio_path = "temp_audio.wav"
-        # Extrai áudio em 16k mono para o Whisper
         run_cmd(["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path])
-        
-        # Carrega modelo
         st.info(f"Carregando modelo Whisper ({model_size})...")
-        model = whisper.load_model(model_size)
-        
-        # Transcreve
+        model = whisper.load_model(model_size, device="cpu")
         st.info("Transcrevendo...")
         result = model.transcribe(audio_path, language="pt")
-        
         segments = result['segments']
         srt_content = ""
         for i, seg in enumerate(segments):
@@ -174,233 +159,160 @@ def transcribe_audio(video_path, model_size="tiny"):
             end = format_timestamp(seg['end'])
             text = seg['text'].strip()
             srt_content += f"{i+1}\n{start} --> {end}\n{text}\n\n"
-            
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
-            
+        if os.path.exists(audio_path): os.remove(audio_path)
         return srt_content, segments
     except Exception as e:
         st.error(f"Erro Transcrição: {e}")
         return None, None
 
 # =========================
-# Upload Final (GAS)
+# Upload Final
 # =========================
 def upload_legendado_to_gas(video_path, original_name):
-    """Envia vídeo legendado para o Drive via GAS"""
     try:
-        with open(video_path, "rb") as f:
-            video_bytes = f.read()
-            
+        with open(video_path, "rb") as f: video_bytes = f.read()
         video_b64 = base64.b64encode(video_bytes).decode('utf-8')
-        
         payload = {
             "action": "upload_video",
-            "job_id": "LEGENDADO_" + str(int(time.time())), # ID único
+            "job_id": "LEGENDADO_" + str(int(time.time())),
             "video_data": video_b64,
             "filename": f"LEGENDADO_{original_name}",
-            "meta_data": {
-                "status": "LEGENDADO",
-                "processed_at": datetime.now().isoformat()
-            }
+            "meta_data": {"status": "LEGENDADO", "processed_at": datetime.now().isoformat()}
         }
-        
-        # Se quiser salvar em pasta diferente, o GAS precisaria suportar esse parametro
-        # Por enquanto usa a mesma lógica do montagem.py
-        
-        response = requests.post(GAS_SCRIPT_URL, json=payload, timeout=300) # Timeout maior para upload
-        
+        response = requests.post(GAS_SCRIPT_URL, json=payload, timeout=300)
         if response.status_code == 200:
             res = response.json()
-            if res.get("status") == "success":
-                return True, res.get("file_id")
-            else:
-                return False, res.get("message")
+            return (True, res.get("file_id")) if res.get("status") == "success" else (False, res.get("message"))
         return False, f"HTTP {response.status_code}"
-        
-    except Exception as e:
-        return False, str(e)
+    except Exception as e: return False, str(e)
 
 # =========================
 # Interface Principal
 # =========================
 def main():
     st.title("🎬 Editor de Legendas Pro")
-    st.caption("Pós-produção: Adicione legendas a vídeos prontos")
     
-    # State
+    # --- CONEXÃO SIMPLIFICADA ---
+    st.sidebar.header("🔑 Conexão Drive")
+    
+    # Verifica se já conectou automaticamente via secrets
+    drive_service = get_drive_service() 
+    
+    uploaded_key = None
+    if not drive_service:
+        st.sidebar.warning("Secrets não encontrados.")
+        st.sidebar.markdown("### Solução Rápida:")
+        uploaded_key = st.sidebar.file_uploader("Arraste seu arquivo 'credentials.json' aqui:", type="json")
+        
+        if uploaded_key:
+            drive_service = get_drive_service(uploaded_key)
+    
+    if not drive_service:
+        st.info("👈 Por favor, faça o upload do arquivo de credenciais do Google na barra lateral para começar.")
+        st.stop()
+        
+    st.sidebar.success("✅ Conectado ao Drive!")
+    # ----------------------------
+
+    # State Management
     if "current_video_path" not in st.session_state: st.session_state.current_video_path = None
     if "srt_content" not in st.session_state: st.session_state.srt_content = ""
     if "video_id" not in st.session_state: st.session_state.video_id = None
     if "video_name" not in st.session_state: st.session_state.video_name = ""
     if "final_video_path" not in st.session_state: st.session_state.final_video_path = None
 
-    # --- Sidebar: Seleção de Vídeo ---
-    st.sidebar.header("📁 Vídeos Disponíveis")
+    st.sidebar.divider()
+    st.sidebar.header("📁 Selecionar Vídeo")
     
-    if st.sidebar.button("🔄 Atualizar Lista"):
-        st.rerun()
+    if st.sidebar.button("🔄 Atualizar Lista"): st.rerun()
         
-    videos = list_videos_ready()
+    videos = list_videos_ready(drive_service)
     
     if not videos:
-        st.sidebar.info("Nenhum vídeo encontrado na pasta 'Monetiza_Studio_Videos_Finais'.")
-    
-    video_opts = {v['name']: v['id'] for v in videos}
-    selected_video_name = st.sidebar.selectbox(
-        "Escolha um vídeo:", 
-        options=["Selecione..."] + list(video_opts.keys()),
-        index=0
-    )
-    
-    if st.sidebar.button("⬇️ Carregar Vídeo") and selected_video_name != "Selecione...":
-        vid_id = video_opts[selected_video_name]
-        with st.status("Baixando vídeo...", expanded=True) as status:
-            # Limpa anteriores
-            if st.session_state.current_video_path and os.path.exists(st.session_state.current_video_path):
-                try: os.remove(st.session_state.current_video_path)
-                except: pass
-            if st.session_state.final_video_path and os.path.exists(st.session_state.final_video_path):
-                try: os.remove(st.session_state.final_video_path)
-                except: pass
-                
-            local_path = f"temp_{vid_id}.mp4"
-            download_video(vid_id, local_path)
-            
-            st.session_state.current_video_path = local_path
-            st.session_state.video_id = vid_id
-            st.session_state.video_name = selected_video_name
-            st.session_state.srt_content = "" 
-            st.session_state.final_video_path = None
-            
-            status.update(label="Vídeo carregado!", state="complete")
-            st.rerun()
-
-    # --- Área Principal ---
-    if st.session_state.current_video_path and os.path.exists(st.session_state.current_video_path):
-        col_video, col_editor = st.columns([1, 1])
+        st.info("Nenhum vídeo pronto encontrado na pasta 'Monetiza_Studio_Videos_Finais'.")
+    else:
+        video_opts = {v['name']: v['id'] for v in videos}
+        selected_video_name = st.sidebar.selectbox("Vídeo:", ["Selecione..."] + list(video_opts.keys()))
         
-        with col_video:
-            st.subheader("📺 Vídeo Original")
+        if st.sidebar.button("⬇️ Carregar Vídeo") and selected_video_name != "Selecione...":
+            vid_id = video_opts[selected_video_name]
+            with st.status("Baixando vídeo...", expanded=True) as status:
+                local_path = f"temp_{vid_id}.mp4"
+                download_video(drive_service, vid_id, local_path)
+                st.session_state.current_video_path = local_path
+                st.session_state.video_id = vid_id
+                st.session_state.video_name = selected_video_name
+                st.session_state.srt_content = "" 
+                st.session_state.final_video_path = None
+                status.update(label="Pronto!", state="complete")
+                st.rerun()
+
+    if st.session_state.current_video_path and os.path.exists(st.session_state.current_video_path):
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            st.subheader("Original")
             st.video(st.session_state.current_video_path)
             
             st.divider()
-            st.subheader("🧠 Transcrição (Whisper)")
-            
-            c_mod, c_btn = st.columns([1,1])
-            with c_mod:
-                model_size = st.selectbox("Modelo", ["tiny", "base", "small"], index=0, help="Tiny é rápido, Small é preciso.")
-            with c_btn:
-                st.write("") # Spacer
-                if st.button("✨ Gerar Legendas (Auto)"):
-                    srt, segs = transcribe_audio(st.session_state.current_video_path, model_size)
-                    if srt:
-                        st.session_state.srt_content = srt
-                        st.success("Legendas geradas!")
-                        st.rerun()
+            c_ia1, c_ia2 = st.columns([1,1])
+            with c_ia1:
+                mod = st.selectbox("Modelo IA", ["tiny", "base"], help="Tiny é mais rápido.")
+            with c_ia2:
+                st.write("")
+                if st.button("✨ Gerar Legendas"):
+                    with st.spinner("Processando..."):
+                        srt, _ = transcribe_audio(st.session_state.current_video_path, mod)
+                        if srt:
+                            st.session_state.srt_content = srt
+                            st.success("Gerado!")
+                            st.rerun()
 
-        with col_editor:
-            st.subheader("✏️ Editor & Estilo")
-            
+        with c2:
+            st.subheader("Editor & Render")
             if st.session_state.srt_content:
-                # Editor de Texto SRT
-                srt_edit = st.text_area("Conteúdo SRT (Edite tempo/texto aqui):", st.session_state.srt_content, height=300)
+                srt_edit = st.text_area("SRT", st.session_state.srt_content, height=250)
                 st.session_state.srt_content = srt_edit
                 
-                st.markdown("### 🎨 Estilo da Legenda")
-                
-                # Opções de Estilo
-                style_mode = st.radio("Estilo:", ["TikTok / Reels", "Clássico (TV)", "Karaokê (Amarelo)"], horizontal=True)
-                
-                c_font, c_color = st.columns(2)
-                with c_font:
-                    font_size = st.slider("Tamanho Fonte", 10, 100, 60 if style_mode == "TikTok / Reels" else 24)
-                    margin_v = st.slider("Margem Vertical", 0, 500, 250 if style_mode == "TikTok / Reels" else 50)
-                
-                with c_color:
-                    text_color_hex = st.color_picker("Cor Texto", "#FFFF00" if "Karaokê" in style_mode else "#FFFFFF")
-                    outline_color_hex = st.color_picker("Cor Borda", "#000000")
+                st.markdown("### Estilo")
+                col_s1, col_s2 = st.columns(2)
+                with col_s1:
+                    f_size = st.slider("Tamanho", 10, 100, 60)
+                    margin_v = st.slider("Posição Y", 0, 500, 250)
+                with col_s2:
+                    color = st.color_picker("Cor", "#FFFF00")
+                    border = st.color_picker("Borda", "#000000")
 
-                if st.button("🔥 Renderizar Vídeo com Legenda", type="primary"):
-                    with st.status("Renderizando vídeo final...") as status:
-                        # 1. Salva SRT Temporário
-                        srt_path = "temp_subs.srt"
-                        # IMPORTANTE: Encoding utf-8 para acentos
-                        with open(srt_path, "w", encoding="utf-8") as f:
-                            f.write(st.session_state.srt_content)
+                if st.button("🔥 Renderizar Final", type="primary"):
+                    with st.status("Renderizando...") as status:
+                        srt_path = "temp.srt"
+                        with open(srt_path, "w", encoding="utf-8") as f: f.write(st.session_state.srt_content)
                         
-                        # 2. Configura Estilo ASS (Advanced Substation Alpha)
-                        ass_primary = hex_to_ass_color(text_color_hex)
-                        ass_outline = hex_to_ass_color(outline_color_hex)
+                        ass_c = hex_to_ass_color(color)
+                        ass_b = hex_to_ass_color(border)
+                        style = f"Fontname=Arial,FontSize={f_size},PrimaryColour={ass_c},OutlineColour={ass_b},BackColour=&H80000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV={margin_v}"
                         
-                        # Configurações baseadas no modo
-                        if style_mode == "TikTok / Reels":
-                            # Fonte grande, borda grossa, centralizado
-                            style = f"Fontname=Arial,FontSize={font_size},PrimaryColour={ass_primary},OutlineColour={ass_outline},BackColour=&H80000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV={margin_v}"
-                        elif style_mode == "Clássico (TV)":
-                            # Fundo semi-transparente opcional, fonte menor
-                            style = f"Fontname=Arial,FontSize={font_size},PrimaryColour={ass_primary},OutlineColour={ass_outline},BackColour=&H40000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV={margin_v}"
-                        else:
-                            style = f"Fontname=Arial,FontSize={font_size},PrimaryColour={ass_primary},OutlineColour={ass_outline},BorderStyle=1,Outline=2,Alignment=2,MarginV={margin_v}"
-
-                        # 3. Renderiza
-                        output_vid = f"legendado_{st.session_state.video_id}.mp4"
-                        
-                        # Caminho relativo simples para evitar problemas de path
-                        cmd = [
-                            "ffmpeg", "-y",
-                            "-i", st.session_state.current_video_path,
-                            "-vf", f"subtitles={srt_path}:force_style='{style}'",
-                            "-c:a", "copy", # Copia áudio sem reencodar (rápido)
-                            "-c:v", "libx264", "-preset", "fast", "-crf", "23", # Reencoda vídeo para queimar legenda
-                            output_vid
-                        ]
+                        out_vid = f"sub_{st.session_state.video_id}.mp4"
+                        cmd = ["ffmpeg", "-y", "-i", st.session_state.current_video_path, "-vf", f"subtitles={srt_path}:force_style='{style}'", "-c:a", "copy", "-c:v", "libx264", "-preset", "fast", "-crf", "23", out_vid]
                         
                         try:
                             run_cmd(cmd)
-                            st.session_state.final_video_path = output_vid
-                            status.update(label="Renderização concluída!", state="complete")
-                        except Exception as e:
-                            status.update(label="Erro na renderização", state="error")
-                            st.error(f"Detalhes: {e}")
-            else:
-                st.info("Gere as legendas primeiro para habilitar a edição.")
+                            st.session_state.final_video_path = out_vid
+                            status.update(label="Sucesso!", state="complete")
+                        except: status.update(label="Erro!", state="error")
 
-        # --- Área de Download / Upload Final ---
         if st.session_state.final_video_path and os.path.exists(st.session_state.final_video_path):
             st.divider()
-            st.subheader("✅ Resultado Final")
-            
-            c_res_view, c_res_act = st.columns([1.5, 1])
-            with c_res_view:
-                st.video(st.session_state.final_video_path)
-            
-            with c_res_act:
+            st.success("Vídeo Finalizado!")
+            c_fin1, c_fin2 = st.columns([1.5, 1])
+            with c_fin1: st.video(st.session_state.final_video_path)
+            with c_fin2:
                 with open(st.session_state.final_video_path, "rb") as f:
-                    st.download_button(
-                        "💾 Baixar MP4 Legendado", 
-                        f, 
-                        file_name=f"legendado_{st.session_state.video_name}",
-                        mime="video/mp4"
-                    )
-                
-                st.write("")
-                if st.button("☁️ Enviar para Google Drive"):
-                    with st.spinner("Enviando... (pode demorar)"):
-                        ok, msg = upload_legendado_to_gas(
-                            st.session_state.final_video_path, 
-                            st.session_state.video_name
-                        )
-                        if ok:
-                            st.success(f"Sucesso! Arquivo ID: {msg}")
-                        else:
-                            st.error(f"Falha no envio: {msg}")
-
-    else:
-        if not videos:
-            st.info("Nenhum vídeo pronto encontrado no Drive. Use a aba 'Montagem' para criar vídeos primeiro.")
-        else:
-            st.info("👈 Selecione um vídeo na barra lateral para começar.")
+                    st.download_button("💾 Baixar", f, f"legendado_{st.session_state.video_name}")
+                if st.button("☁️ Enviar p/ Drive"):
+                    with st.spinner("Enviando..."):
+                        ok, msg = upload_legendado_to_gas(st.session_state.final_video_path, st.session_state.video_name)
+                        if ok: st.success("Enviado!")
+                        else: st.error(f"Erro: {msg}")
 
 if __name__ == "__main__":
     main()
