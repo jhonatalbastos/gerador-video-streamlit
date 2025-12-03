@@ -1,4 +1,4 @@
-# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO SIMPLIFICADA (Upload JSON)
+# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO COM UPLOAD LOCAL
 import os
 import re
 import json
@@ -48,6 +48,7 @@ st.set_page_config(
 def shutil_which(name): return shutil.which(name)
 
 def run_cmd(cmd):
+    """Executa comandos de shell (FFmpeg)"""
     clean = [arg.replace('\u00a0', ' ').strip() if isinstance(arg, str) else arg for arg in cmd if arg]
     try:
         subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -68,71 +69,50 @@ def hex_to_ass_color(hex_color):
     return f"&H00{h[4:6]}{h[2:4]}{h[0:2]}"
 
 # =========================
-# Google Drive Service (SIMPLIFICADO COM UPLOAD)
+# Google Drive Service
 # =========================
 def get_drive_service(json_file=None):
-    """
-    Tenta conectar usando:
-    1. Arquivo JSON enviado pelo usuário (Prioridade)
-    2. st.secrets (Fallback)
-    """
     creds = None
-    
-    # 1. Tenta pelo arquivo enviado na interface
     if json_file is not None:
         try:
-            # Lê o arquivo uploaded
             file_content = json_file.getvalue().decode("utf-8")
             info = json.loads(file_content)
             creds = service_account.Credentials.from_service_account_info(
                 info, scopes=['https://www.googleapis.com/auth/drive.readonly']
             )
         except Exception as e:
-            st.error(f"Erro ao ler arquivo JSON enviado: {e}")
+            st.error(f"Erro JSON: {e}")
             return None
-
-    # 2. Se não enviou arquivo, tenta pegar do secrets (Automático)
     elif "gcp_service_account" in st.secrets:
         try:
             info = dict(st.secrets["gcp_service_account"])
-            # Corrige quebras de linha na chave privada se necessário
-            if "private_key" in info:
-                info["private_key"] = info["private_key"].replace("\\n", "\n")
+            if "private_key" in info: info["private_key"] = info["private_key"].replace("\\n", "\n")
             creds = service_account.Credentials.from_service_account_info(
                 info, scopes=['https://www.googleapis.com/auth/drive.readonly']
             )
-        except Exception:
-            pass # Falha silenciosa, vai pedir arquivo
+        except: pass
 
     if creds:
-        try:
-            service = build('drive', 'v3', credentials=creds)
-            return service
-        except Exception as e:
-            st.error(f"Erro de autenticação: {e}")
-            return None
-    
+        try: return build('drive', 'v3', credentials=creds)
+        except: return None
     return None
 
 def list_videos_ready(service):
     videos = []
+    if not service: return []
     try:
         q_f = f"name = '{MONETIZA_DRIVE_FOLDER_VIDEOS}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         folders = service.files().list(q=q_f, fields="files(id)").execute().get('files', [])
-        
-        if not folders: 
-            st.warning(f"Pasta '{MONETIZA_DRIVE_FOLDER_VIDEOS}' não encontrada.")
-            return []
-            
+        if not folders: return []
         folder_id = folders[0]['id']
         q_v = f"mimeType = 'video/mp4' and '{folder_id}' in parents and trashed = false"
         files = service.files().list(q=q_v, orderBy="createdTime desc", pageSize=20, fields="files(id, name, description, createdTime)").execute().get('files', [])
         for f in files: videos.append(f)
-    except Exception as e:
-        st.error(f"Erro ao listar vídeos: {e}")
+    except: pass
     return videos
 
 def download_video(service, file_id, filename):
+    if not service: return None
     request = service.files().get_media(fileId=file_id)
     with open(filename, "wb") as f:
         f.write(request.execute())
@@ -192,28 +172,6 @@ def upload_legendado_to_gas(video_path, original_name):
 def main():
     st.title("🎬 Editor de Legendas Pro")
     
-    # --- CONEXÃO SIMPLIFICADA ---
-    st.sidebar.header("🔑 Conexão Drive")
-    
-    # Verifica se já conectou automaticamente via secrets
-    drive_service = get_drive_service() 
-    
-    uploaded_key = None
-    if not drive_service:
-        st.sidebar.warning("Secrets não encontrados.")
-        st.sidebar.markdown("### Solução Rápida:")
-        uploaded_key = st.sidebar.file_uploader("Arraste seu arquivo 'credentials.json' aqui:", type="json")
-        
-        if uploaded_key:
-            drive_service = get_drive_service(uploaded_key)
-    
-    if not drive_service:
-        st.info("👈 Por favor, faça o upload do arquivo de credenciais do Google na barra lateral para começar.")
-        st.stop()
-        
-    st.sidebar.success("✅ Conectado ao Drive!")
-    # ----------------------------
-
     # State Management
     if "current_video_path" not in st.session_state: st.session_state.current_video_path = None
     if "srt_content" not in st.session_state: st.session_state.srt_content = ""
@@ -221,36 +179,73 @@ def main():
     if "video_name" not in st.session_state: st.session_state.video_name = ""
     if "final_video_path" not in st.session_state: st.session_state.final_video_path = None
 
-    st.sidebar.divider()
-    st.sidebar.header("📁 Selecionar Vídeo")
+    # --- BARRA LATERAL: SELEÇÃO DE FONTE ---
+    st.sidebar.header("📂 Fonte do Arquivo")
+    source_option = st.sidebar.radio("Origem:", ["Google Drive", "Upload Local (PC)"], index=0)
     
-    if st.sidebar.button("🔄 Atualizar Lista"): st.rerun()
+    # --- OPÇÃO 1: GOOGLE DRIVE ---
+    if source_option == "Google Drive":
+        st.sidebar.divider()
+        st.sidebar.caption("Conexão com Drive")
+        drive_service = get_drive_service()
         
-    videos = list_videos_ready(drive_service)
-    
-    if not videos:
-        st.info("Nenhum vídeo pronto encontrado na pasta 'Monetiza_Studio_Videos_Finais'.")
-    else:
-        video_opts = {v['name']: v['id'] for v in videos}
-        selected_video_name = st.sidebar.selectbox("Vídeo:", ["Selecione..."] + list(video_opts.keys()))
-        
-        if st.sidebar.button("⬇️ Carregar Vídeo") and selected_video_name != "Selecione...":
-            vid_id = video_opts[selected_video_name]
-            with st.status("Baixando vídeo...", expanded=True) as status:
-                local_path = f"temp_{vid_id}.mp4"
-                download_video(drive_service, vid_id, local_path)
-                st.session_state.current_video_path = local_path
-                st.session_state.video_id = vid_id
-                st.session_state.video_name = selected_video_name
-                st.session_state.srt_content = "" 
-                st.session_state.final_video_path = None
-                status.update(label="Pronto!", state="complete")
-                st.rerun()
+        # Se não conectou automatico, pede JSON
+        if not drive_service:
+            uploaded_key = st.sidebar.file_uploader("Credenciais (.json)", type="json")
+            if uploaded_key: drive_service = get_drive_service(uploaded_key)
 
+        if drive_service:
+            if st.sidebar.button("🔄 Atualizar Lista"): st.rerun()
+            videos = list_videos_ready(drive_service)
+            
+            if not videos:
+                st.sidebar.info("Nenhum vídeo na pasta 'Finais'.")
+            else:
+                video_opts = {v['name']: v['id'] for v in videos}
+                sel_vid = st.sidebar.selectbox("Vídeo:", ["Selecione..."] + list(video_opts.keys()))
+                
+                if st.sidebar.button("⬇️ Carregar do Drive") and sel_vid != "Selecione...":
+                    vid_id = video_opts[sel_vid]
+                    with st.status("Baixando...", expanded=True) as status:
+                        local_path = f"temp_{vid_id}.mp4"
+                        download_video(drive_service, vid_id, local_path)
+                        st.session_state.current_video_path = local_path
+                        st.session_state.video_id = vid_id
+                        st.session_state.video_name = sel_vid
+                        st.session_state.srt_content = ""
+                        st.session_state.final_video_path = None
+                        status.update(label="Pronto!", state="complete")
+                        st.rerun()
+        else:
+            st.sidebar.warning("Drive não conectado.")
+
+    # --- OPÇÃO 2: UPLOAD LOCAL ---
+    else:
+        st.sidebar.divider()
+        uploaded_video = st.sidebar.file_uploader("Envie um vídeo (.mp4, .mov)", type=["mp4", "mov", "avi"])
+        if uploaded_video:
+            # Salva o arquivo localmente se mudou
+            if st.session_state.video_name != uploaded_video.name:
+                with st.status("Processando upload...", expanded=True) as status:
+                    local_path = f"temp_local_{int(time.time())}.mp4"
+                    with open(local_path, "wb") as f:
+                        f.write(uploaded_video.getbuffer())
+                    
+                    st.session_state.current_video_path = local_path
+                    st.session_state.video_id = "local_upload"
+                    st.session_state.video_name = uploaded_video.name
+                    st.session_state.srt_content = ""
+                    st.session_state.final_video_path = None
+                    status.update(label="Vídeo carregado!", state="complete")
+                    st.rerun()
+            else:
+                st.sidebar.success(f"Arquivo atual: {uploaded_video.name}")
+
+    # --- ÁREA PRINCIPAL (EDITOR) ---
     if st.session_state.current_video_path and os.path.exists(st.session_state.current_video_path):
         c1, c2 = st.columns([1, 1])
         with c1:
-            st.subheader("Original")
+            st.subheader("📺 Original")
             st.video(st.session_state.current_video_path)
             
             st.divider()
@@ -260,7 +255,7 @@ def main():
             with c_ia2:
                 st.write("")
                 if st.button("✨ Gerar Legendas"):
-                    with st.spinner("Processando..."):
+                    with st.spinner("Transcrevendo..."):
                         srt, _ = transcribe_audio(st.session_state.current_video_path, mod)
                         if srt:
                             st.session_state.srt_content = srt
@@ -268,7 +263,7 @@ def main():
                             st.rerun()
 
         with c2:
-            st.subheader("Editor & Render")
+            st.subheader("✏️ Editor & Render")
             if st.session_state.srt_content:
                 srt_edit = st.text_area("SRT", st.session_state.srt_content, height=250)
                 st.session_state.srt_content = srt_edit
@@ -291,7 +286,7 @@ def main():
                         ass_b = hex_to_ass_color(border)
                         style = f"Fontname=Arial,FontSize={f_size},PrimaryColour={ass_c},OutlineColour={ass_b},BackColour=&H80000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV={margin_v}"
                         
-                        out_vid = f"sub_{st.session_state.video_id}.mp4"
+                        out_vid = f"legendado_{st.session_state.video_id}.mp4"
                         cmd = ["ffmpeg", "-y", "-i", st.session_state.current_video_path, "-vf", f"subtitles={srt_path}:force_style='{style}'", "-c:a", "copy", "-c:v", "libx264", "-preset", "fast", "-crf", "23", out_vid]
                         
                         try:
@@ -299,20 +294,25 @@ def main():
                             st.session_state.final_video_path = out_vid
                             status.update(label="Sucesso!", state="complete")
                         except: status.update(label="Erro!", state="error")
+            else:
+                st.info("Gere as legendas para editar.")
 
         if st.session_state.final_video_path and os.path.exists(st.session_state.final_video_path):
             st.divider()
-            st.success("Vídeo Finalizado!")
+            st.success("Finalizado!")
             c_fin1, c_fin2 = st.columns([1.5, 1])
             with c_fin1: st.video(st.session_state.final_video_path)
             with c_fin2:
                 with open(st.session_state.final_video_path, "rb") as f:
-                    st.download_button("💾 Baixar", f, f"legendado_{st.session_state.video_name}")
+                    st.download_button("💾 Baixar MP4", f, f"legendado_{st.session_state.video_name}", mime="video/mp4")
                 if st.button("☁️ Enviar p/ Drive"):
                     with st.spinner("Enviando..."):
                         ok, msg = upload_legendado_to_gas(st.session_state.final_video_path, st.session_state.video_name)
                         if ok: st.success("Enviado!")
                         else: st.error(f"Erro: {msg}")
+
+    else:
+        st.info("👈 Escolha uma fonte na barra lateral.")
 
 if __name__ == "__main__":
     main()
