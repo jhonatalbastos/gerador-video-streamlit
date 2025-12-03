@@ -1,4 +1,4 @@
-# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO C/ INTEGRAÇÃO DO ROTEIRO
+# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO C/ INTEGRAÇÃO DO ROTEIRO E ESTILOS SALVOS
 import os
 import re
 import json
@@ -30,6 +30,8 @@ from googleapiclient.errors import HttpError
 GAS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhHJejuPBx1Ud6B10Ag_xfnJVzGpE83n7gHdUHnk4yAgrpuidw/exec"
 MONETIZA_DRIVE_FOLDER_VIDEOS = "Monetiza_Studio_Videos_Finais" 
 MONETIZA_DRIVE_FOLDER_LEGENDADOS = "Monetiza_Studio_Videos_Legendados" 
+CONFIG_FILE = "legendas_config.json" # Novo arquivo de configuração
+SAVED_FONT_FILE = "saved_custom_font.ttf" # Fonte Persistente
 
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 
@@ -41,6 +43,51 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# =========================
+# Persistência de Estilos (NOVO)
+# =========================
+def load_config():
+    default = {
+        "f_size": 60, 
+        "margin_v": 250, 
+        "color": "#FFFF00", 
+        "border": "#000000",
+        "font_style": "Padrão (Sans)"
+    }
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                saved = json.load(f)
+                default.update(saved)
+        except: pass
+    return default
+
+def save_config(settings):
+    try:
+        with open(CONFIG_FILE, "w") as f: json.dump(settings, f)
+        return True
+    except: return False
+
+def save_font_file(file_bytes):
+    try:
+        with open(SAVED_FONT_FILE, "wb") as f: f.write(file_bytes)
+        return True
+    except: return False
+
+def delete_font_file():
+    if os.path.exists(SAVED_FONT_FILE): os.remove(SAVED_FONT_FILE); return True
+    return False
+
+def resolve_font(choice):
+    """Resolve o caminho da fonte para o FFmpeg."""
+    if choice == "Upload Personalizada" and os.path.exists(SAVED_FONT_FILE):
+        return SAVED_FONT_FILE
+    
+    # Adicionar lógica de fontes padrão se necessário (não essencial para FFmpeg)
+    # Por padrão, FFmpeg usará Arial ou Sans se a fonte não for especificada ou não for encontrada.
+    # O nome "Arial" geralmente funciona.
+    return choice 
 
 # =========================
 # Utils & Helpers
@@ -84,7 +131,14 @@ def get_full_roteiro_text(roteiro_data: Dict[str, Any]) -> str:
     if 'leitura' in roteiro and 'text' in roteiro['leitura']:
         full_text += "--- LEITURA ---\n" + roteiro['leitura']['text'] + "\n\n"
         
-    # Ajuste este bloco se a estrutura do seu JSON de roteiro tiver mais blocos de texto
+    if 'reflexao' in roteiro and 'text' in roteiro['reflexao']:
+        full_text += "--- REFLEXÃO ---\n" + roteiro['reflexao']['text'] + "\n\n"
+    
+    if 'aplicacao' in roteiro and 'text' in roteiro['aplicacao']:
+        full_text += "--- APLICAÇÃO ---\n" + roteiro['aplicacao']['text'] + "\n\n"
+        
+    if 'oracao' in roteiro and 'text' in roteiro['oracao']:
+        full_text += "--- ORAÇÃO ---\n" + roteiro['oracao']['text'] + "\n\n"
     
     return full_text.strip()
 
@@ -169,7 +223,6 @@ def list_videos_ready(service):
         st.info(f"✅ Pasta encontrada (ID: {folder_id}). Buscando arquivos MP4...")
         
         # 2. Busca os arquivos MP4 dentro da pasta
-        # Filtra por arquivos que tenham 'video_final_' no nome para garantir que são Jobs Finalizados
         q_v = f"mimeType = 'video/mp4' and name contains 'video_final_' and '{folder_id}' in parents and trashed = false"
         files = service.files().list(q=q_v, orderBy="createdTime desc", pageSize=20, fields="files(id, name, description, createdTime)").execute().get('files', [])
         
@@ -196,9 +249,8 @@ def get_job_roteiro(job_id: str) -> Optional[Dict[str, Any]]:
     st.info(f"Buscando roteiro para {job_id}...")
     try:
         response = requests.get(url, timeout=10)
-        response.raise_for_status() # Levanta erro para 4xx/5xx
+        response.raise_for_status() 
         
-        # O GAS retorna o conteúdo do arquivo JSON diretamente no doGet
         data = response.json() 
         if data.get('status') == 'error':
              st.error(f"Erro GAS: {data.get('message')}")
@@ -230,7 +282,6 @@ def transcribe_audio(video_path, model_size="tiny"):
         result = model.transcribe(audio_path, language="pt")
         segments = result['segments']
         
-        # Constrói o SRT a partir da transcrição (Fallback)
         srt_content = ""
         for i, seg in enumerate(segments):
             start = format_timestamp(seg['start'])
@@ -261,7 +312,6 @@ def upload_legendado_to_gas(video_path, original_name):
         response = requests.post(GAS_SCRIPT_URL, json=payload, timeout=300)
         if response.status_code == 200:
             res = response.json()
-            # Este GAS salva na pasta 'Monetiza_Studio_Videos_Finais', o ideal seria 'Monetiza_Studio_Videos_Legendados'
             return (True, res.get("file_id")) if res.get("status") == "success" else (False, res.get("message"))
         return False, f"HTTP {response.status_code}"
     except Exception as e: return False, str(e)
@@ -272,24 +322,43 @@ def upload_legendado_to_gas(video_path, original_name):
 def main():
     st.title("🎬 Editor de Legendas Pro")
     
-    # State Management (Adicionando job_id e roteiro_data)
+    # --- State Management ---
     if "current_video_path" not in st.session_state: st.session_state.current_video_path = None
     if "srt_content" not in st.session_state: st.session_state.srt_content = ""
     if "video_id" not in st.session_state: st.session_state.video_id = None
     if "video_name" not in st.session_state: st.session_state.video_name = ""
     if "final_video_path" not in st.session_state: st.session_state.final_video_path = None
     if "drive_connected_via_secrets" not in st.session_state: st.session_state.drive_connected_via_secrets = False
-    if "job_id" not in st.session_state: st.session_state.job_id = None # Novo: ID do Job
-    if "roteiro_data" not in st.session_state: st.session_state.roteiro_data = None # Novo: Dados do Roteiro JSON
+    if "job_id" not in st.session_state: st.session_state.job_id = None
+    if "roteiro_data" not in st.session_state: st.session_state.roteiro_data = None
+    if "overlay_settings" not in st.session_state: st.session_state["overlay_settings"] = load_config() # Novo
 
-
-    # --- BARRA LATERAL: SELEÇÃO DE FONTE ---
+    sets = st.session_state["overlay_settings"]
+    
+    # --- BARRA LATERAL: FONTES E CONFIGURAÇÃO (NOVO) ---
     st.sidebar.header("📂 Fonte do Arquivo")
     source_option = st.sidebar.radio("Origem:", ["Google Drive", "Upload Local (PC)"], index=0)
     
+    st.sidebar.markdown("---")
+    st.sidebar.header("🅰️ Configuração de Fonte")
+    
+    font_up = st.sidebar.file_uploader("Upload de Fonte (.ttf)", type=["ttf"])
+    if font_up:
+        if save_font_file(font_up.getvalue()):
+            st.sidebar.success("Fonte salva! Selecione 'Upload Personalizada' no menu.")
+            st.rerun()
+            
+    font_status = "✅ Fonte Salva Encontrada" if os.path.exists(SAVED_FONT_FILE) else "⚠️ Nenhuma fonte salva"
+    st.sidebar.caption(font_status)
+
+    if st.sidebar.button("Apagar Fonte Salva"):
+        if delete_font_file():
+            st.sidebar.info("Fonte removida.")
+            st.rerun()
+
     # --- OPÇÃO 1: GOOGLE DRIVE ---
     if source_option == "Google Drive":
-        st.sidebar.divider()
+        st.sidebar.markdown("---")
         st.sidebar.caption("Conexão com Drive")
         
         drive_service = get_drive_service()
@@ -301,7 +370,6 @@ def main():
             else:
                  st.sidebar.success("Drive conectado.")
         
-        # Se não conectou automatico, pede JSON
         if not drive_service:
             st.sidebar.warning("Drive não conectado via secrets.")
             uploaded_key = st.sidebar.file_uploader("Credenciais (.json)", type="json")
@@ -311,12 +379,12 @@ def main():
 
 
         if drive_service:
-            if st.sidebar.button("🔄 Atualizar Lista"): st.rerun()
+            if st.sidebar.button("🔄 Atualizar Lista", key="update_drive_list"): st.rerun()
             
             videos = list_videos_ready(drive_service)
             
             if not videos:
-                st.sidebar.info("Nenhum vídeo listado (Verifique a área principal para diagnóstico).")
+                st.sidebar.info("Nenhum vídeo listado.")
             else:
                 video_opts = {v['name']: v['id'] for v in videos}
                 sel_vid = st.sidebar.selectbox("Vídeo:", ["Selecione..."] + list(video_opts.keys()))
@@ -324,7 +392,6 @@ def main():
                 if st.sidebar.button("⬇️ Carregar do Drive") and sel_vid != "Selecione...":
                     vid_id = video_opts[sel_vid]
                     
-                    # TENTA EXTRAIR JOB ID DO NOME DO VÍDEO
                     match = re.search(r'(JOB-[a-zA-Z0-9-]+)', sel_vid)
                     extracted_job_id = match.group(1) if match else None
 
@@ -332,14 +399,12 @@ def main():
                         local_path = f"temp_{vid_id}.mp4"
                         download_video(drive_service, vid_id, local_path)
                         
-                        # 1. Atualiza o estado do vídeo
                         st.session_state.current_video_path = local_path
                         st.session_state.video_id = vid_id
                         st.session_state.video_name = sel_vid
                         st.session_state.srt_content = ""
                         st.session_state.final_video_path = None
                         
-                        # 2. Busca o roteiro se o Job ID for encontrado
                         if extracted_job_id:
                             status.update(label="Buscando roteiro...", state="running")
                             st.session_state.job_id = extracted_job_id
@@ -348,7 +413,7 @@ def main():
                         else:
                             st.session_state.job_id = None
                             st.session_state.roteiro_data = None
-                            st.warning("Job ID não encontrado no nome do arquivo. Apenas a transcrição por IA estará disponível.")
+                            st.warning("Job ID não encontrado no nome do arquivo.")
 
                         status.update(label="Pronto!", state="complete")
                         st.rerun()
@@ -357,8 +422,7 @@ def main():
 
     # --- OPÇÃO 2: UPLOAD LOCAL ---
     else:
-        # Lógica de upload local (sem roteiro)
-        st.sidebar.divider()
+        st.sidebar.markdown("---")
         uploaded_video = st.sidebar.file_uploader("Envie um vídeo (.mp4, .mov)", type=["mp4", "mov", "avi"])
         if uploaded_video:
             if st.session_state.video_name != uploaded_video.name:
@@ -395,11 +459,11 @@ def main():
             with c_ia2:
                 st.write("")
                 
-                # Se há roteiro, o botão é para gerar timing
                 if st.session_state.roteiro_data:
+                    # Botão principal (Implementar na Etapa 3)
                     if st.button("✨ Gerar Timing (Whisper)", type="primary"):
-                        st.info("Esta função será implementada na próxima etapa. Por enquanto, use o Fallback.")
-                    # Botão para gerar a transcrição completa como fallback (se o roteiro estiver incompleto)
+                        st.error("A lógica de combinação de texto e timing será implementada na Etapa 3.")
+                    # Botão de fallback (funcional)
                     if st.button("Transcrever Áudio (Fallback)"):
                         with st.spinner("Transcrevendo...") as status:
                             srt, _ = transcribe_audio(st.session_state.current_video_path, mod)
@@ -410,8 +474,7 @@ def main():
                             else:
                                 status.update(label="Erro!", state="error")
                 
-                # Se NÃO há roteiro (upload local ou Job ID não encontrado), o botão é o padrão
-                else:
+                else: # Upload local ou Job ID não encontrado
                     if st.button("✨ Gerar Legendas"):
                         with st.spinner("Transcrevendo...") as status:
                             srt, _ = transcribe_audio(st.session_state.current_video_path, mod)
@@ -426,36 +489,48 @@ def main():
         with c2:
             st.subheader("✏️ Editor & Render")
             
-            # NOVO: Exibe o Roteiro Original (Texto Perfeito)
+            # --- ROTEIRO ORIGINAL ---
             if st.session_state.roteiro_data:
                 full_roteiro_text = get_full_roteiro_text(st.session_state.roteiro_data)
-                st.info(f"Roteiro Original (Job ID: {st.session_state.job_id})")
+                st.info(f"Roteiro Original Carregado (Job: {st.session_state.job_id})")
                 st.text_area("Texto Perfeito do Roteiro", full_roteiro_text, height=150, disabled=True)
 
             
             if st.session_state.srt_content:
                 st.markdown("##### Legendas Geradas (Ajuste o Timing aqui)")
-                # Mantemos o text_area aqui para que o usuário possa visualizar e ajustar o SRT
                 srt_edit = st.text_area("SRT", st.session_state.srt_content, height=250)
                 st.session_state.srt_content = srt_edit
                 
-                st.markdown("### Estilo")
-                col_s1, col_s2 = st.columns(2)
+                # --- CONFIGURAÇÕES DE ESTILO (NOVO) ---
+                st.markdown("### Estilo e Posição")
+                
+                col_s1, col_s2, col_s3 = st.columns(3)
                 with col_s1:
-                    f_size = st.slider("Tamanho", 10, 100, 60)
-                    margin_v = st.slider("Posição Y", 0, 500, 250)
+                    sets["font_style"] = st.selectbox("Fonte", ["Padrão (Arial)", "Upload Personalizada"], index=0)
+                    sets["f_size"] = st.slider("Tamanho", 10, 100, sets.get("f_size", 60))
                 with col_s2:
-                    color = st.color_picker("Cor", "#FFFF00")
-                    border = st.color_picker("Borda", "#000000")
-
+                    sets["margin_v"] = st.slider("Posição Y (Margem V.)", 0, 500, sets.get("margin_v", 250))
+                with col_s3:
+                    sets["color"] = st.color_picker("Cor", sets.get("color", "#FFFF00"))
+                    sets["border"] = st.color_picker("Borda", sets.get("border", "#000000"))
+                
+                if st.button("💾 Salvar Estilos"):
+                    if save_config(sets): st.success("Estilos salvos!")
+                
+                # --- RENDERIZAÇÃO ---
                 if st.button("🔥 Renderizar Final", type="primary"):
                     with st.status("Renderizando...") as status:
                         srt_path = "temp.srt"
                         with open(srt_path, "w", encoding="utf-8") as f: f.write(st.session_state.srt_content)
                         
-                        ass_c = hex_to_ass_color(color)
-                        ass_b = hex_to_ass_color(border)
-                        style = f"Fontname=Arial,FontSize={f_size},PrimaryColour={ass_c},OutlineColour={ass_b},BackColour=&H80000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV={margin_v}"
+                        # 1. Resolve a fonte
+                        font_path = resolve_font(sets["font_style"])
+                        font_name_for_style = font_path if not os.path.exists(font_path) else os.path.basename(font_path)
+                        
+                        # 2. Monta o estilo ASS/SSA
+                        ass_c = hex_to_ass_color(sets["color"])
+                        ass_b = hex_to_ass_color(sets["border"])
+                        style = f"Fontname={font_name_for_style},FontSize={sets['f_size']},PrimaryColour={ass_c},OutlineColour={ass_b},BackColour=&H80000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV={sets['margin_v']}"
                         
                         out_vid = f"legendado_{st.session_state.video_id}.mp4"
                         cmd = ["ffmpeg", "-y", "-i", st.session_state.current_video_path, "-vf", f"subtitles={srt_path}:force_style='{style}'", "-c:a", "copy", "-c:v", "libx264", "-preset", "fast", "-crf", "23", out_vid]
@@ -467,7 +542,7 @@ def main():
                         except: status.update(label="Erro!", state="error")
             else:
                 if st.session_state.roteiro_data:
-                    st.info("O roteiro foi carregado! Use 'Gerar Timing (Whisper)' para começar a edição.")
+                    st.info("O roteiro foi carregado! Use 'Transcrever Áudio (Fallback)' para gerar o SRT inicial (por enquanto).")
                 else:
                     st.info("Gere as legendas para começar a edição.")
 
