@@ -69,32 +69,66 @@ def hex_to_ass_color(hex_color):
     return f"&H00{h[4:6]}{h[2:4]}{h[0:2]}"
 
 # =========================
-# Google Drive Service
+# Google Drive Service (ATUALIZADO)
 # =========================
+_drive_service = None # Cache global para evitar re-criação
+
 def get_drive_service(json_file=None):
+    """Obtém o serviço Drive, priorizando st.secrets ou usando JSON File."""
+    global _drive_service
+    
+    if _drive_service: return _drive_service
+
     creds = None
-    if json_file is not None:
+    required_keys = ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id", "auth_uri", "token_uri", "auth_provider_x509_cert_url", "client_x509_cert_url", "universe_domain"]
+    prefix = "gcp_service_account_"
+
+    # TENTA CARREGAR DE ST.SECRETS
+    try:
+        creds_info = {}
+        found_all_secrets = True
+        for key in required_keys:
+            val = st.secrets.get(prefix + key)
+            if val is None: 
+                found_all_secrets = False
+                break
+            creds_info[key] = val
+        
+        if found_all_secrets:
+            # Substitui '\n' no private_key, se necessário
+            if "private_key" in creds_info: 
+                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+            
+            creds = service_account.Credentials.from_service_account_info(
+                creds_info, scopes=['https://www.googleapis.com/auth/drive'] # Alterado escopo para apenas Drive
+            )
+            st.session_state["drive_connected_via_secrets"] = True
+    except Exception as e:
+        # Se falhou, continua para a opção de upload
+        pass
+
+    # TENTA CARREGAR VIA UPLOAD DE JSON FILE (FALLBACK)
+    if creds is None and json_file is not None:
         try:
             file_content = json_file.getvalue().decode("utf-8")
             info = json.loads(file_content)
             creds = service_account.Credentials.from_service_account_info(
-                info, scopes=['https://www.googleapis.com/auth/drive.readonly']
+                info, scopes=['https://www.googleapis.com/auth/drive']
             )
+            st.session_state["drive_connected_via_secrets"] = False
         except Exception as e:
-            st.error(f"Erro JSON: {e}")
+            st.error(f"Erro JSON Upload: {e}")
             return None
-    elif "gcp_service_account" in st.secrets:
-        try:
-            info = dict(st.secrets["gcp_service_account"])
-            if "private_key" in info: info["private_key"] = info["private_key"].replace("\\n", "\n")
-            creds = service_account.Credentials.from_service_account_info(
-                info, scopes=['https://www.googleapis.com/auth/drive.readonly']
-            )
-        except: pass
 
     if creds:
-        try: return build('drive', 'v3', credentials=creds)
-        except: return None
+        try: 
+            _drive_service = build('drive', 'v3', credentials=creds)
+            return _drive_service
+        except Exception as e: 
+            st.error(f"Erro ao construir serviço Drive: {e}")
+            return None
+    
+    st.session_state["drive_connected_via_secrets"] = False
     return None
 
 def list_videos_ready(service):
@@ -127,6 +161,7 @@ def transcribe_audio(video_path, model_size="tiny"):
         return None, None
     try:
         audio_path = "temp_audio.wav"
+        st.info("Extraindo áudio...")
         run_cmd(["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path])
         st.info(f"Carregando modelo Whisper ({model_size})...")
         model = whisper.load_model(model_size, device="cpu")
@@ -178,6 +213,8 @@ def main():
     if "video_id" not in st.session_state: st.session_state.video_id = None
     if "video_name" not in st.session_state: st.session_state.video_name = ""
     if "final_video_path" not in st.session_state: st.session_state.final_video_path = None
+    if "drive_connected_via_secrets" not in st.session_state: st.session_state.drive_connected_via_secrets = False
+
 
     # --- BARRA LATERAL: SELEÇÃO DE FONTE ---
     st.sidebar.header("📂 Fonte do Arquivo")
@@ -187,14 +224,24 @@ def main():
     if source_option == "Google Drive":
         st.sidebar.divider()
         st.sidebar.caption("Conexão com Drive")
-        drive_service = get_drive_service()
         
+        # Tenta conectar via secrets
+        drive_service = get_drive_service()
+        uploaded_key = None
+
         # Se não conectou automatico, pede JSON
         if not drive_service:
+            st.sidebar.warning("Drive não conectado via secrets.")
             uploaded_key = st.sidebar.file_uploader("Credenciais (.json)", type="json")
-            if uploaded_key: drive_service = get_drive_service(uploaded_key)
+            if uploaded_key:
+                 drive_service = get_drive_service(uploaded_key)
+                 if drive_service: st.sidebar.success("Drive conectado via upload.")
+
 
         if drive_service:
+            if st.session_state.drive_connected_via_secrets:
+                st.sidebar.success("Drive conectado via Secrets.")
+            
             if st.sidebar.button("🔄 Atualizar Lista"): st.rerun()
             videos = list_videos_ready(drive_service)
             
@@ -217,7 +264,7 @@ def main():
                         status.update(label="Pronto!", state="complete")
                         st.rerun()
         else:
-            st.sidebar.warning("Drive não conectado.")
+            st.sidebar.error("Drive não conectado. Configure secrets ou faça upload.")
 
     # --- OPÇÃO 2: UPLOAD LOCAL ---
     else:
