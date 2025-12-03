@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Editor de Legendas (SRT)
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão Simplificada (Sem Legendas)
 import os
 import re
 import json
@@ -15,14 +15,13 @@ import shutil as _shutil
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
-import whisper  # Importação do Whisper Local
 
 # --- API Imports ---
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 try:
-    from groq import Groq  # Importação do Groq para correção
+    from groq import Groq
 except ImportError:
     Groq = None
 
@@ -55,7 +54,10 @@ def load_config():
         "effect_type": "Estático", "effect_speed": 3, # Movimento padrão agora é Estático
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
-        "sub_size": 50, "sub_color": "#FFFF00", "sub_outline_color": "#000000", "sub_y_pos": 150 
+        "sub_size": 70, # Mantido no config caso decida voltar, mas não usado
+        "sub_color": "#FFFF00", 
+        "sub_outline_color": "#000000", 
+        "sub_y_pos": 250
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -256,7 +258,7 @@ def process_job_payload(payload: Dict, temp_dir: str):
         # --- 3. ASSETS ---
         st.session_state["generated_images_blocks"] = {}
         st.session_state["generated_audios_blocks"] = {}
-        st.session_state["generated_srt_content"] = ""
+        # Legendas removidas
 
         assets = payload.get("assets", [])
         if not assets:
@@ -275,8 +277,7 @@ def process_job_payload(payload: Dict, temp_dir: str):
                     path = os.path.join(temp_dir, f"{bid}.wav")
                     with open(path, "wb") as f: f.write(raw)
                     st.session_state["generated_audios_blocks"][bid] = path
-                elif atype == "srt" and bid == "legendas":
-                    st.session_state["generated_srt_content"] = raw.decode('utf-8')
+                # Legendas removidas
             except Exception as ex: continue
                 
         return True
@@ -289,12 +290,11 @@ def process_job_payload(payload: Dict, temp_dir: str):
 # =========================
 def shutil_which(name): return _shutil.which(name)
 
-def run_cmd(cmd):
+def run_cmd(cmd, cwd=None):
     clean = [arg.replace('\u00a0', ' ').strip() if isinstance(arg, str) else arg for arg in cmd if arg]
-    # Debug: Imprime comando para verificar caminhos
-    print(f"Executando: {' '.join(clean)}")
+    print(f"Executando: {' '.join(clean)}") 
     try:
-        subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"CMD Falhou: {e.stderr.decode()}")
 
@@ -360,119 +360,15 @@ def criar_preview(w, h, texts, upload):
 
 def san(txt): return txt.replace(":", "\\:").replace("'", "") if txt else ""
 
-def whisper_srt(audio_path):
-    key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not key or not OpenAI: return None
-    try:
-        client = OpenAI(api_key=key)
-        with open(audio_path, "rb") as f:
-            return client.audio.transcriptions.create(model="whisper-1", file=f, response_format="srt", language="pt")
-    except: return None
-
-# =========================
-# Correção de Legendas com Groq
-# =========================
-def corrigir_legendas_com_groq(srt_content, roteiro_original):
-    """
-    Usa a API do Groq para corrigir erros de transcrição no SRT
-    baseando-se no roteiro original.
-    """
-    key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-    if not key or not Groq:
-        return srt_content # Retorna original se não tiver Groq
-    
-    try:
-        client = Groq(api_key=key)
-        
-        # Monta o texto de referência do roteiro
-        texto_referencia = ""
-        if roteiro_original:
-            for k in ['hook', 'leitura', 'reflexao', 'aplicacao', 'oracao']:
-                block = roteiro_original.get(k, {})
-                if block and block.get('text'):
-                    texto_referencia += f"[{k.upper()}]: {block['text']}\n"
-
-        prompt = f"""
-        Você é um assistente especializado em correção de legendas SRT.
-        Sua tarefa é corrigir erros de transcrição no arquivo SRT fornecido,
-        usando o TEXTO ORIGINAL DO ROTEIRO como referência para a ortografia correta de nomes bíblicos e termos litúrgicos.
-        
-        MANTENHA EXATAMENTE O TIMECODE (tempos) original. Apenas corrija o texto das legendas.
-        Não altere a estrutura do SRT.
-        
-        TEXTO ORIGINAL DO ROTEIRO PARA REFERÊNCIA:
-        {texto_referencia}
-        
-        ARQUIVO SRT PARA CORRIGIR:
-        {srt_content}
-        
-        Responda APENAS com o conteúdo do SRT corrigido.
-        """
-        
-        chat_completion = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
-            temperature=0.3,
-        )
-        
-        return chat_completion.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"Erro na correção do Groq: {e}")
-        return srt_content # Retorna o original em caso de erro
-
-# =========================
-# Whisper Local (Tiny)
-# =========================
-def format_timestamp(seconds):
-    """Converte segundos para formato SRT (HH:MM:SS,mmm)"""
-    millis = int((seconds - int(seconds)) * 1000)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
-
-def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
-    """Gera legendas usando Whisper Tiny localmente, com progresso."""
-    try:
-        if progress_bar: progress_bar.progress(10, text="Carregando modelo Whisper (Tiny)...")
-        
-        # Carrega o modelo tiny
-        model = whisper.load_model("tiny")
-        
-        if progress_bar: progress_bar.progress(30, text="Transcrevendo áudio...")
-        
-        # Transcreve
-        result = model.transcribe(audio_path, language="pt")
-        
-        if progress_bar: progress_bar.progress(80, text="Formatando legendas...")
-
-        # Formata para SRT
-        segments = result['segments']
-        srt_content = ""
-        for i, segment in enumerate(segments):
-            start = format_timestamp(segment['start'])
-            end = format_timestamp(segment['end'])
-            text = segment['text'].strip()
-            srt_content += f"{i+1}\n{start} --> {end}\n{text}\n\n"
-            
-        if progress_bar: progress_bar.progress(100, text="Legendas geradas!")
-        return srt_content
-    except Exception as e:
-        st.error(f"Erro no Whisper Tiny: {e}")
-        return None
-
 # =========================
 # Helper Function for Auto-Load and Process
 # =========================
 def auto_load_and_process_job(job_id: str):
-    """Carrega e processa um job automaticamente dado o ID."""
     if not job_id: return
     
-    # Define o ID na sessão
     st.session_state['drive_job_id_input'] = job_id
 
     with st.status(f"Carregando automaticamente job '{job_id}'...", expanded=True) as status_box:
-        # Limpa diretório temporário anterior
         if st.session_state.get("temp_assets_dir") and os.path.exists(st.session_state["temp_assets_dir"]):
             try:
                 _shutil.rmtree(st.session_state["temp_assets_dir"])
@@ -496,7 +392,7 @@ def auto_load_and_process_job(job_id: str):
 # =========================
 # APP MAIN
 # =========================
-if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "generated_srt_content": "", "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None})
+if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None})
 if "overlay_settings" not in st.session_state: st.session_state["overlay_settings"] = load_config()
 
 res_choice = st.sidebar.selectbox("Resolução", ["9:16 (Stories)", "16:9 (YouTube)", "1:1 (Feed)"])
@@ -539,7 +435,7 @@ with tab1:
             selected_display = st.selectbox(
                 "Selecione um Job:", 
                 options=list(opts.keys()),
-                index=None, # Começa sem seleção para forçar evento de mudança
+                index=None, 
                 placeholder="Escolha um job para carregar..."
             )
             
@@ -578,7 +474,7 @@ with tab2:
     
     with c1:
         with st.expander("Movimento"):
-            sets["effect_type"] = st.selectbox("Efeito", ["Zoom In (Ken Burns)", "Zoom Out", "Pan Esq", "Pan Dir", "Estático"], index=4) # Default Estático
+            sets["effect_type"] = st.selectbox("Efeito", ["Zoom In (Ken Burns)", "Zoom Out", "Pan Esq", "Pan Dir", "Estático"], index=4)
             sets["effect_speed"] = st.slider("Velocidade", 1, 10, 3)
         with st.expander("Texto"):
             # Adicionei 'Alegreya Sans Black' na lista
@@ -595,11 +491,6 @@ with tab2:
                 sets["line2_font"] = "Alegreya Sans Black"
                 sets["line3_font"] = "Alegreya Sans Black"
 
-        with st.expander("Legendas"):
-            sets["sub_size"] = st.slider("Tam Legenda", 20, 100, 50)
-            sets["sub_y_pos"] = st.slider("Posição Y (px do fundo)", 0, 500, 150)
-            sets["sub_color"] = st.color_picker("Cor Texto", "#FFFF00")
-            sets["sub_outline_color"] = st.color_picker("Cor Borda", "#000000")
         if st.button("Salvar Config"): save_config(sets); st.success("Salvo!")
 
     with c2:
@@ -659,45 +550,9 @@ with tab3:
                         st.rerun()
 
     st.divider()
-    use_subs = st.checkbox("Queimar Legendas", value=True)
     use_over = st.checkbox("Overlay Texto", value=True)
     
-    if st.button("Gerar Legendas (Whisper Tiny Local + Correção Groq)"):
-        prog_bar = st.progress(0, text="Iniciando Whisper...") # Barra de progresso para Legendas
-        with st.status("Transcrevendo...") as s:
-            auds = [p for p in st.session_state["generated_audios_blocks"].values() if os.path.exists(p)]
-            if not auds: s.update(label="Sem áudios!", state="error"); st.stop()
-            
-            lst = os.path.join(st.session_state["temp_assets_dir"], "list_aud.txt")
-            mst = os.path.join(st.session_state["temp_assets_dir"], "master.wav")
-            with open(lst, "w") as f: 
-                for a in auds: f.write(f"file '{a}'\n")
-            run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", mst])
-            
-            prog_bar.progress(20, text="Processando áudio mestre...")
-            
-            srt = gerar_legendas_whisper_tiny(mst, progress_bar=prog_bar) # Passa a barra para a função
-            
-            if srt:
-                prog_bar.progress(90, text="Revisando com Groq...")
-                # Corrige com Groq
-                roteiro_original = st.session_state.get("roteiro_gerado", {})
-                srt_corrigido = corrigir_legendas_com_groq(srt, roteiro_original)
-                
-                st.session_state["generated_srt_content"] = srt_corrigido
-                s.update(label="Legendas Geradas e Corrigidas!", state="complete"); 
-                prog_bar.progress(100, text="Concluído!")
-                st.rerun()
-            else: s.update(label="Erro Whisper", state="error")
-
-    # --- NOVO: ÁREA DE REVISÃO DE LEGENDAS ---
-    if st.session_state.get("generated_srt_content"):
-        with st.expander("📝 Revisar e Editar Legendas (SRT)", expanded=False):
-            edited_srt = st.text_area("Conteúdo das Legendas (SRT):", value=st.session_state["generated_srt_content"], height=300)
-            if st.button("Salvar Alterações na Legenda"):
-                st.session_state["generated_srt_content"] = edited_srt
-                st.success("Legendas atualizadas!")
-    # -----------------------------------------
+    # Legendas removidas
 
     if st.button("RENDERIZAR VÍDEO FINAL", type="primary"):
         render_prog = st.progress(0, text="Iniciando Renderização...") # Barra de progresso Render
@@ -764,7 +619,7 @@ with tab3:
                 run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", conc])
                 
                 current_step += 1
-                render_prog.progress(int((current_step / total_steps) * 100), text="Mixando Áudio e Legendas...")
+                render_prog.progress(int((current_step / total_steps) * 100), text="Mixando Áudio...")
 
                 final = os.path.join(tmp, "final.mp4")
                 mix_cmd = ["ffmpeg", "-y", "-i", conc]
@@ -777,29 +632,7 @@ with tab3:
                 else:
                     map_a = "0:a"
 
-                # FORÇANDO A CRIAÇÃO DO ARQUIVO SRT FÍSICO
-                if use_subs and st.session_state.get("generated_srt_content"):
-                    srtp = os.path.join(tmp, "subs.srt")
-                    srtp_abs = os.path.abspath(srtp)
-                    
-                    # Escreve o conteúdo da memória para o disco AGORA
-                    with open(srtp_abs, "w", encoding="utf-8") as f: 
-                        f.write(st.session_state["generated_srt_content"])
-                    
-                    # Verifica se escreveu corretamente
-                    if os.path.exists(srtp_abs) and os.path.getsize(srtp_abs) > 0:
-                        c = sets["sub_color"].lstrip("#")
-                        co = sets["sub_outline_color"].lstrip("#")
-                        ass_c = f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
-                        ass_co = f"&H00{co[4:6]}{co[2:4]}{co[0:2]}"
-                        margin_v = res['h'] - sets['sub_y_pos']
-                        style = f"FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
-                        
-                        # Caminho escapado
-                        srtp_esc = srtp_abs.replace("\\", "/").replace(":", "\\:")
-                        filter_complex.append(f"subtitles='{srtp_esc}':force_style='{style}'")
-                    else:
-                        st.warning("Falha ao escrever arquivo de legenda temporário.")
+                # Legendas removidas
 
                 if filter_complex:
                     mix_cmd.extend(["-filter_complex", ",".join(filter_complex)])
@@ -809,10 +642,14 @@ with tab3:
                 # Redução de tamanho para o vídeo final também
                 mix_cmd.extend(["-crf", "28", "-preset", "fast"])
                 
-                mix_cmd.append(final)
-                run_cmd(mix_cmd)
+                mix_cmd.append("final.mp4") # Saída relativa
                 
-                with open(final, "rb") as f:
+                # Executa o FFmpeg dentro do diretório temporário (cwd=tmp)
+                run_cmd(mix_cmd, cwd=tmp)
+                
+                final_absolute_path = os.path.join(tmp, "final.mp4")
+                
+                with open(final_absolute_path, "rb") as f:
                     st.session_state["video_final_bytes"] = BytesIO(f.read())
                 
                 render_prog.progress(100, text="Finalizado!")
