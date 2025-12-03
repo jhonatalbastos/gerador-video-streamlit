@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão Simplificada (Sem Legendas)
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão com Gerenciamento de Música de Fundo Melhorado
 import os
 import re
 import json
@@ -20,10 +20,6 @@ import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-try:
-    from groq import Groq
-except ImportError:
-    Groq = None
 
 # --- CONFIGURAÇÃO ---
 FRONTEND_AI_STUDIO_URL = "https://ai.studio/apps/drive/1gfrdHffzH67cCcZBJWPe6JfE1ZEttn6u"
@@ -54,10 +50,6 @@ def load_config():
         "effect_type": "Estático", "effect_speed": 3, # Movimento padrão agora é Estático
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
-        "sub_size": 70, # Mantido no config caso decida voltar, mas não usado
-        "sub_color": "#FFFF00", 
-        "sub_outline_color": "#000000", 
-        "sub_y_pos": 250
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -507,7 +499,7 @@ with tab3:
     st.header("Renderização")
     if not st.session_state["job_loaded_from_drive"]: st.warning("Carregue um job primeiro."); st.stop()
     
-    # Blocos Config Definition MOVED HERE - TO FIX NameError
+    # Blocos Config Definition
     blocos_config = [
         {"id": "hook", "label": "🎣 HOOK", "text_path": "hook", "prompt_path": "hook"},
         {"id": "leitura", "label": "📖 LEITURA", "text_path": "leitura", "prompt_path": "leitura"},
@@ -516,11 +508,10 @@ with tab3:
         {"id": "oracao", "label": "🙏 ORAÇÃO", "text_path": "oracao", "prompt_path": "oracao"},
     ]
     
-    # Make roteiro object available based on roteiro_gerado state
     roteiro = st.session_state.get("roteiro_gerado", {})
 
     for bid_item in blocos_config:
-        bid = bid_item["id"] # use bid for block id
+        bid = bid_item["id"]
         with st.expander(bid.upper()):
             c1, c2 = st.columns([2, 1])
             aud = st.session_state["generated_audios_blocks"].get(bid)
@@ -538,7 +529,7 @@ with tab3:
                         st.rerun()
 
             with c2: 
-                if img: st.image(img, width=150) # Reduzido para 150px como solicitado
+                if img: st.image(img, width=150)
                 else: st.info("Sem imagem")
                 img_file = st.file_uploader(f"🖼️ Enviar Imagem para {bid.upper()}", type=["png", "jpg", "jpeg"], key=f"up_img_{bid}")
                 if img_file:
@@ -552,11 +543,40 @@ with tab3:
     st.divider()
     use_over = st.checkbox("Overlay Texto", value=True)
     
+    # MÚSICA DE FUNDO (Melhorada)
+    st.subheader("🎵 Música de Fundo")
+    
+    col_music_info, col_music_action = st.columns([2, 1])
+    
+    with col_music_info:
+        if os.path.exists(SAVED_MUSIC_FILE):
+            st.success(f"✅ Música Padrão Carregada: `saved_bg_music.mp3`")
+            st.audio(SAVED_MUSIC_FILE)
+        else:
+            st.info("ℹ️ Nenhuma música de fundo definida.")
+    
+    with col_music_action:
+        # Opção de remover
+        if os.path.exists(SAVED_MUSIC_FILE):
+            if st.button("🗑️ Remover Música Atual"):
+                if delete_music_file():
+                    st.rerun()
+        
+        # Opção de upload (substitui se existir)
+        new_music = st.file_uploader("Substituir/Adicionar Música (MP3)", type=["mp3"])
+        if new_music:
+            if save_music_file(new_music.getvalue()):
+                st.success("Música salva com sucesso!")
+                time.sleep(1)
+                st.rerun()
+
+    music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, load_config().get("music_vol", 0.15))
+
     # Legendas removidas
 
     if st.button("RENDERIZAR VÍDEO FINAL", type="primary"):
-        render_prog = st.progress(0, text="Iniciando Renderização...") # Barra de progresso Render
-        eta_placeholder = st.empty() # Placeholder para ETA
+        render_prog = st.progress(0, text="Iniciando Renderização...")
+        eta_placeholder = st.empty()
         start_time = time.time()
         
         with st.status("Renderizando...", expanded=True) as s:
@@ -567,7 +587,7 @@ with tab3:
                 w, h = res["w"], res["h"]
                 f1 = resolve_font(sets["line1_font"], font_up)
                 
-                total_steps = len(blocos_config) + 3 # Blocos + Concat + Mix + Final
+                total_steps = len(blocos_config) + 3
                 current_step = 0
 
                 for bid in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]:
@@ -598,7 +618,6 @@ with tab3:
                     
                     if use_over and f1:
                         t1 = san(st.session_state.get("title_display", ""))
-                        # Adiciona borda preta de 3px (borderw=3:bordercolor=black)
                         filters.append(f"drawtext=fontfile='{f1}':text='{t1}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}")
                         t2 = san(st.session_state.get("data_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t2}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}")
@@ -632,19 +651,15 @@ with tab3:
                 else:
                     map_a = "0:a"
 
-                # Legendas removidas
-
                 if filter_complex:
                     mix_cmd.extend(["-filter_complex", ",".join(filter_complex)])
                     if "amix" in "".join(filter_complex):
                         mix_cmd.extend(["-map", "0:v", "-map", map_a])
                 
-                # Redução de tamanho para o vídeo final também
                 mix_cmd.extend(["-crf", "28", "-preset", "fast"])
                 
-                mix_cmd.append("final.mp4") # Saída relativa
+                mix_cmd.append("final.mp4")
                 
-                # Executa o FFmpeg dentro do diretório temporário (cwd=tmp)
                 run_cmd(mix_cmd, cwd=tmp)
                 
                 final_absolute_path = os.path.join(tmp, "final.mp4")
