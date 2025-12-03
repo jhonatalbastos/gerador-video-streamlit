@@ -17,7 +17,8 @@ from io import BytesIO
 from google.oauth2 import service_account # Importado conforme montagem.py
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-# Removidos os imports de OAuth para simplificar e focar no Service Account
+# CORREÇÃO: Importação das classes necessárias para o download
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload 
 
 # Tente importar Whisper (dependência externa)
 try:
@@ -185,7 +186,8 @@ def download_video(service: Any, file_id: str, filename: str):
     """Baixa um arquivo do Google Drive."""
     request = service.files().get_media(fileId=file_id)
     fh = BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
+    # MediaIoBaseDownload é o que estava faltando!
+    downloader = MediaIoBaseDownload(fh, request) 
     done = False
     while not done:
         status, done = downloader.next_chunk()
