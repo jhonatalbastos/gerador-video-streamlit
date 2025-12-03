@@ -1,4 +1,4 @@
-# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO FINAL C/ TIMING PERFEITO
+# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO FINAL C/ TIMING PERFEITO E CORREÇÃO DE SINTAXE
 import os
 import re
 import json
@@ -27,7 +27,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # --- CONFIGURAÇÃO ---
-GAS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhHJejuPBx1UdG10Ag_xfnJVzGpE83n7gHdUHnk4yAgrpuidw/exec"
+GAS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhHJejuPBx1Ud6B10Ag_xfnJVzGpE83n7gHdUHnk4yAgrpuidw/exec"
 MONETIZA_DRIVE_FOLDER_VIDEOS = "Monetiza_Studio_Videos_Finais" 
 MONETIZA_DRIVE_FOLDER_LEGENDADOS = "Monetiza_Studio_Videos_Legendados" 
 CONFIG_FILE = "legendas_config.json"
@@ -138,7 +138,7 @@ def get_full_roteiro_text(roteiro_data: Dict[str, Any]) -> str:
 
 
 # =========================
-# LÓGICA DE GERAÇÃO DE SRT PERFEITO (NOVA)
+# LÓGICA DE GERAÇÃO DE SRT PERFEITO (CORREÇÃO DE BUGS DE LÓGICA)
 # =========================
 def generate_perfect_srt(segments: List[Dict[str, Any]], full_roteiro_text: str) -> str:
     """
@@ -167,15 +167,15 @@ def generate_perfect_srt(segments: List[Dict[str, Any]], full_roteiro_text: str)
         whisper_text_len = len(seg.get('text', '').strip())
         
         # Heurística: Quantos caracteres do texto perfeito devem ser alocados para este segmento?
-        # Usamos a proporção do texto transcrito pelo Whisper:
         char_count_estimate = round((whisper_text_len / total_whisper_chars) * total_perfect_chars)
         
-        # Define o fim da fatia, garantindo que não ultrapasse o texto perfeito total
         end_char_index_raw = start_char_index + char_count_estimate
         
         # Ajuste 1: Tenta quebrar a linha em um espaço (se houver)
+        final_end_index = end_char_index_raw
+        
         if end_char_index_raw < total_perfect_chars and clean_text[end_char_index_raw] != ' ':
-            # Procura um espaço próximo (para trás) para fechar a palavra
+            # Procura um espaço próximo (para trás)
             last_space = clean_text.rfind(' ', start_char_index, end_char_index_raw)
             if last_space != -1:
                 final_end_index = last_space
@@ -186,9 +186,7 @@ def generate_perfect_srt(segments: List[Dict[str, Any]], full_roteiro_text: str)
                     final_end_index = next_space
                 else:
                     final_end_index = end_char_index_raw
-        else:
-            final_end_index = end_char_index_raw
-            
+        
         final_end_index = min(final_end_index, total_perfect_chars)
 
         text_to_use = clean_text[start_char_index:final_end_index].strip()
@@ -211,11 +209,11 @@ def generate_perfect_srt(segments: List[Dict[str, Any]], full_roteiro_text: str)
     return srt_content
 
 # =========================
-# Google Drive Service (funções omitidas por brevidade, mantidas inalteradas)
+# Google Drive Service
 # =========================
 _drive_service = None 
+
 def get_drive_service(json_file=None):
-    # Lógica mantida da Etapa 2
     global _drive_service; creds = None; required_keys = ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id", "auth_uri", "token_uri", "auth_provider_x509_cert_url", "client_x509_cert_url", "universe_domain"]; prefix = "gcp_service_account_";
     try:
         creds_info = {}; found_all_secrets = True;
@@ -241,7 +239,10 @@ def get_drive_service(json_file=None):
     return None
 
 def list_videos_ready(service):
-    videos = []; if not service: return []
+    # CORREÇÃO DA SINTAXE AQUI
+    videos = [] 
+    if not service: return []
+
     try:
         st.info("Buscando pasta 'Monetiza_Studio_Videos_Finais'..."); q_f = f"name = '{MONETIZA_DRIVE_FOLDER_VIDEOS}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         folders = service.files().list(q=q_f, fields="files(id)").execute().get('files', [])
@@ -255,7 +256,7 @@ def list_videos_ready(service):
     return videos
 
 # =========================
-# GAS JOB ROTEIRO (funções omitidas por brevidade, mantidas inalteradas)
+# GAS JOB ROTEIRO
 # =========================
 def get_job_roteiro(job_id: str) -> Optional[Dict[str, Any]]:
     """Busca o JSON do roteiro original via GAS (usando doGet)."""
@@ -269,7 +270,7 @@ def get_job_roteiro(job_id: str) -> Optional[Dict[str, Any]]:
     except json.JSONDecodeError: st.error(f"Erro ao decodificar JSON do roteiro para {job_id}. O arquivo pode estar vazio ou corrompido."); return None
 
 # =========================
-# Whisper Transcription (ajustada para apenas timing)
+# Whisper Transcription
 # =========================
 def transcribe_audio(video_path, model_size="tiny"):
     """Transcreve áudio e retorna conteúdo SRT e segmentos."""
@@ -281,7 +282,6 @@ def transcribe_audio(video_path, model_size="tiny"):
         model = whisper.load_model(model_size, device="cpu"); st.info("Transcrevendo...")
         result = model.transcribe(audio_path, language="pt"); segments = result['segments']
         
-        # MANTÉM A MONTAGEM DO SRT AQUI PARA O FALLBACK
         srt_content = "";
         for i, seg in enumerate(segments):
             start = format_timestamp(seg['start']); end = format_timestamp(seg['end']); text = seg['text'].strip()
@@ -293,7 +293,7 @@ def transcribe_audio(video_path, model_size="tiny"):
         st.error(f"Erro Transcrição: {e}"); return None, None
 
 # =========================
-# Upload Final (funções omitidas por brevidade, mantidas inalteradas)
+# Upload Final
 # =========================
 def upload_legendado_to_gas(video_path, original_name):
     try:
@@ -304,7 +304,6 @@ def upload_legendado_to_gas(video_path, original_name):
         if response.status_code == 200: res = response.json(); return (True, res.get("file_id")) if res.get("status") == "success" else (False, res.get("message"))
         return False, f"HTTP {response.status_code}"
     except Exception as e: return False, str(e)
-
 
 # =========================
 # Interface Principal
