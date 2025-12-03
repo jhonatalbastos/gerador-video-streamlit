@@ -138,7 +138,7 @@ def get_full_roteiro_text(roteiro_data: Dict[str, Any]) -> str:
 
 
 # =========================
-# LÓGICA DE GERAÇÃO DE SRT PERFEITO (CORREÇÃO DE BUGS DE LÓGICA)
+# LÓGICA DE GERAÇÃO DE SRT PERFEITO
 # =========================
 def generate_perfect_srt(segments: List[Dict[str, Any]], full_roteiro_text: str) -> str:
     """
@@ -239,17 +239,23 @@ def get_drive_service(json_file=None):
     return None
 
 def list_videos_ready(service):
-    # CORREÇÃO DA SINTAXE AQUI
+    # CORREÇÃO DA SINTAXE
     videos = [] 
     if not service: return []
 
     try:
-        st.info("Buscando pasta 'Monetiza_Studio_Videos_Finais'..."); q_f = f"name = '{MONETIZA_DRIVE_FOLDER_VIDEOS}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        st.info("Buscando pasta 'Monetiza_Studio_Videos_Finais'...")
+        q_f = f"name = '{MONETIZA_DRIVE_FOLDER_VIDEOS}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         folders = service.files().list(q=q_f, fields="files(id)").execute().get('files', [])
-        if not folders: st.error(f"ERRO: A conta de serviço NÃO encontrou a pasta '{MONETIZA_DRIVE_FOLDER_VIDEOS}'."); return []
-        folder_id = folders[0]['id']; st.info(f"✅ Pasta encontrada (ID: {folder_id}). Buscando arquivos MP4..."); q_v = f"mimeType = 'video/mp4' and name contains 'video_final_' and '{folder_id}' in parents and trashed = false"
+        if not folders: 
+            st.error(f"ERRO: A conta de serviço NÃO encontrou a pasta '{MONETIZA_DRIVE_FOLDER_VIDEOS}'.")
+            return []
+            
+        folder_id = folders[0]['id']
+        st.info(f"✅ Pasta encontrada (ID: {folder_id}). Buscando arquivos MP4...")
+        q_v = f"mimeType = 'video/mp4' and name contains 'video_final_' and '{folder_id}' in parents and trashed = false"
         files = service.files().list(q=q_v, orderBy="createdTime desc", pageSize=20, fields="files(id, name, description, createdTime)").execute().get('files', [])
-        if not files: st.warning(f"A pasta foi encontrada, mas NÃO há arquivos MP4 visíveis.");
+        if not files: st.warning(f"A pasta foi encontrada, mas NÃO há arquivos MP4 visíveis.")
         for f in files: videos.append(f)
     except HttpError as e: st.error(f"Erro da API do Drive (HTTP {e.resp.status}): Verifique se o serviço tem permissão de leitura."); return []
     except Exception as e: st.error(f"Erro inesperado ao listar vídeos: {e}"); return []
@@ -301,7 +307,9 @@ def upload_legendado_to_gas(video_path, original_name):
         video_b64 = base64.b64encode(video_bytes).decode('utf-8')
         payload = {"action": "upload_video", "job_id": "LEGENDADO_" + str(int(time.time())), "video_data": video_b64, "filename": f"LEGENDADO_{original_name}", "meta_data": {"status": "LEGENDADO", "processed_at": datetime.now().isoformat()}}
         response = requests.post(GAS_SCRIPT_URL, json=payload, timeout=300)
-        if response.status_code == 200: res = response.json(); return (True, res.get("file_id")) if res.get("status") == "success" else (False, res.get("message"))
+        if response.status_code == 200: 
+            res = response.json()
+            return (True, res.get("file_id")) if res.get("status") == "success" else (False, res.get("message"))
         return False, f"HTTP {response.status_code}"
     except Exception as e: return False, str(e)
 
@@ -375,7 +383,8 @@ def main():
                     extracted_job_id = match.group(1) if match else None
 
                     with st.status("Baixando...", expanded=True) as status:
-                        local_path = f"temp_{vid_id}.mp4"; download_video(drive_service, vid_id, local_path)
+                        local_path = f"temp_{vid_id}.mp4"
+                        download_video(drive_service, vid_id, local_path)
                         st.session_state.current_video_path = local_path; st.session_state.video_id = vid_id; st.session_state.video_name = sel_vid; st.session_state.srt_content = ""; st.session_state.final_video_path = None
                         
                         if extracted_job_id:
@@ -412,13 +421,13 @@ def main():
                 st.write("")
                 
                 if st.session_state.roteiro_data:
-                    # NOVO: Botão principal para GERAÇÃO PERFEITA
+                    # GERAÇÃO PERFEITA
                     if st.button("✨ Gerar Timing (Whisper)", type="primary"):
                         full_text = get_full_roteiro_text(st.session_state.roteiro_data)
                         if not full_text: st.error("Roteiro vazio. Use o Fallback."); st.stop()
                         
                         with st.spinner("1. Transcrevendo áudio para TIMING..."):
-                            _, segments = transcribe_audio(st.session_state.current_video_path, mod)
+                            srt_dummy, segments = transcribe_audio(st.session_state.current_video_path, mod)
                         
                         if segments:
                             with st.spinner("2. Mapeando Texto Perfeito para o Timing..."):
@@ -477,8 +486,13 @@ def main():
                 # --- RENDERIZAÇÃO ---
                 if st.button("🔥 Renderizar Final", type="primary"):
                     with st.status("Renderizando...") as status:
-                        srt_path = "temp.srt"; with open(srt_path, "w", encoding="utf-8") as f: f.write(st.session_state.srt_content)
-                        font_path = resolve_font(sets["font_style"]); font_name_for_style = font_path if not os.path.exists(font_path) else os.path.basename(font_path)
+                        # CORREÇÃO DA SINTAXE AQUI
+                        srt_path = "temp.srt"
+                        with open(srt_path, "w", encoding="utf-8") as f:
+                            f.write(st.session_state.srt_content)
+                        
+                        font_path = resolve_font(sets["font_style"])
+                        font_name_for_style = font_path if not os.path.exists(font_path) else os.path.basename(font_path)
                         ass_c = hex_to_ass_color(sets["color"]); ass_b = hex_to_ass_color(sets["border"])
                         style = f"Fontname={font_name_for_style},FontSize={sets['f_size']},PrimaryColour={ass_c},OutlineColour={ass_b},BackColour=&H80000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV={sets['margin_v']}"
                         
