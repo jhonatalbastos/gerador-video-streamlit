@@ -1,4 +1,4 @@
-# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO COM UPLOAD LOCAL
+# pages/4_🎬_Editor_Legendas.py - Editor de Legendas - VERSÃO FINAL (C/Secrets e Diagnóstico)
 import os
 import re
 import json
@@ -27,6 +27,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # --- CONFIGURAÇÃO ---
+# Se a sua URL GAS mudou, atualize aqui
 GAS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx5DZ52ohxKPl6Lh0DnkhHJejuPBx1Ud6B10Ag_xfnJVzGpE83n7gHdUHnk4yAgrpuidw/exec"
 MONETIZA_DRIVE_FOLDER_VIDEOS = "Monetiza_Studio_Videos_Finais" 
 MONETIZA_DRIVE_FOLDER_LEGENDADOS = "Monetiza_Studio_Videos_Legendados" 
@@ -66,10 +67,11 @@ def format_timestamp(seconds):
 def hex_to_ass_color(hex_color):
     h = hex_color.lstrip('#')
     if len(h) != 6: return "&HFFFFFF&"
+    # ASS usa formato BGR em hexadecimal
     return f"&H00{h[4:6]}{h[2:4]}{h[0:2]}"
 
 # =========================
-# Google Drive Service (ATUALIZADO)
+# Google Drive Service
 # =========================
 _drive_service = None # Cache global para evitar re-criação
 
@@ -100,11 +102,10 @@ def get_drive_service(json_file=None):
                 creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
             
             creds = service_account.Credentials.from_service_account_info(
-                creds_info, scopes=['https://www.googleapis.com/auth/drive'] # Alterado escopo para apenas Drive
+                creds_info, scopes=['https://www.googleapis.com/auth/drive'] 
             )
             st.session_state["drive_connected_via_secrets"] = True
     except Exception as e:
-        # Se falhou, continua para a opção de upload
         pass
 
     # TENTA CARREGAR VIA UPLOAD DE JSON FILE (FALLBACK)
@@ -132,17 +133,40 @@ def get_drive_service(json_file=None):
     return None
 
 def list_videos_ready(service):
+    """Lista vídeos para legenda na pasta final e adiciona diagnóstico."""
     videos = []
     if not service: return []
+    
     try:
+        # 1. Busca a pasta 'Monetiza_Studio_Videos_Finais'
+        st.info("Buscando pasta 'Monetiza_Studio_Videos_Finais'...")
         q_f = f"name = '{MONETIZA_DRIVE_FOLDER_VIDEOS}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         folders = service.files().list(q=q_f, fields="files(id)").execute().get('files', [])
-        if not folders: return []
+        
+        if not folders:
+            st.error(f"ERRO: A conta de serviço NÃO encontrou a pasta '{MONETIZA_DRIVE_FOLDER_VIDEOS}'.")
+            return []
+            
         folder_id = folders[0]['id']
+        # MENSAGEM DE DIAGNÓSTICO IMPORTANTE:
+        st.info(f"✅ Pasta encontrada (ID: {folder_id}). Buscando arquivos MP4...")
+        
+        # 2. Busca os arquivos MP4 dentro da pasta
         q_v = f"mimeType = 'video/mp4' and '{folder_id}' in parents and trashed = false"
         files = service.files().list(q=q_v, orderBy="createdTime desc", pageSize=20, fields="files(id, name, description, createdTime)").execute().get('files', [])
+        
+        if not files:
+            st.warning(f"A pasta foi encontrada, mas NÃO há arquivos MP4 visíveis. Isso PODE ser um problema de PERMISSÃO. Certifique-se de que o e-mail da sua conta de serviço foi COMPARTILHADO com a pasta.")
+        
         for f in files: videos.append(f)
-    except: pass
+        
+    except HttpError as e:
+        st.error(f"Erro da API do Drive (HTTP {e.resp.status}): Verifique se o serviço tem permissão de leitura.")
+        return []
+    except Exception as e:
+        st.error(f"Erro inesperado ao listar vídeos: {e}")
+        return []
+        
     return videos
 
 def download_video(service, file_id, filename):
@@ -164,7 +188,8 @@ def transcribe_audio(video_path, model_size="tiny"):
         st.info("Extraindo áudio...")
         run_cmd(["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path])
         st.info(f"Carregando modelo Whisper ({model_size})...")
-        model = whisper.load_model(model_size, device="cpu")
+        # Força o device=cpu para evitar problemas de compatibilidade em alguns ambientes
+        model = whisper.load_model(model_size, device="cpu") 
         st.info("Transcrevendo...")
         result = model.transcribe(audio_path, language="pt")
         segments = result['segments']
@@ -194,6 +219,7 @@ def upload_legendado_to_gas(video_path, original_name):
             "filename": f"LEGENDADO_{original_name}",
             "meta_data": {"status": "LEGENDADO", "processed_at": datetime.now().isoformat()}
         }
+        # Nota: Esta ação precisaria de uma pasta diferente no GAS (Monetiza_Studio_Videos_Legendados)
         response = requests.post(GAS_SCRIPT_URL, json=payload, timeout=300)
         if response.status_code == 200:
             res = response.json()
@@ -229,6 +255,13 @@ def main():
         drive_service = get_drive_service()
         uploaded_key = None
 
+        # Mensagens de status na barra lateral
+        if drive_service:
+            if st.session_state.drive_connected_via_secrets:
+                st.sidebar.success("Drive conectado via Secrets.")
+            else:
+                 st.sidebar.success("Drive conectado.")
+        
         # Se não conectou automatico, pede JSON
         if not drive_service:
             st.sidebar.warning("Drive não conectado via secrets.")
@@ -239,14 +272,13 @@ def main():
 
 
         if drive_service:
-            if st.session_state.drive_connected_via_secrets:
-                st.sidebar.success("Drive conectado via Secrets.")
-            
             if st.sidebar.button("🔄 Atualizar Lista"): st.rerun()
+            
+            # Chama a função de lista com diagnóstico
             videos = list_videos_ready(drive_service)
             
             if not videos:
-                st.sidebar.info("Nenhum vídeo na pasta 'Finais'.")
+                st.sidebar.info("Nenhum vídeo listado (Verifique a área principal para diagnóstico).")
             else:
                 video_opts = {v['name']: v['id'] for v in videos}
                 sel_vid = st.sidebar.selectbox("Vídeo:", ["Selecione..."] + list(video_opts.keys()))
