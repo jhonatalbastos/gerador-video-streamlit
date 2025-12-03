@@ -26,6 +26,10 @@ try:
 except Exception:
     whisper = None
 
+# suppress the specific whisper FP16 warning when running on CPU (normal on Streamlit Cloud)
+import warnings
+warnings.filterwarnings("ignore", message="FP16 is not supported on CPU; using FP32 instead")
+
 # --- API Imports ---
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -36,7 +40,7 @@ FRONTEND_AI_STUDIO_URL = "https://ai.studio/apps/drive/1gfrdHffzH67cCcZBJWPe6JfE
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 CONFIG_FILE = "overlay_config.json"
 SAVED_MUSIC_FILE = "saved_bg_music.mp3"
-SAVED_FONT_FILE = "saved_custom_font.ttf" # Arquivo de fonte persistente
+SAVED_FONT_FILE = "saved_custom_font.ttf"  # Arquivo de fonte persistente
 MONETIZA_DRIVE_FOLDER_NAME = "Monetiza_Studio_Jobs"
 
 # =========================
@@ -62,33 +66,42 @@ def load_config():
         # Nova opção para legendas dinâmicas (habilitada por padrão)
         "dynamic_subtitles": True,
         "subtitle_max_words": 6,
-        "subtitle_base_duration": 0.9
+        "subtitle_base_duration": 0.9,
+        # subtitle display defaults
+        "subtitle_font": "Padrão (Sans)",
+        "subtitle_size": 40,
+        "subtitle_color": "#FFFFFF",
+        "subtitle_margin_percent": 25
     }
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
                 saved = json.load(f)
                 default.update(saved)
-        except: pass
+        except:
+            pass
     return default
 
 def save_config(settings):
     try:
         with open(CONFIG_FILE, "w") as f: json.dump(settings, f)
         return True
-    except: return False
+    except:
+        return False
 
 def save_music_file(file_bytes):
     try:
         with open(SAVED_MUSIC_FILE, "wb") as f: f.write(file_bytes)
         return True
-    except: return False
+    except:
+        return False
 
 def save_font_file(file_bytes):
     try:
         with open(SAVED_FONT_FILE, "wb") as f: f.write(file_bytes)
         return True
-    except: return False
+    except:
+        return False
 
 def delete_music_file():
     if os.path.exists(SAVED_MUSIC_FILE): os.remove(SAVED_MUSIC_FILE); return True
@@ -113,7 +126,9 @@ def get_drive_service():
             creds_info = {}
             for key in required_keys:
                 val = st.secrets.get(prefix + key)
-                if val is None: st.error(f"Falta a chave: {prefix + key}"); st.stop()
+                if val is None:
+                    st.error(f"Falta a chave: {prefix + key}")
+                    st.stop()
                 creds_info[key] = val
 
             creds = service_account.Credentials.from_service_account_info(
@@ -121,7 +136,8 @@ def get_drive_service():
             )
             _drive_service = build('drive', 'v3', credentials=creds)
         except Exception as e:
-            st.error(f"Erro Drive API: {e}"); st.stop()
+            st.error(f"Erro Drive API: {e}")
+            st.stop()
     return _drive_service
 
 def get_resolution_params(choice: str) -> dict:
@@ -138,23 +154,25 @@ def find_file_in_drive_folder(service, file_name: str, folder_name: str) -> Opti
         folders = service.files().list(q=q_f, fields="files(id)").execute().get('files', [])
         if not folders: return None
         folder_id = folders[0]['id']
-        
+
         q_file = f"name = '{file_name}' and mimeType = 'application/json' and '{folder_id}' in parents and trashed = false"
         files = service.files().list(q=q_file, fields="files(id, name)").execute().get('files', [])
         return files[0]['id'] if files else None
-    except: return None
+    except:
+        return None
 
 def download_file_content(service, file_id: str) -> Optional[str]:
     try:
         request = service.files().get_media(fileId=file_id)
         return request.execute().decode('utf-8')
-    except: return None
+    except:
+        return None
 
 def list_recent_jobs(limit: int = 15) -> List[Dict]:
     service = get_drive_service()
     if not service: return []
     jobs_list = []
-    
+
     try:
         q_f = f"name = '{MONETIZA_DRIVE_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         folders = service.files().list(q=q_f, fields="files(id)").execute().get('files', [])
@@ -166,14 +184,14 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
             f"'{folder_id}' in parents and "
             f"trashed = false"
         )
-        
+
         results = service.files().list(
-            q=query_file, 
-            orderBy="createdTime desc", 
-            pageSize=50, 
+            q=query_file,
+            orderBy="createdTime desc",
+            pageSize=50,
             fields="files(id, name, createdTime, description)"
         ).execute()
-        
+
         files = results.get('files', [])
 
         for f in files:
@@ -190,10 +208,11 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
                         "job_id": jid,
                         "file_id": f['id']
                     })
-                except: continue
-            
+                except:
+                    continue
+
             if len(jobs_list) >= limit: break
-                
+
     except Exception as e:
         st.error(f"Erro ao listar: {e}")
         return []
@@ -212,7 +231,7 @@ def process_job_payload(payload: Dict, temp_dir: str):
     try:
         st.session_state["roteiro_gerado"] = payload.get("roteiro", {})
         meta = payload.get("meta_dados", {})
-        
+
         # --- 1. DATA (Formatação com Ponto) ---
         d_raw = meta.get("data", "")
         if re.match(r"\d{4}-\d{2}-\d{2}", d_raw):
@@ -223,7 +242,7 @@ def process_job_payload(payload: Dict, temp_dir: str):
                 st.session_state["data_display"] = d_raw.replace('/', '.')
         else:
             st.session_state["data_display"] = d_raw.replace('/', '.')
-            
+
         # --- 2. TÍTULO E REFERÊNCIA ---
         raw_ref = meta.get("ref", "")
         title = "EVANGELHO"
@@ -233,14 +252,14 @@ def process_job_payload(payload: Dict, temp_dir: str):
             parts = raw_ref.split(" - ", 1)
             tipo_raw = parts[0]
             clean_ref = parts[1]
-            
+
             if "1ª" in tipo_raw or "Primeira" in tipo_raw: title = "1ª LEITURA"
             elif "2ª" in tipo_raw or "Segunda" in tipo_raw: title = "2ª LEITURA"
             elif "Salmo" in tipo_raw: title = "SALMO"
         else:
             if "Salmo" in raw_ref: title = "SALMO"
             elif "Leitura" in raw_ref: title = "1ª LEITURA"
-        
+
         patterns_to_remove = [
             r"^(Primeira|Segunda|1ª|2ª)\s*Leitura\s*:\s*",
             r"^Leitura\s*(do|da)\s*.*:\s*",
@@ -276,8 +295,9 @@ def process_job_payload(payload: Dict, temp_dir: str):
                     path = os.path.join(temp_dir, f"{bid}.wav")
                     with open(path, "wb") as f: f.write(raw)
                     st.session_state["generated_audios_blocks"][bid] = path
-            except Exception as ex: continue
-                
+            except Exception as ex:
+                continue
+
         return True
     except Exception as e:
         st.error(f"Erro processando payload: {e}")
@@ -290,7 +310,7 @@ def shutil_which(name): return _shutil.which(name)
 
 def run_cmd(cmd, cwd=None):
     clean = [arg.replace('\u00a0', ' ').strip() if isinstance(arg, str) else arg for arg in cmd if arg]
-    print(f"Executando: {' '.join(clean)}") 
+    print(f"Executando: {' '.join(clean)}")
     try:
         subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
     except subprocess.CalledProcessError as e:
@@ -302,7 +322,8 @@ def get_audio_duration(path):
         cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
         out = subprocess.check_output(cmd).decode().strip()
         return float(out)
-    except: return 5.0
+    except:
+        return 5.0
 
 # Whisper model singleton
 _whisper_model = None
@@ -313,7 +334,8 @@ def load_whisper_model():
         if whisper is None:
             st.warning("Whisper não está instalado. Instale 'whisper' para habilitar transcrição local.")
             return None
-        _whisper_model = whisper.load_model("tiny")
+        # force CPU device to avoid GPU lookups and ensure consistent behavior
+        _whisper_model = whisper.load_model("tiny", device="cpu")
     return _whisper_model
 
 def transcribe_with_whisper(path: str, language: str = 'pt') -> List[Dict[str, Any]]:
@@ -429,8 +451,8 @@ def resolve_font(choice, upload):
          return SAVED_FONT_FILE
 
     sys_fonts = {
-        "Padrão (Sans)": ["arial.ttf", "DejaVuSans.ttf"], 
-        "Serif": ["times.ttf"], 
+        "Padrão (Sans)": ["arial.ttf", "DejaVuSans.ttf"],
+        "Serif": ["times.ttf"],
         "Monospace": ["courier.ttf"],
     }
     font_list = sys_fonts.get(choice, [])
@@ -442,7 +464,7 @@ def get_main_title(ref_text: str) -> str:
     if "1ª leitura" in ref or "primeira leitura" in ref: return "1ª LEITURA"
     if "2ª leitura" in ref or "segunda leitura" in ref: return "2ª LEITURA"
     if "salmo" in ref: return "SALMO"
-    return "EVANGELHO" 
+    return "EVANGELHO"
 
 def criar_preview(w, h, texts, upload):
     img = Image.new("RGB", (w, h), "black")
@@ -465,7 +487,7 @@ def san(txt): return txt.replace(":", "\\:").replace("'", "") if txt else ""
 # =========================
 def auto_load_and_process_job(job_id: str):
     if not job_id: return
-    
+
     st.session_state['drive_job_id_input'] = job_id
 
     with st.status(f"Carregando automaticamente job '{job_id}'...", expanded=True) as status_box:
@@ -473,10 +495,10 @@ def auto_load_and_process_job(job_id: str):
             try:
                 _shutil.rmtree(st.session_state["temp_assets_dir"])
             except: pass
-        
+
         temp_assets_dir = tempfile.mkdtemp()
         payload = load_job_from_drive(job_id)
-        
+
         if payload and process_job_payload(payload, temp_assets_dir):
             st.session_state.update({"job_loaded_from_drive": True, "temp_assets_dir": temp_assets_dir})
             status_box.update(label=f"✅ Job carregado com sucesso!", state="complete")
@@ -492,8 +514,10 @@ def auto_load_and_process_job(job_id: str):
 # =========================
 # APP MAIN
 # =========================
-if "roteiro_gerado" not in st.session_state: st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None})
-if "overlay_settings" not in st.session_state: st.session_state["overlay_settings"] = load_config()
+if "roteiro_gerado" not in st.session_state:
+    st.session_state.update({"roteiro_gerado": None, "generated_images_blocks": {}, "generated_audios_blocks": {}, "video_final_bytes": None, "meta_dados": {}, "data_display": "", "ref_display": "", "title_display": "EVANGELHO", "lista_jobs": [], "job_loaded_from_drive": False, "temp_assets_dir": None})
+if "overlay_settings" not in st.session_state:
+    st.session_state["overlay_settings"] = load_config()
 
 res_choice = st.sidebar.selectbox("Resolução", ["9:16 (Stories)", "16:9 (YouTube)", "1:1 (Feed)"])
 
@@ -505,7 +529,7 @@ font_up = st.sidebar.file_uploader("Upload de Fonte (.ttf)", type=["ttf"])
 if font_up:
     if save_font_file(font_up.getvalue()):
         st.sidebar.success("Fonte salva! Selecione 'Upload Personalizada' ou 'Alegreya Sans Black' no menu.")
-        
+
 font_status = "✅ Fonte Salva Encontrada" if os.path.exists(SAVED_FONT_FILE) else "⚠️ Nenhuma fonte salva"
 st.sidebar.caption(font_status)
 
@@ -520,39 +544,40 @@ tab1, tab2, tab3 = st.tabs(["📥 Receber Job", "🎚️ Overlay", "🎥 Renderi
 with tab1:
     st.header("📥 Central de Recepção")
     st.markdown(f"[Ir para AI Studio (Produção)]({FRONTEND_AI_STUDIO_URL})")
-    
+
     c1, c2 = st.columns([1.5, 1])
     with c1:
         if st.button("🔄 Buscar Jobs Prontos no Drive"):
             with st.spinner("Filtrando jobs 'COMPLETE'..."):
                 st.session_state['lista_jobs'] = list_recent_jobs(15)
-        
+
         if st.session_state['lista_jobs']:
             opts = {j['display']: j['job_id'] for j in st.session_state['lista_jobs']}
             selected_display = st.selectbox(
-                "Selecione um Job:", 
+                "Selecione um Job:",
                 options=list(opts.keys()),
-                index=None, 
+                index=None,
                 placeholder="Escolha um job para carregar..."
             )
             if selected_display:
                 selected_id = opts[selected_display]
                 if selected_id != st.session_state.get('drive_job_id_input'):
-                     auto_load_and_process_job(selected_id)
-        else: st.info("Nenhum job pronto encontrado.")
+                    auto_load_and_process_job(selected_id)
+        else:
+            st.info("Nenhum job pronto encontrado.")
 
     with c2:
-        jid_in = st.text_input("ID Manual:", key="drive_job_id_input_manual") 
+        jid_in = st.text_input("ID Manual:", key="drive_job_id_input_manual")
         if st.button("Baixar ID Manual", disabled=not jid_in):
-             auto_load_and_process_job(jid_in)
+            auto_load_and_process_job(jid_in)
 
     if st.session_state["job_loaded_from_drive"]:
         st.success(f"Job Ativo")
         c1, c2, c3 = st.columns(3)
-        with c1: 
+        with c1:
             val = st.text_input("Título (Linha 1)", st.session_state["title_display"])
             if val != st.session_state["title_display"]: st.session_state["title_display"] = val
-        with c2: 
+        with c2:
             val = st.text_input("Data (Linha 2)", st.session_state["data_display"])
             if val != st.session_state["data_display"]: st.session_state["data_display"] = val
         with c3:
@@ -564,7 +589,7 @@ with tab2:
     st.header("Editor Visual")
     c1, c2 = st.columns(2)
     sets = st.session_state["overlay_settings"]
-    
+
     with c1:
         with st.expander("Movimento"):
             sets["effect_type"] = st.selectbox("Efeito", ["Zoom In (Ken Burns)", "Zoom Out", "Pan Esq", "Pan Dir", "Estático"], index=4)
@@ -577,12 +602,14 @@ with tab2:
             sets["line2_y"] = st.slider("Y L2", 0, 800, sets.get("line2_y", 250))
             sets["line3_size"] = st.slider("Tam L3", 10, 100, sets.get("line3_size", 50))
             sets["line3_y"] = st.slider("Y L3", 0, 800, sets.get("line3_y", 350))
-            
+
             if sets["line1_font"] == "Alegreya Sans Black":
                 sets["line2_font"] = "Alegreya Sans Black"
                 sets["line3_font"] = "Alegreya Sans Black"
 
-        if st.button("Salvar Config"): save_config(sets); st.success("Salvo!")
+        if st.button("Salvar Config"):
+            save_config(sets)
+            st.success("Salvo!")
 
     with c2:
         res = get_resolution_params(res_choice)
@@ -596,8 +623,10 @@ with tab2:
 # TAB 3
 with tab3:
     st.header("Renderização")
-    if not st.session_state["job_loaded_from_drive"]: st.warning("Carregue um job primeiro."); st.stop()
-    
+    if not st.session_state["job_loaded_from_drive"]:
+        st.warning("Carregue um job primeiro.")
+        st.stop()
+
     blocos_config = [
         {"id": "hook", "label": "🎣 HOOK", "text_path": "hook", "prompt_path": "hook"},
         {"id": "leitura", "label": "📖 LEITURA", "text_path": "leitura", "prompt_path": "leitura"},
@@ -605,7 +634,7 @@ with tab3:
         {"id": "aplicacao", "label": "🌟 APLICAÇÃO", "text_path": "aplicacao", "prompt_path": "aplicacao"},
         {"id": "oracao", "label": "🙏 ORAÇÃO", "text_path": "oracao", "prompt_path": "oracao"},
     ]
-    
+
     roteiro = st.session_state.get("roteiro_gerado", {})
 
     for bid_item in blocos_config:
@@ -614,7 +643,7 @@ with tab3:
             c1, c2 = st.columns([2, 1])
             aud = st.session_state["generated_audios_blocks"].get(bid)
             img = st.session_state["generated_images_blocks"].get(bid)
-            with c1: 
+            with c1:
                 if aud: st.audio(aud)
                 else: st.info("Sem áudio")
                 aud_file = st.file_uploader(f"🎤 Enviar Áudio para {bid.upper()}", type=["mp3", "wav"], key=f"up_aud_{bid}")
@@ -626,7 +655,7 @@ with tab3:
                         st.success("Áudio atualizado!")
                         st.rerun()
 
-            with c2: 
+            with c2:
                 if img: st.image(img, width=150)
                 else: st.info("Sem imagem")
                 img_file = st.file_uploader(f"🖼️ Enviar Imagem para {bid.upper()}", type=["png", "jpg", "jpeg"], key=f"up_img_{bid}")
@@ -640,31 +669,34 @@ with tab3:
 
     st.divider()
     use_over = st.checkbox("Overlay Texto", value=True)
-    
+
     # MÚSICA DE FUNDO (Melhorada)
     st.subheader("🎵 Música de Fundo")
-    
+
     col_music_info, col_music_action = st.columns([2, 1])
-    
+
     with col_music_info:
         if os.path.exists(SAVED_MUSIC_FILE):
             st.success(f"✅ Música Padrão Carregada: `saved_bg_music.mp3`")
             st.audio(SAVED_MUSIC_FILE)
         else:
             st.info("ℹ️ Nenhuma música de fundo definida.")
-    
+
     with col_music_action:
         if os.path.exists(SAVED_MUSIC_FILE):
             if st.button("🗑️ Remover Música Atual"):
                 if delete_music_file():
                     st.rerun()
-        
+
         new_music = st.file_uploader("Substituir/Adicionar Música (MP3)", type=["mp3"])
         if new_music:
             if save_music_file(new_music.getvalue()):
                 st.success("Música salva com sucesso!")
                 time.sleep(1)
                 st.rerun()
+
+    # Checkbox explícito para incluir música no mix final
+    include_music = st.checkbox("Incluir música de fundo no vídeo final", value=os.path.exists(SAVED_MUSIC_FILE))
 
     music_vol = st.slider("Volume da Música (em relação à voz)", 0.0, 1.0, load_config().get("music_vol", 0.15))
 
@@ -679,11 +711,22 @@ with tab3:
     base_dur = st.slider("Duração base por bloco (segundos)", 0.3, 2.0, float(sets.get("subtitle_base_duration", 0.9)))
     sets["subtitle_base_duration"] = float(base_dur)
 
+    # Subtitle style controls (fonte, tamanho, cor, margem)
+    st.markdown("**Configuração das legendas**")
+    sub_font = st.selectbox("Fonte das legendas", ["Padrão (Sans)", "Alegreya Sans Black", "Serif", "Upload Personalizada"], index=0)
+    sets["subtitle_font"] = sub_font
+    sub_size = st.slider("Tamanho da legenda", 12, 80, int(sets.get("subtitle_size", 40)))
+    sets["subtitle_size"] = int(sub_size)
+    sub_color = st.color_picker("Cor da legenda", value=sets.get("subtitle_color", "#FFFFFF"))
+    sets["subtitle_color"] = sub_color
+    sub_margin_pct = st.slider("Margem vertical (percentual da altura)", 5, 50, int(sets.get("subtitle_margin_percent", 25)))
+    sets["subtitle_margin_percent"] = int(sub_margin_pct)
+
     if st.button("RENDERIZAR VÍDEO FINAL", type="primary"):
         render_prog = st.progress(0, text="Iniciando Renderização...")
         eta_placeholder = st.empty()
         start_time = time.time()
-        
+
         with st.status("Renderizando...", expanded=True) as s:
             try:
                 tmp = tempfile.mkdtemp()
@@ -691,7 +734,7 @@ with tab3:
                 res = get_resolution_params(res_choice)
                 w, h = res["w"], res["h"]
                 f1 = resolve_font(sets["line1_font"], font_up)
-                
+
                 total_steps = len(blocos_config) + 4
                 current_step = 0
 
@@ -703,24 +746,24 @@ with tab3:
                         eta = (elapsed / progress_pct) * (100 - progress_pct)
                         eta_placeholder.text(f"ETA: ~{int(eta)} segundos restantes")
                     render_prog.progress(progress_pct, text=f"Renderizando clipe: {bid.upper()}...")
-                    
+
                     aud = st.session_state["generated_audios_blocks"].get(bid)
                     img = st.session_state["generated_images_blocks"].get(bid)
                     if not aud or not img: continue
-                    
+
                     dur = get_audio_duration(aud)
                     out = os.path.join(tmp, f"{bid}.mp4")
-                    
-                    vf = f"scale={w}x{h}" 
+
+                    vf = f"scale={w}x{h}"
                     if sets["effect_type"] == "Zoom In (Ken Burns)":
                         vf = f"zoompan=z='min(zoom+0.0015,1.5)':d={int(dur*25)}:s={w}x{h}:fps=25"
                     elif sets["effect_type"] == "Zoom Out":
                         vf = f"zoompan=z='max(1.5-0.0015*on,1)':d={int(dur*25)}:s={w}x{h}:fps=25"
                     elif sets["effect_type"] == "Pan Esq":
                         vf = f"zoompan=z=1.2:x='min(x+1,iw-iw/1.2)':y='(ih-ih/1.2)/2':d={int(dur*25)}:s={w}x{h}:fps=25"
-                    
+
                     filters = [vf, f"fade=t=in:st=0:d=0.5,fade=t=out:st={dur-0.5}:d=0.5"]
-                    
+
                     # Se habilitado, gera SRT dinâmico com Whisper + Groq e adiciona ao filtro
                     srt_path = None
                     if sets.get("dynamic_subtitles"):
@@ -745,7 +788,8 @@ with tab3:
                                 if words:
                                     # cria segmentos com interpolação linear pelo tempo total
                                     total_dur = sum([float(s.get('end',0)) - float(s.get('start',0)) for s in segments]) or dur
-                                    if total_dur <= 0: total_dur = dur
+                                    if total_dur <= 0:
+                                        total_dur = dur
                                     # vamos criar um único 'pseudo-segment' com o texto revisado cobrindo todo o áudio
                                     segments = [{"start": 0.0, "end": total_dur, "text": reviewed}]
 
@@ -762,13 +806,26 @@ with tab3:
                         t2 = san(st.session_state.get("data_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t2}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}")
                         t3 = san(st.session_state.get("ref_display", ""))
-                        filters.append(f"drawtext=fontfile='{f1}':text='{t3}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
+                        filters.append(f"drawtext=fontfile='{f1}':text='{t3}':fontcolor=white;borderw=3:bordercolor=black:fontsize={sets['line3_size']}:x=(w-text_w)/2:y={sets['line3_y']}")
 
                     # Se geramos um SRT, adiciona ao final dos filtros (subtitles deve ser aplicado antes do drawtext que queremos sobrepor ou depois conforme necessidade)
                     if srt_path:
-                        # Force-style aproximação: centralizado, contorno preto, tamanho baseado na linha 2
-                        style = f"Fontsize={sets.get('line2_size',40)},Alignment=2,OutlineColour=&H000000&,BorderStyle=3,Outline=4"
-                        # Escapa apóstrofos no path
+                        # Force-style mais flexível: usa configurações do usuário para fontsize, cor e margem vertical
+                        def hex_to_ass(hex_color: str) -> str:
+                            c = hex_color.lstrip('#')
+                            if len(c) != 6:
+                                return '&HFFFFFF&'
+                            r, g, b = c[0:2], c[2:4], c[4:6]
+                            return f"&H{b.upper()}{g.upper()}{r.upper()}&"
+
+                        ass_color = hex_to_ass(sets.get('subtitle_color', '#FFFFFF'))
+                        # margem vertical em pixels (percentual da altura do vídeo)
+                        try:
+                            margin_v = int((sets.get('subtitle_margin_percent', 25) / 100.0) * h)
+                        except:
+                            margin_v = 200
+                        fontname = sets.get('subtitle_font', 'Padrão (Sans)')
+                        style = f"Fontname={fontname},Fontsize={sets.get('subtitle_size',40)},PrimaryColour={ass_color},OutlineColour=&H000000&,BorderStyle=3,Outline=4,Alignment=2,MarginV={margin_v}"
                         safe_srt_path = srt_path.replace("'", "\\'")
                         filters.append(f"subtitles={safe_srt_path}:force_style='{style}'")
 
@@ -778,25 +835,33 @@ with tab3:
 
                 current_step += 1
                 render_prog.progress(int((current_step / total_steps) * 100), text="Concatenando clipes...")
-                
+
                 lst = os.path.join(tmp, "list.txt")
                 with open(lst, "w") as f:
-                    for c in clips: f.write(f"file '{c}'\n")
-                
+                    for c in clips:
+                        f.write(f"file '{c}'\n")
+
                 conc = os.path.join(tmp, "concat.mp4")
                 run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", conc])
-                
+
                 current_step += 1
                 render_prog.progress(int((current_step / total_steps) * 100), text="Mixando Áudio...")
 
+                # --------- robust music handling: copy music to tmp and include only if checkbox enabled and file exists
                 final = os.path.join(tmp, "final.mp4")
                 mix_cmd = ["ffmpeg", "-y", "-i", conc]
                 filter_complex = []
-                
-                if os.path.exists(SAVED_MUSIC_FILE):
-                    mix_cmd.extend(["-stream_loop", "-1", "-i", SAVED_MUSIC_FILE])
-                    filter_complex.append(f"[1:a]volume={sets['music_vol']}[bg];[0:a][bg]amix=inputs=2:duration=first[a_out]")
-                    map_a = "[a_out]"
+
+                if include_music and os.path.exists(SAVED_MUSIC_FILE):
+                    try:
+                        music_copy = os.path.join(tmp, "saved_bg_music.mp3")
+                        _shutil.copyfile(SAVED_MUSIC_FILE, music_copy)
+                        mix_cmd.extend(["-stream_loop", "-1", "-i", music_copy])
+                        filter_complex.append(f"[1:a]volume={music_vol}[bg];[0:a][bg]amix=inputs=2:duration=first[a_out]")
+                        map_a = "[a_out]"
+                    except Exception as e:
+                        print("Falha ao copiar música para tmp:", e)
+                        map_a = "0:a"
                 else:
                     map_a = "0:a"
 
@@ -805,20 +870,19 @@ with tab3:
                     if "amix" in "".join(filter_complex):
                         mix_cmd.extend(["-map", "0:v", "-map", map_a])
 
-                mix_cmd.extend(["-crf", "28", "-preset", "fast"])
-                mix_cmd.append("final.mp4")
+                mix_cmd.extend(["-crf", "28", "-preset", "fast", final])
 
                 run_cmd(mix_cmd, cwd=tmp)
-                
+
                 final_absolute_path = os.path.join(tmp, "final.mp4")
-                
+
                 with open(final_absolute_path, "rb") as f:
                     st.session_state["video_final_bytes"] = BytesIO(f.read())
-                
+
                 render_prog.progress(100, text="Finalizado!")
                 eta_placeholder.empty()
                 s.update(label="Pronto!", state="complete")
-                
+
             except Exception as e:
                 st.error(f"Erro render: {e}")
                 st.error(traceback.format_exc())
