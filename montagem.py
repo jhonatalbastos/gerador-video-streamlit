@@ -1,4 +1,4 @@
-# montagem.py — Fábrica de Vídeos (Renderizador) - Versão Completa com Correções de Legenda e Progresso
+# montagem.py — Fábrica de Vídeos (Renderizador) - Versão CORRIGIDA DEFINITIVA (Legendas)
 import os
 import re
 import json
@@ -47,24 +47,22 @@ st.set_page_config(
 # Persistência
 # =========================
 def load_config():
-    # NOVOS PADRÕES SOLICITADOS
     default = {
         "line1_y": 150, "line1_size": 70, "line1_font": "Alegreya Sans Black", "line1_anim": "Estático",
         "line2_y": 250, "line2_size": 50, "line2_font": "Alegreya Sans Black", "line2_anim": "Estático",
         "line3_y": 350, "line3_size": 50, "line3_font": "Alegreya Sans Black", "line3_anim": "Estático",
-        "effect_type": "Estático", "effect_speed": 3, # Movimento padrão agora é Estático
+        "effect_type": "Estático", "effect_speed": 3,
         "trans_type": "Fade (Escurecer)", "trans_dur": 0.5,
         "music_vol": 0.15,
-        "sub_size": 70, # Aumentado para destaque em 1 linha
+        "sub_size": 70,
         "sub_color": "#FFFF00", 
         "sub_outline_color": "#000000", 
-        "sub_y_pos": 250 # Ajustado para ficar mais central/baixo (margem do fundo)
+        "sub_y_pos": 250
     }
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
                 saved = json.load(f)
-                # Atualiza apenas chaves que já existem no salvo, mas garante novos defaults se faltar
                 default.update(saved)
         except: pass
     return default
@@ -82,7 +80,6 @@ def save_music_file(file_bytes):
     except: return False
 
 def save_font_file(file_bytes):
-    """Salva a fonte enviada no disco para persistência."""
     try:
         with open(SAVED_FONT_FILE, "wb") as f: f.write(file_bytes)
         return True
@@ -149,7 +146,6 @@ def download_file_content(service, file_id: str) -> Optional[str]:
     except: return None
 
 def list_recent_jobs(limit: int = 15) -> List[Dict]:
-    """Lista Jobs CONCLUÍDOS (com descrição 'COMPLETE') na pasta."""
     service = get_drive_service()
     if not service: return []
     jobs_list = []
@@ -160,7 +156,6 @@ def list_recent_jobs(limit: int = 15) -> List[Dict]:
         if not folders: return []
         folder_id = folders[0]['id']
 
-        # Filtra arquivos JSON
         query_file = (
             f"mimeType = 'application/json' and "
             f"'{folder_id}' in parents and "
@@ -213,7 +208,6 @@ def process_job_payload(payload: Dict, temp_dir: str):
         st.session_state["roteiro_gerado"] = payload.get("roteiro", {})
         meta = payload.get("meta_dados", {})
         
-        # --- 1. DATA (Formatação com Ponto) ---
         d_raw = meta.get("data", "")
         if re.match(r"\d{4}-\d{2}-\d{2}", d_raw):
             try:
@@ -224,16 +218,14 @@ def process_job_payload(payload: Dict, temp_dir: str):
         else:
             st.session_state["data_display"] = d_raw.replace('/', '.')
             
-        # --- 2. TÍTULO E REFERÊNCIA ---
         raw_ref = meta.get("ref", "")
-        title = "EVANGELHO" # Padrão
+        title = "EVANGELHO"
         clean_ref = raw_ref
 
         if " - " in raw_ref:
             parts = raw_ref.split(" - ", 1)
             tipo_raw = parts[0]
             clean_ref = parts[1]
-            
             if "1ª" in tipo_raw or "Primeira" in tipo_raw: title = "1ª LEITURA"
             elif "2ª" in tipo_raw or "Segunda" in tipo_raw: title = "2ª LEITURA"
             elif "Salmo" in tipo_raw: title = "SALMO"
@@ -241,7 +233,6 @@ def process_job_payload(payload: Dict, temp_dir: str):
             if "Salmo" in raw_ref: title = "SALMO"
             elif "Leitura" in raw_ref: title = "1ª LEITURA"
         
-        # Limpeza fina de prefixos
         patterns_to_remove = [
             r"^(Primeira|Segunda|1ª|2ª)\s*Leitura\s*:\s*",
             r"^Leitura\s*(do|da)\s*.*:\s*",
@@ -256,7 +247,6 @@ def process_job_payload(payload: Dict, temp_dir: str):
         st.session_state["title_display"] = title
         st.session_state["ref_display"] = clean_ref
 
-        # --- 3. ASSETS ---
         st.session_state["generated_images_blocks"] = {}
         st.session_state["generated_audios_blocks"] = {}
         st.session_state["generated_srt_content"] = ""
@@ -293,10 +283,9 @@ def process_job_payload(payload: Dict, temp_dir: str):
 def shutil_which(name): return _shutil.which(name)
 
 def run_cmd(cmd, cwd=None):
-    """Executa comando shell, com suporte a diretório de trabalho (cwd)"""
     clean = [arg.replace('\u00a0', ' ').strip() if isinstance(arg, str) else arg for arg in cmd if arg]
     # Debug: Imprime comando para verificar caminhos
-    # print(f"Executando: {' '.join(clean)}") 
+    print(f"Executando: {' '.join(clean)}") 
     try:
         subprocess.run(clean, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
     except subprocess.CalledProcessError as e:
@@ -311,19 +300,14 @@ def get_audio_duration(path):
     except: return 5.0
 
 def resolve_font(choice, upload):
-    # 1. Prioridade: Upload Temporário (na sessão atual)
     if choice == "Upload Personalizada" and upload:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp:
             tmp.write(upload.getvalue())
             return tmp.name
             
-    # 2. Prioridade: Fonte Salva/Persistente (no disco)
     if choice == "Upload Personalizada" and os.path.exists(SAVED_FONT_FILE):
         return SAVED_FONT_FILE
         
-    # 3. Prioridade: Fontes do Sistema ou Específicas
-    # Se a escolha for a "Alegreya", e tivermos o arquivo salvo, usamos ele.
-    # Caso contrário, tenta achar no sistema ou fallback.
     if choice == "Alegreya Sans Black" and os.path.exists(SAVED_FONT_FILE):
          return SAVED_FONT_FILE
 
@@ -333,7 +317,6 @@ def resolve_font(choice, upload):
         "Monospace": ["courier.ttf"],
     }
     
-    # Tenta encontrar a fonte específica ou fallback
     font_list = sys_fonts.get(choice, [])
     for f in font_list: return f
     return None
@@ -356,7 +339,6 @@ def criar_preview(w, h, texts, upload):
         except: length = len(t["text"]) * t["size"] * 0.5
         x = (w - length) / 2
         
-        # Adiciona borda preta (stroke)
         draw.text((x, t["y"]), t["text"], fill=t["color"], font=font, stroke_width=2, stroke_fill="black")
         
     bio = BytesIO(); img.save(bio, "PNG"); bio.seek(0)
@@ -377,18 +359,13 @@ def whisper_srt(audio_path):
 # Correção de Legendas com Groq
 # =========================
 def corrigir_legendas_com_groq(srt_content, roteiro_original):
-    """
-    Usa a API do Groq para corrigir erros de transcrição no SRT
-    baseando-se no roteiro original.
-    """
     key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
     if not key or not Groq:
-        return srt_content # Retorna original se não tiver Groq
+        return srt_content
     
     try:
         client = Groq(api_key=key)
         
-        # Monta o texto de referência do roteiro
         texto_referencia = ""
         if roteiro_original:
             for k in ['hook', 'leitura', 'reflexao', 'aplicacao', 'oracao']:
@@ -422,13 +399,12 @@ def corrigir_legendas_com_groq(srt_content, roteiro_original):
         return chat_completion.choices[0].message.content.strip()
     except Exception as e:
         print(f"Erro na correção do Groq: {e}")
-        return srt_content # Retorna o original em caso de erro
+        return srt_content
 
 # =========================
-# Whisper Local (Tiny) - Dinâmico
+# Whisper Local (Tiny)
 # =========================
 def format_timestamp(seconds):
-    """Converte segundos para formato SRT (HH:MM:SS,mmm)"""
     millis = int((seconds - int(seconds)) * 1000)
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -436,16 +412,13 @@ def format_timestamp(seconds):
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
 def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
-    """Gera legendas dinâmicas (curtas e rápidas) usando Whisper Tiny."""
     try:
         if progress_bar: progress_bar.progress(10, text="Carregando modelo Whisper (Tiny)...")
         
-        # Carrega o modelo tiny
         model = whisper.load_model("tiny")
         
         if progress_bar: progress_bar.progress(30, text="Transcrevendo áudio...")
         
-        # Transcreve
         result = model.transcribe(audio_path, language="pt", task="transcribe")
         
         if progress_bar: progress_bar.progress(80, text="Formatando legendas dinâmicas...")
@@ -454,7 +427,6 @@ def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
         srt_content = ""
         counter = 1
         
-        # Lógica de quebra para legendas "TikTok Style" (máx 4-6 palavras por linha ou 25 chars)
         MAX_CHARS = 25
         
         for segment in segments:
@@ -463,18 +435,11 @@ def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
             end_time = segment['end']
             duration = end_time - start_time
             
-            current_line = []
-            current_len = 0
-            
-            # Divisão simples baseada em caracteres para visualização
-            # O tempo será interpolado linearmente
             total_words = len(words)
             if total_words == 0: continue
             
             time_per_word = duration / total_words
-            current_word_idx = 0
             
-            # Reconstruindo em mini-blocos
             chunks = []
             temp_chunk = []
             temp_char_count = 0
@@ -489,7 +454,6 @@ def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
                     temp_char_count += len(w) + 1
             if temp_chunk: chunks.append(temp_chunk)
 
-            # Gerar SRT para os chunks
             chunk_start = start_time
             for chunk in chunks:
                 text_line = " ".join(chunk)
@@ -511,14 +475,11 @@ def gerar_legendas_whisper_tiny(audio_path, progress_bar=None):
 # Helper Function for Auto-Load and Process
 # =========================
 def auto_load_and_process_job(job_id: str):
-    """Carrega e processa um job automaticamente dado o ID."""
     if not job_id: return
     
-    # Define o ID na sessão
     st.session_state['drive_job_id_input'] = job_id
 
     with st.status(f"Carregando automaticamente job '{job_id}'...", expanded=True) as status_box:
-        # Limpa diretório temporário anterior
         if st.session_state.get("temp_assets_dir") and os.path.exists(st.session_state["temp_assets_dir"]):
             try:
                 _shutil.rmtree(st.session_state["temp_assets_dir"])
@@ -547,7 +508,6 @@ if "overlay_settings" not in st.session_state: st.session_state["overlay_setting
 
 res_choice = st.sidebar.selectbox("Resolução", ["9:16 (Stories)", "16:9 (YouTube)", "1:1 (Feed)"])
 
-# Upload de Fonte Persistente
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🅰️ Fonte Personalizada")
 
@@ -556,7 +516,6 @@ if font_up:
     if save_font_file(font_up.getvalue()):
         st.sidebar.success("Fonte salva! Selecione 'Upload Personalizada' ou 'Alegreya Sans Black' no menu.")
         
-# Verifica se existe fonte salva
 font_status = "✅ Fonte Salva Encontrada" if os.path.exists(SAVED_FONT_FILE) else "⚠️ Nenhuma fonte salva"
 st.sidebar.caption(font_status)
 
@@ -567,7 +526,6 @@ if st.sidebar.button("Apagar Fonte Salva"):
 
 tab1, tab2, tab3 = st.tabs(["📥 Receber Job", "🎚️ Overlay", "🎥 Renderizar"])
 
-# TAB 1
 with tab1:
     st.header("📥 Central de Recepção")
     st.markdown(f"[Ir para AI Studio (Produção)]({FRONTEND_AI_STUDIO_URL})")
@@ -581,24 +539,20 @@ with tab1:
         if st.session_state['lista_jobs']:
             opts = {j['display']: j['job_id'] for j in st.session_state['lista_jobs']}
             
-            # Callback para auto-load quando mudar a seleção
             selected_display = st.selectbox(
                 "Selecione um Job:", 
                 options=list(opts.keys()),
-                index=None, # Começa sem seleção para forçar evento de mudança
+                index=None, 
                 placeholder="Escolha um job para carregar..."
             )
             
-            # Dispara auto-load se houver seleção
             if selected_display:
                 selected_id = opts[selected_display]
-                # Verifica se é um novo job para não recarregar em loop
                 if selected_id != st.session_state.get('drive_job_id_input'):
                      auto_load_and_process_job(selected_id)
         else: st.info("Nenhum job pronto encontrado.")
 
     with c2:
-        # Mantém opção manual caso o usuário queira colar um ID direto
         jid_in = st.text_input("ID Manual:", key="drive_job_id_input_manual") 
         if st.button("Baixar ID Manual", disabled=not jid_in):
              auto_load_and_process_job(jid_in)
@@ -616,7 +570,6 @@ with tab1:
             val = st.text_input("Referência (Linha 3)", st.session_state["ref_display"])
             if val != st.session_state["ref_display"]: st.session_state["ref_display"] = val
 
-# TAB 2
 with tab2:
     st.header("Editor Visual")
     c1, c2 = st.columns(2)
@@ -624,10 +577,9 @@ with tab2:
     
     with c1:
         with st.expander("Movimento"):
-            sets["effect_type"] = st.selectbox("Efeito", ["Zoom In (Ken Burns)", "Zoom Out", "Pan Esq", "Pan Dir", "Estático"], index=4) # Default Estático
+            sets["effect_type"] = st.selectbox("Efeito", ["Zoom In (Ken Burns)", "Zoom Out", "Pan Esq", "Pan Dir", "Estático"], index=4)
             sets["effect_speed"] = st.slider("Velocidade", 1, 10, 3)
         with st.expander("Texto"):
-            # Adicionei 'Alegreya Sans Black' na lista
             sets["line1_font"] = st.selectbox("Fonte L1", ["Padrão (Sans)", "Alegreya Sans Black", "Serif", "Upload Personalizada"], index=1)
             sets["line1_size"] = st.slider("Tam L1", 10, 150, sets.get("line1_size", 70))
             sets["line1_y"] = st.slider("Y L1", 0, 800, sets.get("line1_y", 150))
@@ -636,7 +588,6 @@ with tab2:
             sets["line3_size"] = st.slider("Tam L3", 10, 100, sets.get("line3_size", 50))
             sets["line3_y"] = st.slider("Y L3", 0, 800, sets.get("line3_y", 350))
             
-            # Atualiza fontes das outras linhas para Alegreya se for o padrão
             if sets["line1_font"] == "Alegreya Sans Black":
                 sets["line2_font"] = "Alegreya Sans Black"
                 sets["line3_font"] = "Alegreya Sans Black"
@@ -657,12 +608,11 @@ with tab2:
         ], font_up)
         st.image(prev, caption="Preview")
 
-# TAB 3
 with tab3:
     st.header("Renderização")
     if not st.session_state["job_loaded_from_drive"]: st.warning("Carregue um job primeiro."); st.stop()
     
-    # Blocos Config Definition MOVED HERE - TO FIX NameError
+    # Blocos Config Definition
     blocos_config = [
         {"id": "hook", "label": "🎣 HOOK", "text_path": "hook", "prompt_path": "hook"},
         {"id": "leitura", "label": "📖 LEITURA", "text_path": "leitura", "prompt_path": "leitura"},
@@ -671,7 +621,6 @@ with tab3:
         {"id": "oracao", "label": "🙏 ORAÇÃO", "text_path": "oracao", "prompt_path": "oracao"},
     ]
     
-    # Make roteiro object available based on roteiro_gerado state
     roteiro = st.session_state.get("roteiro_gerado", {})
 
     for bid_item in blocos_config:
@@ -693,7 +642,7 @@ with tab3:
                         st.rerun()
 
             with c2: 
-                if img: st.image(img, width=150) # Reduzido para 150px como solicitado
+                if img: st.image(img, width=150)
                 else: st.info("Sem imagem")
                 img_file = st.file_uploader(f"🖼️ Enviar Imagem para {bid.upper()}", type=["png", "jpg", "jpeg"], key=f"up_img_{bid}")
                 if img_file:
@@ -709,7 +658,7 @@ with tab3:
     use_over = st.checkbox("Overlay Texto", value=True)
     
     if st.button("Gerar Legendas (Whisper Tiny Local + Correção Groq)"):
-        prog_bar = st.progress(0, text="Iniciando Whisper...") # Barra de progresso para Legendas
+        prog_bar = st.progress(0, text="Iniciando Whisper...")
         with st.status("Transcrevendo...") as s:
             auds = [p for p in st.session_state["generated_audios_blocks"].values() if os.path.exists(p)]
             if not auds: s.update(label="Sem áudios!", state="error"); st.stop()
@@ -722,11 +671,10 @@ with tab3:
             
             prog_bar.progress(20, text="Processando áudio mestre...")
             
-            srt = gerar_legendas_whisper_tiny(mst, progress_bar=prog_bar) # Passa a barra para a função
+            srt = gerar_legendas_whisper_tiny(mst, progress_bar=prog_bar)
             
             if srt:
                 prog_bar.progress(90, text="Revisando com Groq...")
-                # Corrige com Groq
                 roteiro_original = st.session_state.get("roteiro_gerado", {})
                 srt_corrigido = corrigir_legendas_com_groq(srt, roteiro_original)
                 
@@ -736,18 +684,16 @@ with tab3:
                 st.rerun()
             else: s.update(label="Erro Whisper", state="error")
 
-    # --- NOVO: ÁREA DE REVISÃO DE LEGENDAS ---
     if st.session_state.get("generated_srt_content"):
         with st.expander("📝 Revisar e Editar Legendas (SRT)", expanded=False):
             edited_srt = st.text_area("Conteúdo das Legendas (SRT):", value=st.session_state["generated_srt_content"], height=300)
             if st.button("Salvar Alterações na Legenda"):
                 st.session_state["generated_srt_content"] = edited_srt
                 st.success("Legendas atualizadas!")
-    # -----------------------------------------
 
     if st.button("RENDERIZAR VÍDEO FINAL", type="primary"):
-        render_prog = st.progress(0, text="Iniciando Renderização...") # Barra de progresso Render
-        eta_placeholder = st.empty() # Placeholder para ETA
+        render_prog = st.progress(0, text="Iniciando Renderização...")
+        eta_placeholder = st.empty()
         start_time = time.time()
         
         with st.status("Renderizando...", expanded=True) as s:
@@ -758,7 +704,7 @@ with tab3:
                 w, h = res["w"], res["h"]
                 f1 = resolve_font(sets["line1_font"], font_up)
                 
-                total_steps = len(blocos_config) + 3 # Blocos + Concat + Mix + Final
+                total_steps = len(blocos_config) + 3
                 current_step = 0
 
                 for bid in ["hook", "leitura", "reflexao", "aplicacao", "oracao"]:
@@ -789,7 +735,6 @@ with tab3:
                     
                     if use_over and f1:
                         t1 = san(st.session_state.get("title_display", ""))
-                        # Adiciona borda preta de 3px (borderw=3:bordercolor=black)
                         filters.append(f"drawtext=fontfile='{f1}':text='{t1}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line1_size']}:x=(w-text_w)/2:y={sets['line1_y']}")
                         t2 = san(st.session_state.get("data_display", ""))
                         filters.append(f"drawtext=fontfile='{f1}':text='{t2}':fontcolor=white:borderw=3:bordercolor=black:fontsize={sets['line2_size']}:x=(w-text_w)/2:y={sets['line2_y']}")
@@ -823,17 +768,17 @@ with tab3:
                 else:
                     map_a = "0:a"
 
-                # FORÇANDO A CRIAÇÃO DO ARQUIVO SRT FÍSICO
+                # CORREÇÃO LEGENDAS: SALVAR FISICAMENTE + CAMINHO RELATIVO
                 if use_subs and st.session_state.get("generated_srt_content"):
-                    srtp = os.path.join(tmp, "subs.srt")
-                    srtp_abs = os.path.abspath(srtp)
+                    # 1. Salva o arquivo na pasta temporária (ONDE O FFMPEG VAI RODAR)
+                    srt_filename = "subs.srt"
+                    srtp_absolute = os.path.join(tmp, srt_filename)
                     
-                    # Escreve o conteúdo da memória para o disco AGORA
-                    with open(srtp_abs, "w", encoding="utf-8") as f: 
+                    with open(srtp_absolute, "w", encoding="utf-8") as f: 
                         f.write(st.session_state["generated_srt_content"])
                     
-                    # Verifica se escreveu corretamente
-                    if os.path.exists(srtp_abs) and os.path.getsize(srtp_abs) > 0:
+                    # 2. Verifica se existe antes de adicionar o filtro
+                    if os.path.exists(srtp_absolute):
                         c = sets["sub_color"].lstrip("#")
                         co = sets["sub_outline_color"].lstrip("#")
                         ass_c = f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
@@ -841,28 +786,26 @@ with tab3:
                         margin_v = res['h'] - sets['sub_y_pos']
                         style = f"FontSize={sets['sub_size']},PrimaryColour={ass_c},OutlineColour={ass_co},BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
                         
-                        # Caminho escapado
-                        srtp_esc = srtp_abs.replace("\\", "/").replace(":", "\\:")
-                        filter_complex.append(f"subtitles='{srtp_esc}':force_style='{style}'")
+                        # 3. Usa APENAS O NOME DO ARQUIVO (caminho relativo) para o filtro
+                        # Isso evita problemas com paths absolutos e caracteres especiais
+                        filter_complex.append(f"subtitles='{srt_filename}':force_style='{style}'")
                     else:
-                        st.warning("Falha ao escrever arquivo de legenda temporário.")
+                        st.warning("Falha: Arquivo de legenda não foi criado.")
 
                 if filter_complex:
                     mix_cmd.extend(["-filter_complex", ",".join(filter_complex)])
                     if "amix" in "".join(filter_complex):
                         mix_cmd.extend(["-map", "0:v", "-map", map_a])
                 
-                # Redução de tamanho para o vídeo final também
                 mix_cmd.extend(["-crf", "28", "-preset", "fast"])
+                mix_cmd.append("final.mp4") # Saída também relativa
                 
-                mix_cmd.append("final.mp4") # Saída relativa
-                
-                # Executa o FFmpeg dentro do diretório temporário (cwd=tmp)
+                # 4. EXECUTA O FFMPEG DENTRO DA PASTA TEMPORÁRIA (cwd=tmp)
+                # Isso faz com que ele encontre 'subs.srt' e crie 'final.mp4' lá dentro
                 run_cmd(mix_cmd, cwd=tmp)
                 
-                final_absolute_path = os.path.join(tmp, "final.mp4")
-                
-                with open(final_absolute_path, "rb") as f:
+                final_absolute = os.path.join(tmp, "final.mp4")
+                with open(final_absolute, "rb") as f:
                     st.session_state["video_final_bytes"] = BytesIO(f.read())
                 
                 render_prog.progress(100, text="Finalizado!")
